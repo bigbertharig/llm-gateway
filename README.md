@@ -22,6 +22,10 @@ The local path requires the matching API in `llm_orchestration`. Until that is
 installed, cloud routing can work independently and local discovery reports
 unavailable.
 
+The orchestration API runs beside the gateway on `127.0.0.1:8790`; it uses the
+existing operator controls to reach the GPU rig. Only gateway port 8080 needs
+to be reachable from the main machine.
+
 ## Install
 
 ```bash

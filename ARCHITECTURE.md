@@ -9,7 +9,8 @@ VS Code on the main machine
         v
 llm-gateway on the Pi
         |-- openrouter/<id> --> OpenRouter
-        `-- local/<id> ------> llm_orchestration --> GPU worker
+        `-- local/<id> ------> localhost model API
+                                  `-> llm_orchestration --> GPU worker
 ```
 
 ## Ownership
@@ -32,7 +33,7 @@ The gateway owns:
 
 ## Local Session Contract
 
-The expected rig-side API is:
+The expected Pi-side orchestration API is:
 
 ```text
 GET    /v1/local/models
@@ -54,4 +55,3 @@ An acquire response contains at least:
 
 The gateway renews the session while inference is active and releases it when
 the response or stream ends.
-

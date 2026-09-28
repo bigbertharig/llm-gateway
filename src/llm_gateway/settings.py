@@ -29,7 +29,7 @@ class Settings:
                 "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
             ).rstrip("/"),
             orchestrator_url=os.getenv(
-                "ORCHESTRATOR_URL", "http://10.0.0.3:8790"
+                "ORCHESTRATOR_URL", "http://127.0.0.1:8790"
             ).rstrip("/"),
             orchestrator_api_key=os.getenv("ORCHESTRATOR_API_KEY", "").strip(),
             model_catalog_path=Path(
@@ -55,4 +55,3 @@ class Settings:
             raise RuntimeError("LOCAL_SESSION_TTL_SECONDS must be positive")
         if self.local_session_renew_seconds <= 0:
             raise RuntimeError("LOCAL_SESSION_RENEW_SECONDS must be positive")
-
