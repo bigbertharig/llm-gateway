@@ -8,8 +8,10 @@ rsync -a --delete --exclude .git --exclude __pycache__ --exclude .venv --exclude
 ssh -o BatchMode=yes "$RIG" '
   set -e
   cd ~/llm-gateway
-  [ -x .venv/bin/python ] || python3 -m venv .venv
-  .venv/bin/pip install -q -e .
+  # The rig has no internet: deps must already be in .venv (code runs from src/ via PYTHONPATH).
+  # To add/upgrade deps: build wheels on a machine with internet, copy them over, pip install --no-index.
+  .venv/bin/python -c "import fastapi, uvicorn, httpx" || {
+    echo "rig .venv is missing gateway deps (fastapi, uvicorn, httpx); install them offline first" >&2; exit 1; }
   sudo -n install -m 644 ~/llm-gateway/deploy/rig-gateway.service /etc/systemd/system/
   sudo -n systemctl daemon-reload
   sudo -n systemctl enable rig-gateway.service >/dev/null
