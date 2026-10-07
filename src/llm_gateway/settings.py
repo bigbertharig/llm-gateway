@@ -1,57 +1,50 @@
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_CATALOG_PATH = Path(__file__).resolve().parents[2] / "config" / "models.json"
-
-
 @dataclass(frozen=True)
 class Settings:
-    gateway_api_key: str
-    openrouter_api_key: str
-    openrouter_base_url: str
-    orchestrator_url: str
-    orchestrator_api_key: str
-    model_catalog_path: Path
-    request_timeout_seconds: float = 600.0
-    local_session_ttl_seconds: int = 900
-    local_session_renew_seconds: int = 60
+    """All gateway configuration. Every value comes from the environment with an explicit default."""
+
+    # How to run the rig mode selector. On the rig: "rig". On the Pi: "ssh rig rig".
+    rig_command: tuple[str, ...]
+    # remote_profiles source (shared drive path differs per host: /mnt/shared vs /media/bryan/shared).
+    profiles_path: Path
+    # Host that serves the profile ports. 127.0.0.1 when the gateway runs on the rig.
+    upstream_host: str
+    # Model ids are published as "<prefix>/<profile id>".
+    model_prefix: str
+    bind: str
+    port: int
+    # Upper bound for one `rig start remote <id>` (cold 27B load is ~2m20s).
+    start_timeout_seconds: float
+    # Upper bound for one upstream inference request.
+    request_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            gateway_api_key=os.getenv("GATEWAY_API_KEY", "").strip(),
-            openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
-            openrouter_base_url=os.getenv(
-                "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
-            ).rstrip("/"),
-            orchestrator_url=os.getenv(
-                "ORCHESTRATOR_URL", "http://127.0.0.1:8790"
-            ).rstrip("/"),
-            orchestrator_api_key=os.getenv("ORCHESTRATOR_API_KEY", "").strip(),
-            model_catalog_path=Path(
-                os.getenv("MODEL_CATALOG_PATH", str(DEFAULT_CATALOG_PATH))
-            ),
-            request_timeout_seconds=float(
-                os.getenv("REQUEST_TIMEOUT_SECONDS", "600")
-            ),
-            local_session_ttl_seconds=int(
-                os.getenv("LOCAL_SESSION_TTL_SECONDS", "900")
-            ),
-            local_session_renew_seconds=int(
-                os.getenv("LOCAL_SESSION_RENEW_SECONDS", "60")
-            ),
+            rig_command=tuple(shlex.split(os.getenv("RIG_COMMAND", "rig"))),
+            profiles_path=Path(os.getenv(
+                "PROFILES_PATH",
+                "/mnt/shared/plans/shoulders/benchmarking/model_task_library.json",
+            )),
+            upstream_host=os.getenv("UPSTREAM_HOST", "127.0.0.1"),
+            model_prefix=os.getenv("MODEL_PREFIX", "gpu-rig"),
+            bind=os.getenv("GATEWAY_BIND", "127.0.0.1"),
+            port=int(os.getenv("GATEWAY_PORT", "8080")),
+            start_timeout_seconds=float(os.getenv("START_TIMEOUT_SECONDS", "900")),
+            request_timeout_seconds=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900")),
         )
 
     def validate(self) -> None:
-        if not self.gateway_api_key:
-            raise RuntimeError("GATEWAY_API_KEY is required")
-        if self.request_timeout_seconds <= 0:
-            raise RuntimeError("REQUEST_TIMEOUT_SECONDS must be positive")
-        if self.local_session_ttl_seconds <= 0:
-            raise RuntimeError("LOCAL_SESSION_TTL_SECONDS must be positive")
-        if self.local_session_renew_seconds <= 0:
-            raise RuntimeError("LOCAL_SESSION_RENEW_SECONDS must be positive")
+        if not self.rig_command:
+            raise RuntimeError("RIG_COMMAND is empty")
+        if not self.profiles_path.is_file():
+            raise RuntimeError(f"PROFILES_PATH not found: {self.profiles_path}")
+        if self.start_timeout_seconds <= 0 or self.request_timeout_seconds <= 0:
+            raise RuntimeError("timeouts must be positive")

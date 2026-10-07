@@ -1,57 +1,42 @@
 # Architecture
 
-`llm-gateway` is the stable LAN endpoint used by editor and agent clients.
-It is a protocol gateway, not a scheduler.
-
-```text
-VS Code on the main machine
-        |
-        v
-llm-gateway on the Pi
-        |-- openrouter/<id> --> OpenRouter
-        `-- local/<id> ------> localhost model API
-                                  `-> llm_orchestration --> GPU worker
-```
+`llm-gateway` is a protocol gateway, not a scheduler. It translates "a client wants model X"
+into rig mode-selector calls and then proxies bytes.
 
 ## Ownership
 
 The gateway owns:
+- the OpenAI-compatible endpoint and model list (from `remote_profiles`)
+- mapping `gpu-rig/<id>` to a profile, rejecting anything unpublished
+- turning a request for an unloaded profile into one `rig start remote <id>` (single-flight)
+- translating rig exit codes into HTTP errors
 
-- client authentication;
-- the OpenAI-compatible client endpoint;
-- the curated OpenRouter model list;
-- explicit `openrouter/` and `local/` routing;
-- holding a local model session for the duration of each inference request.
+The rig mode selector (`llm_orchestration/shared/scripts/rig/rig.py`) owns:
+- modes (idle / orchestration / bench / remote) and the busy/--force rules
+- GPU placement from each profile's `gpus_needed`, port assignment, container lifecycle
+- state (`/mnt/shared/brain/rig_mode.json`)
 
-`llm_orchestration` owns:
-
-- the local model catalog;
-- GPU placement and leases;
-- runtime load, health, and cleanup;
-- split-model mechanics;
-- the endpoint and runtime model name returned for a local session.
-
-## Local Session Contract
-
-The expected Pi-side orchestration API is:
+## Rig contract
 
 ```text
-GET    /v1/local/models
-POST   /v1/local/models/{model_id}/acquire
-POST   /v1/local/sessions/{session_id}/renew
-DELETE /v1/local/sessions/{session_id}
+rig status --json            -> {"mode", "status", "profiles": [{"id","port","state",...}], ...}
+rig start remote <id>        -> exit 0 ready | 1 failed | 2 busy (other mode) | 3 locked | 4 no capacity
 ```
 
-An acquire response contains at least:
+The gateway asks `status` first. If the profile isn't `ready`, it runs `start` (which also waits
+for a profile someone else is already loading), retrying on exit 3, then asks `status` again for
+the port.
 
-```json
-{
-  "session_id": "interactive-...",
-  "endpoint": "http://10.0.0.3:11435/v1",
-  "runtime_model": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
-  "expires_at": "2026-09-28T12:00:00Z"
-}
-```
+## Placement today and later
 
-The gateway renews the session while inference is active and releases it when
-the response or stream ends.
+- Today: the gateway runs on the rig (`RIG_COMMAND=rig`, upstream 127.0.0.1). The desktop reaches
+  it through its SSH tunnel.
+- Later (Pi as coordinator): run the same code on the Pi with `RIG_COMMAND="ssh rig rig"`.
+  The upstream ports are loopback-only on the rig, so this also needs either an SSH forward from
+  the Pi or LAN-bound runtimes, plus bearer auth once the gateway listens on the LAN.
+  Multi-rig means one gateway route per rig prefix.
+
+## Deliberately not here (yet)
+
+Cloud routing (Roo does OpenRouter natively), auth (loopback only), idle auto-unload,
+auto-evict when a profile doesn't fit (it returns 503 instead).

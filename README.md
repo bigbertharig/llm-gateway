@@ -1,76 +1,65 @@
 # llm-gateway
 
-Private LAN gateway for using OpenRouter and Big Bertha Rig models through one
-OpenAI-compatible endpoint in VS Code.
+OpenAI-compatible endpoint for Big Bertha rig models. Clients (Roo in VS Code) pick a model
+from `/v1/models`. The first request for a model makes the rig load it (`rig start remote <id>`)
+and holds the request until it's ready. Later requests go straight through.
 
-The gateway runs on the Pi. VS Code connects to the Pi, selects a model with an
-`openrouter/` or `local/` prefix, and does not need to know about GPU placement
-or worker ports.
-
-## Current Status
-
-Implemented:
-
-- bearer authentication for all `/v1` routes;
-- `GET /health`;
-- combined `GET /v1/models` catalog;
-- non-streaming and streaming `POST /v1/chat/completions` forwarding;
-- curated OpenRouter model selection;
-- local model acquire, renewal, forwarding, and release contract.
-
-The local path requires the matching API in `llm_orchestration`. Until that is
-installed, cloud routing can work independently and local discovery reports
-unavailable.
-
-The orchestration API runs beside the gateway on `127.0.0.1:8790`; it uses the
-existing operator controls to reach the GPU rig. Only gateway port 8080 needs
-to be reachable from the main machine.
-
-## Install
-
-```bash
-cd /home/bryan/llm-gateway
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-cp .env.example .env
-```
-
-Set unique gateway and orchestrator tokens in `.env`. Do not commit that file.
-
-Add preferred OpenRouter IDs to `config/models.json`:
-
-```json
-{
-  "schema_version": 1,
-  "openrouter_models": [
-    "provider/model-id"
-  ]
-}
-```
-
-## Run on the Pi
-
-```bash
-.venv/bin/uvicorn llm_gateway.main:app \
-  --env-file .env \
-  --host 0.0.0.0 \
-  --port 8080
-```
-
-Restrict TCP port 8080 to the main machine on the home LAN. Do not configure
-router port forwarding for the gateway, orchestrator, or worker ports.
-
-## VS Code Provider
+Cloud models are not routed here. Roo uses its native OpenRouter provider for those.
 
 ```text
-Base URL: http://PI_LAN_ADDRESS:8080/v1
-API key:  value of GATEWAY_API_KEY
+Roo "local" profile -> 127.0.0.1:8080 (desktop) --ssh tunnel--> rig 127.0.0.1:8080 llm-gateway
+                                                                     |  rig status --json / rig start remote <id>
+                                                                     `-> 127.0.0.1:<profile port> llama-server
 ```
 
-The extension should populate its selector from `GET /v1/models`.
+## Models
 
-## Test
+Everything comes from `remote_profiles` in
+`shared/plans/shoulders/benchmarking/model_task_library.json`. Each profile is published as
+`gpu-rig/<id>` with its `context_length`. The file is re-read when it changes, so adding or
+changing a profile needs no restart. Placement (which GPUs, which port) is decided by `rig`.
+
+## API
+
+| Route | Notes |
+|---|---|
+| `GET /v1/models` | one entry per remote profile |
+| `POST /v1/chat/completions`, `POST /v1/completions` | streaming and non-streaming. Body forwarded unchanged |
+| `GET /v1/rig/status` | `rig status --json` passthrough |
+| `GET /health` | liveness |
+
+Errors use the OpenAI shape `{"error": {"message", "type", "code"}}`:
+
+| Situation | Status |
+|---|---|
+| unknown model | 404 (message lists published ids) |
+| rig busy in another mode (orchestration/bench) | 503 `rig busy: ...` |
+| not enough free GPUs for the profile | 503 with the loaded profiles |
+| load failed | 502 with the rig error |
+| load exceeded `START_TIMEOUT_SECONDS` | 504 |
+
+Concurrent cold requests for one profile share a single load.
+
+## Configuration (environment)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `RIG_COMMAND` | `rig` | on the Pi: `ssh rig rig` |
+| `PROFILES_PATH` | `/mnt/shared/plans/shoulders/benchmarking/model_task_library.json` | Pi: `/media/bryan/shared/...` |
+| `UPSTREAM_HOST` | `127.0.0.1` | host serving profile ports |
+| `MODEL_PREFIX` | `gpu-rig` | |
+| `GATEWAY_BIND` / `GATEWAY_PORT` | `127.0.0.1` / `8080` | loopback only. No auth until it is LAN-exposed |
+| `START_TIMEOUT_SECONDS` | `900` | |
+| `REQUEST_TIMEOUT_SECONDS` | `900` | |
+
+## Run, test, deploy
+
+Standard library only (Python >= 3.11). No venv or install needed.
 
 ```bash
-.venv/bin/pytest
+python3 -m unittest -v tests/test_gateway.py     # fake rig + fake llama-server
+PYTHONPATH=src python3 -m llm_gateway            # run locally
+deploy/deploy_rig.sh                             # from the Pi: rsync to rig, (re)start rig-gateway.service
 ```
+
+On the rig it runs as `rig-gateway.service` (enabled at boot; it loads nothing until asked).
