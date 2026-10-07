@@ -1,25 +1,26 @@
-"""Gateway tests with a fake `rig` command and a fake llama-server. Run: python3 -m unittest -v"""
+"""Gateway tests: fake `rig` command (subprocess) + fake llama-server (httpx MockTransport)."""
 
 from __future__ import annotations
 
-import http.client
+import asyncio
 import json
 import os
 import sys
-import tempfile
 import textwrap
-import threading
 import time
-import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import httpx
+import pytest
+from fastapi.testclient import TestClient
 
-from llm_gateway.server import Gateway, make_server  # noqa: E402
-from llm_gateway.settings import Settings  # noqa: E402
+from llm_gateway.app import create_app, translate_upstream_error
+from llm_gateway.rig import Rig, RigUnavailable
+from llm_gateway.settings import Settings
 
-# Fake rig: state in $FAKE_RIG_STATE; behavior of `start` in $FAKE_RIG_START (ok|busy|nocap|fail).
+UPSTREAM_PORT = 11499
+
+# State in $FAKE_RIG_STATE; `start` behavior from $FAKE_RIG_START (ok|busy|nocap|fail|locked-once).
 FAKE_RIG = textwrap.dedent("""\
     import json, os, sys, time
     state_path = os.environ["FAKE_RIG_STATE"]
@@ -33,152 +34,181 @@ FAKE_RIG = textwrap.dedent("""\
         if mode == "busy": print("busy: bench (ready, since t, from 10.0.0.2)"); sys.exit(2)
         if mode == "nocap": print("error: no capacity for x"); sys.exit(4)
         if mode == "fail": print("FAILED: container exited"); sys.exit(1)
+        if mode == "locked-once" and not os.path.exists(state_path + ".locked"):
+            open(state_path + ".locked", "w").close(); print("locked"); sys.exit(3)
         time.sleep(0.5)
-        st["profiles"].append({"id": args[2], "port": int(os.environ["FAKE_UPSTREAM_PORT"]), "state": "ready"})
+        st["profiles"].append({"id": args[2], "port": %d, "state": "ready"})
         json.dump(st, open(state_path, "w")); sys.exit(0)
     sys.exit(64)
-""")
+""" % UPSTREAM_PORT)
 
 
-class FakeLlama(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, *a):
-        pass
-
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        if body.get("stream"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            for tok in ("o", "k"):
-                self.wfile.write(f'data: {{"choices":[{{"delta":{{"content":"{tok}"}}}}]}}\n\n'.encode())
-                self.wfile.flush()
-            self.wfile.write(b"data: [DONE]\n\n")
-            self.close_connection = True
-            return
-        out = json.dumps({"choices": [{"message": {"content": "ok"}}], "echo_model": body.get("model")}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
+def fake_llama(request: httpx.Request) -> httpx.Response:
+    assert request.url.port == UPSTREAM_PORT
+    body = json.loads(request.content)
+    if request.url.path == "/tokenize":
+        return httpx.Response(200, json={"tokens": list(range(len(body["content"].split())))})
+    if "OVERFLOW" in json.dumps(body):
+        return httpx.Response(400, json={"error": {
+            "code": 400, "message": "request (20030 tokens) exceeds the available context size (16384 tokens)",
+            "type": "exceed_context_size_error", "n_prompt_tokens": 20030, "n_ctx": 16384}})
+    if body.get("stream"):
+        chunks = [b'data: {"choices":[{"delta":{"content":"o"}}]}\n\n',
+                  b'data: {"choices":[{"delta":{"content":"k"}}]}\n\n', b"data: [DONE]\n\n"]
+        async def gen():
+            for c in chunks:
+                yield c
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=gen())
+    return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "echo_model": body.get("model")})
 
 
-class GatewayTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlama)
-        threading.Thread(target=self.upstream.serve_forever, daemon=True).start()
-        (self.tmp / "rig.py").write_text(FAKE_RIG)
-        self.state = self.tmp / "state.json"
-        self.state.write_text(json.dumps({"mode": "idle", "status": "idle", "profiles": []}))
-        self.lib = self.tmp / "lib.json"
-        self.lib.write_text(json.dumps({"remote_profiles": [
-            {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 16384, "description": "small"},
-            {"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536, "description": "big"},
-        ]}))
-        os.environ.update(FAKE_RIG_STATE=str(self.state), FAKE_RIG_START="ok",
-                          FAKE_UPSTREAM_PORT=str(self.upstream.server_port))
-        settings = Settings(
-            rig_command=(sys.executable, str(self.tmp / "rig.py")), profiles_path=self.lib,
-            upstream_host="127.0.0.1", model_prefix="gpu-rig", bind="127.0.0.1", port=0,
-            start_timeout_seconds=30, request_timeout_seconds=30,
-        )
-        self.server = make_server(Gateway(settings))
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    (tmp_path / "rig.py").write_text(FAKE_RIG)
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"mode": "idle", "status": "idle", "profiles": []}))
+    lib = tmp_path / "lib.json"
+    lib.write_text(json.dumps({"remote_profiles": [
+        {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 16384, "description": "small"},
+        {"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536, "description": "big"},
+    ]}))
+    monkeypatch.setenv("FAKE_RIG_STATE", str(state))
+    monkeypatch.setenv("FAKE_RIG_START", "ok")
+    monkeypatch.setattr("llm_gateway.rig.LOCKED_RETRY_SECONDS", 0.1)
+    settings = Settings(
+        rig_command=(sys.executable, str(tmp_path / "rig.py")), profiles_path=lib,
+        upstream_host="127.0.0.1", model_prefix="gpu-rig", bind="127.0.0.1", port=0,
+        start_timeout_seconds=30, request_timeout_seconds=30,
+    )
 
-    def tearDown(self):
-        for srv in (self.server, self.upstream):
-            srv.shutdown()
-            srv.server_close()
-
-    def request(self, method, path, body=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=30)
-        conn.request(method, path, body=json.dumps(body) if body is not None else None,
-                     headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        data = resp.read()
-        conn.close()
-        return resp.status, resp.getheader("Content-Type"), data
-
-    def chat(self, model="gpu-rig/coder-7b", **extra):
-        return self.request("POST", "/v1/chat/completions",
-                            {"model": model, "messages": [{"role": "user", "content": "hi"}], **extra})
-
-    def starts(self):
-        p = Path(str(self.state) + ".starts")
+    def starts():
+        p = Path(str(state) + ".starts")
         return p.read_text().split() if p.exists() else []
 
-    def test_models_lists_profiles_with_context(self):
-        status, _, data = self.request("GET", "/v1/models")
-        self.assertEqual(status, 200)
-        models = {m["id"]: m for m in json.loads(data)["data"]}
-        self.assertEqual(set(models), {"gpu-rig/coder-7b", "gpu-rig/chat-27b"})
-        self.assertEqual(models["gpu-rig/chat-27b"]["context_length"], 65536)
-
-    def test_models_follow_library_edits(self):
-        time.sleep(0.01)
-        lib = json.loads(self.lib.read_text())
-        lib["remote_profiles"].append({"id": "new-one", "model": "m", "ctx_size": 4096})
-        self.lib.write_text(json.dumps(lib))
-        os.utime(self.lib, (time.time() + 5, time.time() + 5))
-        _, _, data = self.request("GET", "/v1/models")
-        self.assertIn("gpu-rig/new-one", [m["id"] for m in json.loads(data)["data"]])
-
-    def test_unknown_model_404_lists_published(self):
-        status, _, data = self.chat(model="gpu-rig/nope")
-        self.assertEqual(status, 404)
-        self.assertIn("gpu-rig/coder-7b", json.loads(data)["error"]["message"])
-
-    def test_cold_start_loads_then_forwards_body_unchanged(self):
-        status, _, data = self.chat()
-        self.assertEqual(status, 200)
-        payload = json.loads(data)
-        self.assertEqual(payload["choices"][0]["message"]["content"], "ok")
-        self.assertEqual(payload["echo_model"], "gpu-rig/coder-7b")
-        self.assertEqual(self.starts(), ["coder-7b"])
-
-    def test_warm_request_does_not_start(self):
-        self.chat()
-        self.chat()
-        self.assertEqual(self.starts(), ["coder-7b"])
-
-    def test_concurrent_cold_requests_share_one_start(self):
-        results = []
-        threads = [threading.Thread(target=lambda: results.append(self.chat()[0])) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(results, [200] * 4)
-        self.assertEqual(self.starts(), ["coder-7b"])
-
-    def test_streaming_passthrough(self):
-        status, ctype, data = self.chat(stream=True)
-        self.assertEqual(status, 200)
-        self.assertEqual(ctype, "text/event-stream")
-        self.assertIn(b'"content":"o"', data)
-        self.assertTrue(data.rstrip().endswith(b"data: [DONE]"))
-
-    def test_busy_rig_returns_503(self):
-        os.environ["FAKE_RIG_START"] = "busy"
-        status, _, data = self.chat()
-        self.assertEqual(status, 503)
-        self.assertIn("rig busy: busy: bench", json.loads(data)["error"]["message"])
-
-    def test_no_capacity_returns_503(self):
-        os.environ["FAKE_RIG_START"] = "nocap"
-        self.assertEqual(self.chat()[0], 503)
-
-    def test_failed_load_returns_502(self):
-        os.environ["FAKE_RIG_START"] = "fail"
-        status, _, data = self.chat()
-        self.assertEqual(status, 502)
-        self.assertIn("container exited", json.loads(data)["error"]["message"])
+    return {"settings": settings, "lib": lib, "starts": starts}
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture
+def client(env):
+    app = create_app(env["settings"], upstream_transport=httpx.MockTransport(fake_llama))
+    with TestClient(app) as c:
+        yield c
+
+
+def chat(client, model="gpu-rig/coder-7b", **extra):
+    return client.post("/v1/chat/completions",
+                       json={"model": model, "messages": [{"role": "user", "content": "hi"}], **extra})
+
+
+def test_models_lists_profiles_with_context(client):
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert set(models) == {"gpu-rig/coder-7b", "gpu-rig/chat-27b"}
+    assert models["gpu-rig/chat-27b"]["context_length"] == 65536
+
+
+def test_models_follow_library_edits(client, env):
+    lib = json.loads(env["lib"].read_text())
+    lib["remote_profiles"].append({"id": "new-one", "model": "m", "ctx_size": 4096})
+    env["lib"].write_text(json.dumps(lib))
+    os.utime(env["lib"], (time.time() + 5, time.time() + 5))
+    assert "gpu-rig/new-one" in [m["id"] for m in client.get("/v1/models").json()["data"]]
+
+
+def test_unknown_model_404_lists_published(client):
+    r = chat(client, model="gpu-rig/nope")
+    assert r.status_code == 404
+    assert "gpu-rig/coder-7b" in r.json()["error"]["message"]
+
+
+def test_cold_start_loads_then_forwards_body_unchanged(client, env):
+    r = chat(client)
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "ok"
+    assert r.json()["echo_model"] == "gpu-rig/coder-7b"
+    assert env["starts"]() == ["coder-7b"]
+
+
+def test_warm_request_does_not_start(client, env):
+    chat(client)
+    chat(client)
+    assert env["starts"]() == ["coder-7b"]
+
+
+def test_streaming_passthrough(client):
+    with client.stream("POST", "/v1/chat/completions",
+                       json={"model": "gpu-rig/coder-7b", "stream": True, "messages": []}) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        data = b"".join(r.iter_bytes())
+    assert b'"content":"o"' in data and data.rstrip().endswith(b"data: [DONE]")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_context_overflow_translated_to_openai_shape(client, stream):
+    r = client.post("/v1/chat/completions", json={
+        "model": "gpu-rig/coder-7b", "stream": stream, "messages": [{"role": "user", "content": "OVERFLOW"}]})
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["code"] == "context_length_exceeded"
+    assert err["type"] == "invalid_request_error"
+    assert "maximum context length is 16384 tokens" in err["message"]
+    assert err["n_prompt_tokens"] == 20030
+
+
+def test_other_upstream_errors_pass_through():
+    raw = json.dumps({"error": {"type": "server_error", "message": "x"}}).encode()
+    assert translate_upstream_error(500, raw) == (500, raw)
+    assert translate_upstream_error(400, raw) == (400, raw)
+    assert translate_upstream_error(400, b"not json") == (400, b"not json")
+
+
+def test_tokenize_routes_by_model(client, env):
+    r = client.post("/tokenize", json={"model": "gpu-rig/coder-7b", "content": "a b c"})
+    assert r.status_code == 200 and r.json()["tokens"] == [0, 1, 2]
+    assert env["starts"]() == ["coder-7b"]
+
+
+def test_busy_rig_returns_503(client, env, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_START", "busy")
+    r = chat(client)
+    assert r.status_code == 503
+    assert "rig busy: busy: bench" in r.json()["error"]["message"]
+
+
+def test_no_capacity_returns_503(client, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_START", "nocap")
+    assert chat(client).status_code == 503
+
+
+def test_failed_load_returns_502(client, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_START", "fail")
+    r = chat(client)
+    assert r.status_code == 502 and "container exited" in r.json()["error"]["message"]
+
+
+def test_locked_rig_is_retried(client, env, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_START", "locked-once")
+    assert chat(client).status_code == 200
+    assert env["starts"]() == ["coder-7b", "coder-7b"]
+
+
+def test_concurrent_cold_requests_share_one_start(env):
+    rig = Rig(env["settings"].rig_command, 30)
+
+    async def go():
+        return await asyncio.gather(*(rig.ensure_ready("coder-7b") for _ in range(4)))
+
+    assert asyncio.run(go()) == [UPSTREAM_PORT] * 4
+    assert env["starts"]() == ["coder-7b"]
+
+
+def test_start_failure_reaches_every_waiter(env, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_START", "nocap")
+    rig = Rig(env["settings"].rig_command, 30)
+
+    async def go():
+        return await asyncio.gather(*(rig.ensure_ready("coder-7b") for _ in range(3)), return_exceptions=True)
+
+    results = asyncio.run(go())
+    assert all(isinstance(r, RigUnavailable) and r.status == 503 for r in results)
+    assert env["starts"]() == ["coder-7b"]

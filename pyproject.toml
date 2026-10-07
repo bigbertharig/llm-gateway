@@ -4,11 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-gateway"
-version = "0.2.0"
+version = "0.3.0"
 description = "OpenAI-compatible gateway that loads Big Bertha rig models on demand"
 requires-python = ">=3.11"
-# Standard library only: deploys to the rig or the Pi with no venv and no package install.
-dependencies = []
+dependencies = [
+  "fastapi>=0.142,<1",
+  "httpx>=0.28,<1",
+  "uvicorn[standard]>=0.54,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9,<10",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

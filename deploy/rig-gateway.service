@@ -20,7 +20,7 @@ Environment=GATEWAY_BIND=127.0.0.1
 Environment=GATEWAY_PORT=8080
 Environment=START_TIMEOUT_SECONDS=900
 Environment=REQUEST_TIMEOUT_SECONDS=900
-ExecStart=/usr/bin/python3 -m llm_gateway
+ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m llm_gateway
 Restart=on-failure
 RestartSec=5
 
