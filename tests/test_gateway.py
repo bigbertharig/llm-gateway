@@ -212,3 +212,19 @@ def test_start_failure_reaches_every_waiter(env, monkeypatch):
     results = asyncio.run(go())
     assert all(isinstance(r, RigUnavailable) and r.status == 503 for r in results)
     assert env["starts"]() == ["coder-7b"]
+
+
+def test_usage_logged_from_timings(caplog):
+    from llm_gateway.app import log_usage
+    body = json.dumps({"choices": [], "timings": {"cache_n": 19000, "prompt_n": 412, "prompt_ms": 950,
+                                                  "prompt_per_second": 433.7, "predicted_n": 20,
+                                                  "predicted_per_second": 28.1}}).encode()
+    stream_tail = b'data: {"choices":[]}\n\ndata: ' + body + b"\n\ndata: [DONE]\n\n"
+    with caplog.at_level("INFO", logger="llm_gateway"):
+        log_usage("chat-27b", 200, body)
+        log_usage("chat-27b", 200, stream_tail)
+        log_usage("chat-27b", 400, b'{"error":{}}')
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines[0] == lines[1]
+    assert "cached=19000 prompt=412 prompt_s=0.9" in lines[0]
+    assert "(no timings)" in lines[2]

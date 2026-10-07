@@ -54,6 +54,32 @@ def translate_upstream_error(status: int, content: bytes) -> tuple[int, bytes]:
     return 400, json.dumps(payload).encode()
 
 
+def log_usage(profile: str, status: int, payload: bytes) -> None:
+    """One line per inference request: prompt size, cache reuse, speed (from llama `timings`).
+
+    `cached` is the prompt prefix llama-server reused from its cache; `prompt` is what it actually
+    had to process. Watching these while changing client settings shows what each setting costs.
+    """
+    t: dict = {}
+    for chunk in reversed(payload.split(b"\n")):
+        line = chunk.strip().removeprefix(b"data:").strip()
+        if b'"timings"' not in line:
+            continue
+        try:
+            t = json.loads(line).get("timings") or {}
+        except ValueError:
+            pass
+        break
+    if not t:
+        log.info("usage profile=%s status=%s (no timings)", profile, status)
+        return
+    log.info(
+        "usage profile=%s status=%s cached=%s prompt=%s prompt_s=%.1f prompt_tps=%.0f gen=%s gen_tps=%.1f",
+        profile, status, t.get("cache_n"), t.get("prompt_n"), (t.get("prompt_ms") or 0) / 1000,
+        t.get("prompt_per_second") or 0, t.get("predicted_n"), t.get("predicted_per_second") or 0,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -107,8 +133,12 @@ def create_app(
             raise GatewayError(400, "body must be a JSON object", "invalid_request")
         return raw, body
 
-    async def forward(request: Request, path: str, raw: bytes, port: int, stream: bool) -> Response:
-        """Send the body unchanged (llama-server ignores `model`) and relay the reply."""
+    async def forward(request: Request, path: str, raw: bytes, port: int, stream: bool,
+                      profile: str | None = None) -> Response:
+        """Send the body unchanged (llama-server ignores `model`) and relay the reply.
+
+        With `profile` set, logs the request's token usage (see log_usage).
+        """
         client: httpx.AsyncClient = request.app.state.http
         upstream_req = client.build_request(
             "POST", f"http://{s.upstream_host}:{port}{path}",
@@ -122,17 +152,23 @@ def create_app(
         if not stream or resp.status_code >= 400:
             content = await resp.aread()
             await resp.aclose()
+            if profile:
+                log_usage(profile, resp.status_code, content)
             status, content = translate_upstream_error(resp.status_code, content)
             return Response(content, status, media_type=ctype.split(";")[0])
 
         async def relay():
             # Starlette cancels this on client disconnect; closing the upstream stream then
             # makes llama-server stop generating.
+            tail = b""
             try:
                 async for chunk in resp.aiter_raw():
+                    tail = (tail + chunk)[-8192:]  # llama puts `timings` in the final chunk
                     yield chunk
             finally:
                 await resp.aclose()
+                if profile:
+                    log_usage(profile, resp.status_code, tail)
 
         return StreamingResponse(relay(), resp.status_code, media_type=ctype.split(";")[0],
                                  headers={"Cache-Control": "no-cache"})
@@ -164,8 +200,9 @@ def create_app(
     @app.post("/v1/completions")
     async def completions(request: Request):
         raw, body = await read_json(request)
-        port = await rig.ensure_ready(resolve_profile(body.get("model")))
-        return await forward(request, request.url.path, raw, port, stream=bool(body.get("stream")))
+        pid = resolve_profile(body.get("model"))
+        port = await rig.ensure_ready(pid)
+        return await forward(request, request.url.path, raw, port, stream=bool(body.get("stream")), profile=pid)
 
     @app.post("/tokenize")
     @app.post("/detokenize")
