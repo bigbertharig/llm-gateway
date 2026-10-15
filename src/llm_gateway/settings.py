@@ -12,7 +12,7 @@ class Settings:
 
     # How to run the rig mode selector. On the rig: "rig". On the Pi: "ssh rig rig".
     rig_command: tuple[str, ...]
-    # remote_profiles source (shared drive path differs per host: /mnt/shared vs /media/bryan/shared).
+    # model_roles.json in the benchmarking repo (on the rig: the rig-local checkout).
     profiles_path: Path
     # Host that serves the profile ports. 127.0.0.1 when the gateway runs on the rig.
     upstream_host: str
@@ -31,7 +31,7 @@ class Settings:
             rig_command=tuple(shlex.split(os.getenv("RIG_COMMAND", "rig"))),
             profiles_path=Path(os.getenv(
                 "PROFILES_PATH",
-                "/mnt/shared/plans/shoulders/benchmarking/model_task_library.json",
+                "/home/bryan/llm_orchestration/shared/plans/shoulders/benchmarking/model_roles.json",
             )),
             upstream_host=os.getenv("UPSTREAM_HOST", "127.0.0.1"),
             model_prefix=os.getenv("MODEL_PREFIX", "gpu-rig"),

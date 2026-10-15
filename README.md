@@ -14,10 +14,11 @@ Roo "local" profile -> 127.0.0.1:8080 (desktop) --ssh tunnel--> rig 127.0.0.1:80
 
 ## Models
 
-Everything comes from `remote_profiles` in
-`shared/plans/shoulders/benchmarking/model_task_library.json`. Each profile is published as
-`gpu-rig/<id>` with its `context_length`. The file is re-read when it changes, so adding or
-changing a profile needs no restart. Placement (which GPUs, which port) is decided by `rig`.
+Everything comes from `remote_profiles` in the benchmarking repo's `model_roles.json`, resolved
+against `model_registry.json` by that repo's `scripts/active/model_library.py`. Each profile is
+published as `gpu-rig/<id>` with its `context_length`. Both files are re-read when they change,
+so adding or changing a profile needs no restart. Placement (which GPUs, which port) is decided
+by `rig`.
 
 ## API
 
@@ -47,7 +48,7 @@ Concurrent cold requests for one profile share a single load.
 | Variable | Default | Notes |
 |---|---|---|
 | `RIG_COMMAND` | `rig` | on the Pi: `ssh rig rig` |
-| `PROFILES_PATH` | `/mnt/shared/plans/shoulders/benchmarking/model_task_library.json` | Rig unit: rig-local checkout `~/llm_orchestration/shared/plans/...`. Pi: `/media/bryan/shared/...` |
+| `PROFILES_PATH` | `/home/bryan/llm_orchestration/shared/plans/shoulders/benchmarking/model_roles.json` | rig-local checkout; on the Pi: `/media/bryan/shared/plans/shoulders/benchmarking/model_roles.json` |
 | `UPSTREAM_HOST` | `127.0.0.1` | host serving profile ports |
 | `MODEL_PREFIX` | `gpu-rig` | |
 | `GATEWAY_BIND` / `GATEWAY_PORT` | `127.0.0.1` / `8080` | loopback only. No auth until it is LAN-exposed |
