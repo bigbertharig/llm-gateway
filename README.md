@@ -47,7 +47,7 @@ Concurrent cold requests for one profile share a single load.
 | Variable | Default | Notes |
 |---|---|---|
 | `RIG_COMMAND` | `rig` | on the Pi: `ssh rig rig` |
-| `PROFILES_PATH` | `/mnt/shared/plans/shoulders/benchmarking/model_task_library.json` | Pi: `/media/bryan/shared/...` |
+| `PROFILES_PATH` | `/mnt/shared/plans/shoulders/benchmarking/model_task_library.json` | Rig unit: rig-local checkout `~/llm_orchestration/shared/plans/...`. Pi: `/media/bryan/shared/...` |
 | `UPSTREAM_HOST` | `127.0.0.1` | host serving profile ports |
 | `MODEL_PREFIX` | `gpu-rig` | |
 | `GATEWAY_BIND` / `GATEWAY_PORT` | `127.0.0.1` / `8080` | loopback only. No auth until it is LAN-exposed |

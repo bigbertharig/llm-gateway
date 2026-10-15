@@ -13,7 +13,7 @@ Group=bryan
 WorkingDirectory=/home/bryan/llm-gateway
 Environment=PYTHONPATH=/home/bryan/llm-gateway/src
 Environment=RIG_COMMAND=/usr/local/bin/rig
-Environment=PROFILES_PATH=/mnt/shared/plans/shoulders/benchmarking/model_task_library.json
+Environment=PROFILES_PATH=/home/bryan/llm_orchestration/shared/plans/shoulders/benchmarking/model_task_library.json
 Environment=UPSTREAM_HOST=127.0.0.1
 Environment=MODEL_PREFIX=gpu-rig
 Environment=GATEWAY_BIND=127.0.0.1
