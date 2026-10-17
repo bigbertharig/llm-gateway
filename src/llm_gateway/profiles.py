@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import threading
 from pathlib import Path
@@ -11,34 +10,19 @@ class ProfileError(RuntimeError):
 
 
 class Profiles:
-    """remote_profiles from the benchmarking repo's model_roles.json, re-read whenever it changes.
+    """remote_profiles.json (written by tools/generate_profiles.py), re-read whenever it changes.
 
-    In the benchmarking repo a remote profile names a model and a registry profile, and the
-    repo's scripts/active/model_library.py resolves them to ctx_size, gguf_path, and so on.
-    A file without that library beside it is read as already-resolved profiles.
+    The file is already resolved against the model registry: every profile carries its ctx_size,
+    gguf_path and launch settings, so the gateway never imports the benchmarking repo.
     """
 
     def __init__(self, path: Path):
         self.path = path
-        self._library = path.parent / "scripts" / "active" / "model_library.py"
         self._lock = threading.Lock()
-        self._stamp: tuple | None = None
+        self._stamp: float | None = None
         self._profiles: dict[str, dict] = {}
 
-    def _watched(self) -> list[Path]:
-        if self._library.is_file():
-            return [self.path, self.path.parent / "model_registry.json"]
-        return [self.path]
-
     def _load(self) -> dict[str, dict]:
-        if self._library.is_file():
-            spec = importlib.util.spec_from_file_location("rig_model_library", self._library)
-            library = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(library)
-            return library.remote_profiles(
-                library.load_roles(self.path),
-                library.load_registry(self.path.parent / "model_registry.json"),
-            )
         items = json.loads(self.path.read_text(encoding="utf-8")).get("remote_profiles")
         if not isinstance(items, list):
             return {}
@@ -47,7 +31,7 @@ class Profiles:
     def all(self) -> dict[str, dict]:
         with self._lock:
             try:
-                stamp = tuple(p.stat().st_mtime for p in self._watched())
+                stamp = self.path.stat().st_mtime
             except OSError as exc:
                 raise ProfileError(f"cannot read {self.path}: {exc}") from exc
             if stamp != self._stamp:

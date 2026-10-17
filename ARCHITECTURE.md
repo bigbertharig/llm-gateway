@@ -6,10 +6,16 @@ into rig mode-selector calls and then proxies bytes.
 ## Ownership
 
 The gateway owns:
-- the OpenAI-compatible endpoint and model list (from `remote_profiles`)
+- the offer: which models are published remotely and on which GPU shape (`OFFER` in
+  `tools/generate_profiles.py`), resolved against the model registry into `remote_profiles.json`
+- the OpenAI-compatible endpoint and model list (from `remote_profiles.json`)
 - mapping `gpu-rig/<id>` to a profile, rejecting anything unpublished
 - turning a request for an unloaded profile into one `rig start remote <id>` (single-flight)
 - translating rig exit codes into HTTP errors
+
+The model registry (benchmarking repo `model_registry.json`) owns how each model loads (GGUF,
+context, batch, extra args per named profile). Benchmarking lessons land there, and re-running
+the generator carries them into the offer.
 
 The rig mode selector (`llm_orchestration/shared/scripts/rig/rig.py`) owns:
 - modes (idle / orchestration / bench / remote) and the busy/--force rules
