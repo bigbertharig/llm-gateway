@@ -3,6 +3,9 @@
 Status 2026-10-17: Phase A built (lease API, claims, placement, observed status, detached rig loads,
 gateway cold loads through the manager). Phases B-D and the rig guards are next (see Migration).
 
+Design knowledge the manager has to balance (host RAM budget, cache policy per use, layouts, more
+than one rig): [DESIGN_NOTES.md](DESIGN_NOTES.md).
+
 ## Two layers
 
 | | Pi: controller management (this repo) | Rig: hardware management (`llm_orchestration/shared/scripts/rig/`) |
