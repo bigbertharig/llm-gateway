@@ -315,3 +315,5 @@ def test_rig_arguments_survive_ssh():
     assert shlex.split(remote_line) == ["lease", "acquire", "--spec", spec]
     local = Rig(("rig",), 30)
     assert local.argv("claim", "add", "x", "--note", "two words") == ["rig", "claim", "add", "x", "--note", "two words"]
+    windows = Rig((r"C:\WINDOWS\System32\OpenSSH\ssh.exe", "rig", "/usr/local/bin/rig"), 30)
+    assert windows.argv("claim", "add", "x", "--note", "two words")[-1] == "'two words'"

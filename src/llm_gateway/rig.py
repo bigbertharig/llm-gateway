@@ -43,7 +43,8 @@ class Rig:
         self._loading_since: dict[str, float] = {}
         self._orphans: set[asyncio.Task] = set()
         # ssh joins its arguments into one string for the remote shell, which splits it again.
-        self._over_ssh = bool(command) and os.path.basename(command[0]) == "ssh"
+        # Matches ssh, ssh.exe and a full path to either (Windows OpenSSH).
+        self._over_ssh = bool(command) and os.path.splitext(os.path.basename(command[0]))[0].lower() == "ssh"
 
     def argv(self, *args: str) -> list[str]:
         """The full command line; over ssh each argument is shell-quoted so it arrives intact."""

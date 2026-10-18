@@ -86,6 +86,10 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 deploy/deploy_pi.sh                              # on the Pi: check profiles, copy repo to the rig, restart Pi services
 ```
 
+On Windows (another controller machine): `py -3 -m venv .venv`, `.venv\Scripts\python.exe -m pip install -e .[dev]`,
+then `powershell -ExecutionPolicy Bypass -File deploy\run_windows.ps1`. It needs ssh aliases `rig` and `rig-llm`
+(forwards the rig's model ports), and the Pi's gateway stopped first: one controller at a time.
+
 On the Pi it runs as `pi-gateway.service`, with `pi-rig-tunnel.service` forwarding the rig's
 remote ports 11434-11441 to Pi loopback (both enabled at boot; nothing loads until asked). The rig
 gets a copy of this repo only so `rig start remote` can read `remote_profiles.json`.
