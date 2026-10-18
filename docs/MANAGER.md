@@ -30,9 +30,19 @@ build) results fall back to local storage when the shared drive is gone and sync
    by the rig under the lease store's own lock, in the orchestration schema (`gpu_leases.py`). Every
    write is mirrored to the drive (`/mnt/shared/gpus/`) for orchestration workers when it is mounted.
    A controller reads the record from `rig observe` and asks the rig to change it, so the record
-   survives a lost network, and another controller (desktop, laptop) can take over later without a
-   migration. The Pi is the only controller today; with several, the rig would also record which one
-   is active so two cannot issue commands at once.
+   survives a lost network, and another controller (desktop, laptop) can take over without a
+   migration.
+1a. **One report, one active controller.** The rig also keeps the active-controller record and the
+   plan queue (`hw_plan.py`, rig-local `shared/brain/hw/plan.json`). `rig observe` is the single
+   report: "now" (GPUs, profiles, leases, guard) and "next" (the plan). The active controller writes
+   the plan and heartbeats; the rig refuses plan, lease and claim writes from any other controller.
+   A controller takes control when there is none, when the active one's heartbeat is older than 120 s
+   (crashed), or by explicit handoff (`rigctl takeover`); otherwise it is read-only (409). A crashed
+   or second controller just reads the report and picks up.
+1b. **The rig works through the plan by itself** (`rig-plan.service`): one item at a time, in order,
+   then waits. Loaded models stay loaded unless an `unload` item says otherwise. With no controller
+   connected it finishes the queue. Item kinds today: `load`, `unload` (jobs such as benchmark lanes
+   are the next kind). This mirrors the orchestration task queue in a single file.
 2. **No lease, no load.** Every runtime starts under a lease naming its GPUs and port. Every launcher
    already goes through `run_runtime.sh` (brain, workers, split workers, `rig.py`, `run_campaign.py`,
    integration lanes, runtime smoke), so that is where Phase D enforces it.
@@ -65,12 +75,13 @@ build) results fall back to local storage when the shared drive is gone and sync
 ## Interactive profiles (Roo)
 
 A cold request for `gpu-rig/<id>`: the manager leases cards for the profile (`interactive`, owner
-`llm-gateway`), then sends one command, `rig start remote <id> --gpus .. --port .. --lease .. --detach`.
-The rig runs the load as its own systemd job (`rig-load-<id>`, `hw_jobs.py`), waits its turn for the
-rig-wide load lock, and records the profile as `loading` then `ready`; the request is held until
-then. A failed job's log tail comes back as the 502 message and the lease is released. The
-reconciler renews leases with a load or runtime behind them and releases orphans. `rigctl unload`
-stops the profile and releases its lease.
+`llm-gateway`), then queues a `load` item in the rig's plan (`rig plan add`) with the GPUs, port,
+lease and cache size it chose. The rig's executor runs it (`rig start remote ... --queue`), waiting its
+turn for the rig-wide load lock, and records the profile as `loading` then `ready`; the request is
+held until then. A failed item's result comes back as the 502 message and the lease is released. The
+reconciler heartbeats, renews leases with a load, runtime or queued item behind them, and releases
+orphans. `rigctl unload` queues an `unload` item and releases the lease when it is done.
+`rigctl status` shows the controller (this one, the active one) and the last plan items.
 
 ## Requirements gathered (2026-10-17 benchmark lanes)
 

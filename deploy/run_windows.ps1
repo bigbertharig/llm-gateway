@@ -29,6 +29,7 @@ $env:MODEL_PREFIX = "gpu-rig"
 $env:GATEWAY_BIND = "127.0.0.1"
 $env:GATEWAY_PORT = "8080"
 $env:RIG_MANAGER = "on"
+$env:RIG_CONTROLLER_ID = "desktop"
 $env:START_TIMEOUT_SECONDS = "900"
 $env:REQUEST_TIMEOUT_SECONDS = "900"
 

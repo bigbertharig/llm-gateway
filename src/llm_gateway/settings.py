@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import shlex
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +51,8 @@ class Settings:
     api_keys: tuple[str, ...] = ()
     # Rig manager (docs/MANAGER.md). Off: cold loads are a plain `rig start remote <id>`.
     manager_enabled: bool = False
+    # This controller's id on the rig (one active controller at a time), e.g. pi or desktop.
+    controller_id: str = "controller"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,6 +67,7 @@ class Settings:
             request_timeout_seconds=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900")),
             api_keys=read_api_keys(Path(os.getenv("GATEWAY_API_KEYS_FILE", str(DEFAULT_API_KEYS_FILE)))),
             manager_enabled=os.getenv("RIG_MANAGER", "off").lower() in ("on", "1", "true", "yes"),
+            controller_id=os.getenv("RIG_CONTROLLER_ID") or socket.gethostname().lower(),
         )
 
     def validate(self) -> None:

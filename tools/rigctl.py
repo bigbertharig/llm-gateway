@@ -10,6 +10,10 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
     rigctl release LEASE --owner lanes | --force
     rigctl claim NAME --gpus 0 [--note "roo testing"]      rigctl unclaim NAME
     rigctl load PROFILE [--claim NAME]                     rigctl unload PROFILE
+    rigctl controller                                      who is in control (this one, the active one)
+    rigctl takeover                                        explicit handoff: this controller takes control
+    rigctl plan [--json]                                   the rig's queue (now and next)
+    rigctl cancel ITEM                                     cancel a queued plan item
 
 Exit codes follow `rig`: 0 ok, 1 failed, 2 refused (held, not admitted, wrong owner), 4 no capacity.
 Env: RIGCTL_URL (default http://127.0.0.1:8080), RIGCTL_KEY (bearer key, if the gateway has keys).
@@ -51,8 +55,20 @@ def need(text: str) -> dict:
     return {"min_vram_mb": int(lo), **({"max_vram_mb": int(hi)} if hi else {})}
 
 
+def print_plan(plan: dict, limit: int = 8) -> None:
+    for i in (plan.get("items") or [])[-limit:]:
+        result = str(i.get("result") or "").splitlines()[-1:] if i["state"] in ("failed",) else []
+        print(f"  plan {i['id']:<20} {i['state']:<9} {i['kind']:<6} {json.dumps(i['args'])}"
+              + (f"  ({result[0][:120]})" if result else ""))
+
+
 def print_status(s: dict) -> None:
     print(f"rig mode {s.get('mode')}  observed {s.get('observed_at')}  {s.get('summary')}")
+    c = s.get("controller") or {}
+    active = c.get("active") or {}
+    print(f"controller: this={c.get('this')} {'IN CONTROL' if c.get('in_control') else 'read-only'}; "
+          f"active={active.get('id', 'none')}" + (" (stale)" if active.get("stale") else "")
+          + (f", heartbeat {active.get('heartbeat_at')}" if active else ""))
     g = s.get("guard")
     if g:
         print(f"guard {g['level']} (loads {'admitted' if g['loads_admitted'] else 'held'}): {g['why']}  "
@@ -64,6 +80,7 @@ def print_status(s: dict) -> None:
         claim = f" claim={g['claim']}" if g["claim"] else ""
         print(f"  GPU{g['gpu']} {g['verdict']:<14} {held:<44}{claim}  {obs['used_mb']} MB "
               f"{obs['util_pct']}% {obs['power_w']} W  {','.join(obs['containers']) or '-'}")
+    print_plan(s.get("plan") or {}, limit=5)
     for j in s.get("jobs", []):
         print(f"  job {j['job']} {j['active_state']}" + (f"\n{j['log_tail']}" if j.get("log_tail") else ""))
     if s.get("last_error"):
@@ -95,7 +112,26 @@ def main() -> int:
     s = sub.add_parser("unclaim"); s.add_argument("name")
     s = sub.add_parser("load"); s.add_argument("profile"); s.add_argument("--claim")
     s = sub.add_parser("unload"); s.add_argument("profile")
+    sub.add_parser("controller")
+    sub.add_parser("takeover")
+    s = sub.add_parser("plan"); s.add_argument("--json", action="store_true")
+    s = sub.add_parser("cancel"); s.add_argument("item")
     a = ap.parse_args()
+
+    if a.cmd == "controller":
+        code, out = call("GET", "/v1/manager/controller")
+    elif a.cmd == "takeover":
+        code, out = call("POST", "/v1/manager/controller/claim", {"force": True})
+    elif a.cmd == "plan":
+        code, out = call("GET", "/v1/manager/plan")
+        if code == 200 and not a.json:
+            print_plan(out, limit=20)
+            return 0
+    elif a.cmd == "cancel":
+        code, out = call("POST", f"/v1/manager/plan/{a.item}/cancel")
+    if a.cmd in ("controller", "takeover", "plan", "cancel"):
+        print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
 
     if a.cmd == "status":
         code, out = call("GET", "/v1/manager/status")

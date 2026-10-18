@@ -78,21 +78,79 @@ FAKE_RIG = textwrap.dedent("""\
     import json, os, sys, time
     path = os.environ["FAKE_RIG_STATE"]
     st = json.load(open(path))
+    st.setdefault("controller", None); st.setdefault("plan_items", [])
     a = sys.argv[1:]
     def save(): json.dump(st, open(path, "w"))
+    def now_iso(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     def refresh():
         for p in st["profiles"].values():
             if p["state"] == "loading" and time.time() >= p["ready_at"]:
                 p["state"] = "ready"
+        for i in st["plan_items"]:  # the executor: a running load is done once its profile serves
+            prof = st["profiles"].get(i["args"]["profile"])
+            if i["state"] == "running" and i["kind"] == "load" and prof and prof["state"] in ("ready", "gone"):
+                i["state"] = "done"; i["result"] = "ready"
     refresh(); save()
     def fail(kind, msg):
         print(json.dumps({"error": msg, "kind": kind})); sys.exit(1)
     def opts(xs):
-        return dict(zip(xs[0::2], xs[1::2]))
-    if a[:2] == ["lease", "list"]:
-        print(json.dumps({"leases": st["leases"], "claims": st["claims"]})); sys.exit(0)
+        d, i = {}, 0
+        while i < len(xs):
+            if xs[i] == "--force": d["--force"] = True; i += 1
+            else: d[xs[i]] = xs[i + 1] if i + 1 < len(xs) else None; i += 2
+        return d
+    def require(o):
+        c = st["controller"]
+        if c and o.get("--controller") != c["id"]:
+            fail("not_controller", f"controller {o.get('--controller')!r} is not active (active: {c['id']})")
+    def plan_report():
+        return {"controller": st["controller"], "items": st["plan_items"],
+                "next": [i for i in st["plan_items"] if i["state"] in ("queued", "running")]}
+    if a[:2] == ["controller", "claim"]:
+        o = opts(a[2:]); c = st["controller"]
+        if c and c["id"] != o["--id"] and not o.get("--force") and not st.get("controller_stale"):
+            fail("not_controller", f"controller {c['id']} (10.0.0.2) is active; use a handoff")
+        prev = c["id"] if c and c["id"] != o["--id"] else None
+        st["controller"] = {"id": o["--id"], "host": "test", "since": now_iso(), "heartbeat_at": now_iso(),
+                            **({"took_over_from": prev} if prev else {})}
+        st["controller_stale"] = False
+        save(); print(json.dumps({"controller": st["controller"]})); sys.exit(0)
+    if a[:2] in (["controller", "heartbeat"], ["controller", "release"]):
+        o = opts(a[2:]); c = st["controller"]
+        if not c or c["id"] != o["--id"]:
+            fail("not_controller", f"controller {o['--id']!r} is not active (active: {c['id'] if c else 'none'})")
+        if a[1] == "release": st["controller"] = None
+        else: c["heartbeat_at"] = now_iso()
+        save(); print(json.dumps({"controller": st["controller"]})); sys.exit(0)
+    if a[:2] == ["plan", "add"]:
+        o = opts(a[2:]); require(o)
+        kind, args = o["--kind"], json.loads(o["--args"])
+        item = {"id": f"{kind}-{len(st['plan_items'])}", "kind": kind, "args": args, "state": "running",
+                "added_by": o["--controller"], "result": None}
+        mode = os.environ.get("FAKE_DETACH", "ok")
+        pid = args["profile"]
+        if kind == "load":
+            st.setdefault("starts", []).append({"profile": pid, "gpus": ",".join(str(g) for g in args["gpus"]),
+                                                "port": str(args["port"]), "lease": args["lease"],
+                                                "cache_ram": str(args["cache_ram"])})
+            if mode == "fail":
+                item.update(state="failed", result="error: boom: cudaMalloc failed: out of memory")
+            elif mode == "refuse":
+                item.update(state="failed", result="error: manager placed it on a busy GPU")
+            else:
+                st["profiles"][pid] = {"port": int(args["port"]), "gpus": args["gpus"], "state": "loading",
+                                       "lease": args["lease"], "ready_at": time.time() + 0.5}
+        else:
+            st["profiles"].pop(pid, None); item.update(state="done", result="unloaded")
+        st["plan_items"].append(item)
+        save(); print(json.dumps({"item": item})); sys.exit(0)
+    if a[:2] == ["plan", "cancel"]:
+        o = opts(a[3:]); require(o)
+        match = [i for i in st["plan_items"] if i["id"] == a[2]]
+        if not match: fail("not_found", f"no plan item {a[2]}")
+        match[0]["state"] = "cancelled"; save(); print(json.dumps({"item": match[0]})); sys.exit(0)
     if a[:2] == ["lease", "acquire"]:
-        spec = json.loads(a[3])
+        spec = json.loads(a[3]); require(opts(a[4:]))
         gpus = spec["gpu_ids"]
         for l in st["leases"]:
             if set(gpus) & set(l["gpu_ids"]):
@@ -108,53 +166,39 @@ FAKE_RIG = textwrap.dedent("""\
                  "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + spec["ttl_s"]))}
         st["leases"].append(lease); save(); print(json.dumps({"lease": lease})); sys.exit(0)
     if a[:2] in (["lease", "renew"], ["lease", "release"]):
-        o = opts(a[3:]); match = [l for l in st["leases"] if l["lease_id"] == a[2]]
+        o = opts(a[3:]); require(o); match = [l for l in st["leases"] if l["lease_id"] == a[2]]
         if not match:
             fail("not_found", f"lease not found: {a[2]}")
-        if o.get("--owner") != match[0]["owner"] and "--force" not in a:
+        if o.get("--owner") != match[0]["owner"] and not o.get("--force"):
             fail("ownership", f"lease {a[2]} is owned by {match[0]['owner']}, not {o.get('--owner')}")
         if a[1] == "renew":
             match[0]["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + int(o["--ttl"])))
             save(); print(json.dumps({"lease": match[0]})); sys.exit(0)
         st["leases"].remove(match[0]); save(); print(json.dumps({"released": a[2]})); sys.exit(0)
     if a[:2] == ["claim", "add"]:
-        o = opts(a[3:]); gpus = [int(g) for g in o["--gpus"].split(",")]
+        o = opts(a[3:]); require(o); gpus = [int(g) for g in o["--gpus"].split(",")]
         for c in st["claims"]:
             if c["name"] == a[2] or set(gpus) & set(c["gpu_ids"]):
                 fail("conflict", f"GPU {gpus} already claimed by {c['name']}")
         claim = {"name": a[2], "gpu_ids": gpus, "note": o.get("--note", "")}
         st["claims"].append(claim); save(); print(json.dumps({"claim": claim})); sys.exit(0)
     if a[:2] == ["claim", "remove"]:
+        require(opts(a[3:]))
         match = [c for c in st["claims"] if c["name"] == a[2]]
         if not match:
             fail("not_found", f"no claim {a[2]}")
         st["claims"].remove(match[0]); save(); print(json.dumps({"released": match[0]})); sys.exit(0)
     if a == ["observe"]:
         ctrs = list(st["containers"]) + [{"name": "rig-remote-" + k, "gpus": p["gpus"], "port": p["port"]}
-                                         for k, p in st["profiles"].items()]
+                                         for k, p in st["profiles"].items() if p["state"] != "gone"]
         ports = {str(p["port"]): k + ".gguf" for k, p in st["profiles"].items() if p["state"] == "ready"}
         print(json.dumps({"observed_at": "now", "mode": "remote" if st["profiles"] else "idle",
                           "gpus": st["gpus"], "containers": ctrs, "ports": ports, "profiles": st["profiles"],
                           "jobs": st["jobs"], "last_error": st.get("last_error"),
-                          "leases": st["leases"], "claims": st["claims"],
+                          "leases": st["leases"], "claims": st["claims"], "plan": plan_report(),
                           "guard": st.get("guard", {"level": "ok", "mem_available_mb": 20000})})); sys.exit(0)
     if a[:2] == ["status", "--json"]:
         print(json.dumps({"mode": "remote", "profiles": [{"id": k, **p} for k, p in st["profiles"].items()]}))
-        sys.exit(0)
-    if a[:2] == ["start", "remote"] and "--detach" in a:
-        pid = a[2]; opt = dict(zip(a[3::2], a[4::2]))
-        mode = os.environ.get("FAKE_DETACH", "ok")
-        st.setdefault("starts", []).append({"profile": pid, "gpus": opt["--gpus"], "port": opt["--port"],
-                                            "lease": opt["--lease"], "cache_ram": opt.get("--cache-ram")})
-        if mode == "refuse":
-            save(); print("error: manager placed it on a busy GPU"); sys.exit(4)
-        if mode == "fail":
-            st["jobs"].append({"job": "rig-load-" + pid, "active_state": "failed",
-                               "log_tail": "boom: cudaMalloc failed: out of memory"})
-        else:
-            st["profiles"][pid] = {"port": int(opt["--port"]), "gpus": [int(g) for g in opt["--gpus"].split(",")],
-                                   "state": "loading", "lease": opt["--lease"], "ready_at": time.time() + 0.5}
-        save(); print(json.dumps({"job": "rig-load-" + pid, "active_state": "active", "already_running": False}))
         sys.exit(0)
     if a[0] == "stop":
         st["profiles"].pop(a[1], None); save(); print("unloaded"); sys.exit(0)
@@ -205,7 +249,7 @@ def chat(c, model):
     return c.post("/v1/chat/completions", json={"model": model, "messages": [{"role": "user", "content": "hi"}]})
 
 
-def test_cold_request_takes_a_lease_and_hands_the_rig_one_job(menv):
+def test_cold_request_takes_a_lease_and_queues_one_load(menv):
     r = chat(menv["client"], "gpu-rig/small")
     assert r.status_code == 200 and r.json()["port"] == 11435
     (lease,) = menv["leases"]()
@@ -246,7 +290,7 @@ def test_failed_rig_job_releases_the_lease_and_reports_the_log(menv, monkeypatch
 def test_rig_refusal_releases_the_lease(menv, monkeypatch):
     monkeypatch.setenv("FAKE_DETACH", "refuse")
     r = chat(menv["client"], "gpu-rig/small")
-    assert r.status_code == 503 and "busy GPU" in r.json()["error"]["message"]
+    assert r.status_code == 502 and "busy GPU" in r.json()["error"]["message"]
     assert menv["leases"]() == []
 
 
@@ -321,3 +365,59 @@ def test_gone_runtime_is_cleared_and_its_lease_released(menv, monkeypatch):
     out = c.post("/v1/manager/reconcile").json()
     assert len(out["released"]) == 1
     assert menv["rig"]()["profiles"] == {} and menv["leases"]() == []
+
+
+# ------------------------------------------------------------------ one active controller
+
+def test_cold_request_claims_control_and_queues_the_load_in_the_rig_plan(menv):
+    assert chat(menv["client"], "gpu-rig/small").status_code == 200
+    st = menv["rig"]()
+    assert st["controller"]["id"] == "controller"
+    (item,) = st["plan_items"]
+    assert item["kind"] == "load" and item["state"] == "done" and item["added_by"] == "controller"
+    status = menv["client"].get("/v1/manager/status").json()
+    assert status["controller"]["in_control"] and status["plan"]["controller"]["id"] == "controller"
+
+
+def test_read_only_while_another_controller_is_active_then_handoff(menv):
+    st = menv["rig"]()
+    st["controller"] = {"id": "pi", "host": "10.0.0.2", "since": "t", "heartbeat_at": "t"}
+    menv["write"](st)
+    c = menv["client"]
+    r = chat(c, "gpu-rig/small")
+    assert r.status_code == 409 and "read-only" in r.json()["error"]["message"]
+    assert menv["leases"]() == []
+    ctl = c.get("/v1/manager/controller").json()
+    assert ctl["in_control"] is False and ctl["active"]["id"] == "pi"
+    taken = c.post("/v1/manager/controller/claim", json={"force": True}).json()
+    assert taken["taken"] and taken["active"]["took_over_from"] == "pi"
+    assert chat(c, "gpu-rig/small").status_code == 200
+
+
+def test_stale_controller_is_taken_over(menv):
+    st = menv["rig"]()
+    st["controller"] = {"id": "pi", "host": "10.0.0.2", "since": "t", "heartbeat_at": "old"}
+    st["controller_stale"] = True
+    menv["write"](st)
+    assert chat(menv["client"], "gpu-rig/small").status_code == 200
+    assert menv["rig"]()["controller"]["took_over_from"] == "pi"
+
+
+def test_losing_control_makes_the_manager_read_only(menv):
+    c = menv["client"]
+    assert chat(c, "gpu-rig/small").status_code == 200
+    st = menv["rig"]()
+    st["controller"] = {"id": "desktop", "host": "10.0.0.4", "since": "t", "heartbeat_at": "t"}
+    menv["write"](st)
+    out = c.post("/v1/manager/reconcile").json()
+    assert out["in_control"] is False and "lost control" in out["note"]
+    assert c.post("/v1/manager/claims", json={"name": "x", "gpu_ids": [2]}).status_code == 409
+
+
+def test_unload_is_a_plan_item(menv):
+    c = menv["client"]
+    assert chat(c, "gpu-rig/small").status_code == 200
+    out = c.post("/v1/manager/profiles/small/unload").json()
+    assert out["state"] == "done" and out["released"]
+    kinds = [i["kind"] for i in menv["rig"]()["plan_items"]]
+    assert kinds == ["load", "unload"]

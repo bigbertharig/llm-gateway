@@ -96,4 +96,30 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
     async def reconcile():
         return await manager.reconcile_once()
 
+    @r.get("/controller")
+    async def controller():
+        await manager.observe(fresh=True)
+        return manager.control()
+
+    @r.post("/controller/claim")
+    async def claim_control(request: Request):
+        """Take control: when there is none or it is stale; {"force": true} is a handoff."""
+        b = await _body(request)
+        taken = await manager.take_control(force=bool(b.get("force")))
+        await manager.observe(fresh=True)
+        return {"taken": taken, **manager.control()}
+
+    @r.post("/controller/release")
+    async def release_control():
+        await manager.release_control()
+        return manager.control()
+
+    @r.get("/plan")
+    async def plan():
+        return await manager.plan()
+
+    @r.post("/plan/{item_id}/cancel")
+    async def cancel_item(item_id: str):
+        return {"item": await manager.cancel_item(item_id)}
+
     return r
