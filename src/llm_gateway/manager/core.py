@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..rig import Rig, RigUnavailable
-from . import placement
+from . import memory, placement
 from .errors import ManagerError
 from .status import gpu_rows, is_expired
 from .store import RigRecord
@@ -145,12 +145,19 @@ class Manager:
         The rig queues and runs the job (one load at a time is its rule, not ours). Past the start
         timeout the caller gets a 504 and the job keeps going; the lease stays with it.
         """
+        use = profile.get("use", "chat")
+        guard = (await self.observe(fresh=True)).get("guard") or {}
+        cache_mib = memory.cache_ram_mib(use, guard.get("mem_available_mb"))
         lease = await self.acquire(controller="interactive", owner=OWNER, run_id=f"profile-{profile_id}",
                                    gpus_needed=profile["gpus_needed"], claim=claim, ttl_s=INTERACTIVE_TTL_S,
-                                   model=profile.get("model", ""), purpose=f"gateway profile {profile_id}")
+                                   model=profile.get("model", ""),
+                                   purpose=f"gateway profile {profile_id} ({use}, cache {cache_mib} MiB)")
         lease_id = lease["lease_id"]
+        log.info("load %s: use %s, host prompt cache %s MiB (rig has %s MB available)",
+                 profile_id, use, cache_mib, guard.get("mem_available_mb"))
         try:
-            job = await self.rig.start_detached(profile_id, lease["gpu_ids"], lease["metadata"]["port"], lease_id)
+            job = await self.rig.start_detached(profile_id, lease["gpu_ids"], lease["metadata"]["port"], lease_id,
+                                                cache_mib)
         except RigUnavailable:
             await self.release(lease_id, OWNER, force=True)
             raise
@@ -163,6 +170,11 @@ class Manager:
             j = {x["job"]: x for x in obs.get("jobs", [])}.get(job.get("job"))
             if prof and prof.get("state") == "ready":
                 return
+            if prof and prof.get("state") == "gone":
+                await self.rig.stop_profile(profile_id)
+                await self.release(lease_id, OWNER, force=True)
+                raise RigUnavailable(502, f"{profile_id} runtime stopped right after loading "
+                                          f"(rig guard: {(obs.get('guard') or {}).get('why')})")
             seen = seen or bool(prof) or bool(j)
             if j and j.get("active_state") == "failed":
                 await self.release(lease_id, OWNER, force=True)
@@ -195,7 +207,14 @@ class Manager:
         Leases of other controllers are only reported (status shows them as stale or lease_idle).
         """
         obs = await self.observe(fresh=True)
-        backed = {p.get("lease") for p in obs.get("profiles", {}).values() if p.get("lease")}
+        # A profile whose runtime is gone (the rig guard freed RAM, or it crashed): clear it on the rig;
+        # its lease is then unbacked and released below.
+        for pid, prof in obs.get("profiles", {}).items():
+            if prof.get("state") == "gone":
+                log.info("reconcile: %s runtime is gone on the rig; clearing it", pid)
+                await self.rig.stop_profile(pid)
+        backed = {p.get("lease") for p in obs.get("profiles", {}).values()
+                  if p.get("lease") and p.get("state") != "gone"}
         # A load still waiting for its turn on the rig has a job but no rig profile yet.
         queued = {j["job"].removeprefix(JOB_PREFIX) for j in obs.get("jobs", [])
                   if j.get("active_state") in ("active", "activating")}

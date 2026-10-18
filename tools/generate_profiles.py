@@ -35,9 +35,12 @@ OFFERABLE_STATUSES = {"active", "candidate"}
 # max_vram_mb keeps 1060 profiles off the 3090 (rig place_profile honors it).
 ONE_1060 = {"min_vram_mb": 5800, "max_vram_mb": 8192}
 ONE_3090 = {"min_vram_mb": 20000}
+USES = ("chat", "worker", "benchmark")  # manager/memory.py USES
 
 # The offer. Model settings come from the registry profile named here, never from this list.
 # gpus_needed is one entry per card; tensor_split (optional) has one weight per entry, in order.
+# use (chat | worker | benchmark, default chat) lets the manager size the host prompt cache at load
+# time (src/llm_gateway/manager/memory.py).
 OFFER: list[dict[str, Any]] = [
     {"id": "chat-27b", "model": "qwen3.6:27b", "profile": "interactive", "default": True,
      "gpus_needed": [ONE_3090, ONE_1060],
@@ -111,6 +114,8 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             problems.append(f"{pid}: a gpus_needed entry has max_vram_mb below min_vram_mb")
         if split and len(str(split).split(",")) != len(gpus):
             problems.append(f"{pid}: tensor_split {split} needs one weight per gpus_needed entry ({len(gpus)})")
+        if item.get("use", "chat") not in USES:
+            problems.append(f"{pid}: use must be one of {USES}")
         if len(problems) > before:
             continue
         profiles.append({
@@ -120,6 +125,7 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             "status": r["status"],
             "description": item.get("description", ""),
             "default": bool(item.get("default", False)),
+            "use": item.get("use", "chat"),
             "gpus_needed": gpus,
             **({"tensor_split": str(split)} if split else {}),
             "gguf_path": r["gguf_path"],

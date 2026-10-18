@@ -47,7 +47,11 @@ What follows from it:
 | Offline conversations and coding sessions | on, bounded (build later) | multi-turn reuse is real; return to an earlier conversation reuses its prefix |
 
 The manager has to know what is running and what it is about to load, and set the cache (and ctx,
-slots, KV type) per use at load time: registry settings per model merged with a use profile. The
+slots, KV type) per use at load time: registry settings per model merged with a use profile.
+Built 2026-10-17 for the cache: `run_runtime.sh` floors `--cache-ram` at 0; each offered profile has
+a `use` (`OFFER` in `tools/generate_profiles.py`); `manager/memory.py` picks the cache per load from
+the use (chat 4096 MiB, worker and benchmark 0) and the rig's available RAM minus an 8 GB reserve,
+and passes it on the launch command. ctx, slots and KV type per use are still open. The
 rig guard enforces a RAM budget at admission: each runtime costs base + its cache cap + known
 host-resident parts, and a load is admitted only if the total stays under RAM minus a reserve.
 

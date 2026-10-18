@@ -111,3 +111,10 @@ def test_gpu_range_must_be_ordered():
 
 def test_1060_slot_excludes_the_3090():
     assert gen.ONE_1060["max_vram_mb"] < gen.ONE_3090["min_vram_mb"]
+
+
+def test_use_is_carried_and_checked():
+    doc, problems = build([{"id": "w", "model": "small:7b", "gpus_needed": [GPU], "use": "worker"}])
+    assert problems == [] and doc["remote_profiles"][0]["use"] == "worker"
+    _, problems = build([{"id": "x", "model": "small:7b", "gpus_needed": [GPU], "use": "party"}])
+    assert any("use must be one of" in p for p in problems), problems

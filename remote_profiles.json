@@ -9,6 +9,7 @@
       "status": "active",
       "description": "Strong general/coding model for interactive agents (Roo). 65k ctx on the 3090 + any free 1060.",
       "default": true,
+      "use": "chat",
       "gpus_needed": [
         {
           "min_vram_mb": 20000
@@ -36,6 +37,7 @@
       "status": "active",
       "description": "Fast small coder for scoped/bulk tasks. 16k ctx on any free 1060. No native tool calls.",
       "default": true,
+      "use": "chat",
       "gpus_needed": [
         {
           "min_vram_mb": 5800,
@@ -56,6 +58,7 @@
       "status": "active",
       "description": "Coding MoE (30B, 3B active). Roo candidate. 32k ctx on the 3090.",
       "default": false,
+      "use": "chat",
       "gpus_needed": [
         {
           "min_vram_mb": 20000
@@ -75,6 +78,7 @@
       "status": "active",
       "description": "Agentic coding model (built for tool-using agents). Roo candidate. 32k ctx on the 3090.",
       "default": false,
+      "use": "chat",
       "gpus_needed": [
         {
           "min_vram_mb": 20000
@@ -94,6 +98,7 @@
       "status": "active",
       "description": "MoE (21B, 3.6B active), strong tool calling, fast. Roo candidate. 65k ctx on the 3090.",
       "default": false,
+      "use": "chat",
       "gpus_needed": [
         {
           "min_vram_mb": 20000
@@ -115,6 +120,7 @@
       "status": "candidate",
       "description": "Nex N2.5 mini (35B MoE, 3B active) split across five 1060s, 3090 left free. 64k ctx, about 22 tok/s.",
       "default": false,
+      "use": "chat",
       "gpus_needed": [
         {
           "min_vram_mb": 5800,

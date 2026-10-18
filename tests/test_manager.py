@@ -136,7 +136,8 @@ FAKE_RIG = textwrap.dedent("""\
         print(json.dumps({"observed_at": "now", "mode": "remote" if st["profiles"] else "idle",
                           "gpus": st["gpus"], "containers": ctrs, "ports": ports, "profiles": st["profiles"],
                           "jobs": st["jobs"], "last_error": st.get("last_error"),
-                          "leases": st["leases"], "claims": st["claims"]})); sys.exit(0)
+                          "leases": st["leases"], "claims": st["claims"],
+                          "guard": st.get("guard", {"level": "ok", "mem_available_mb": 20000})})); sys.exit(0)
     if a[:2] == ["status", "--json"]:
         print(json.dumps({"mode": "remote", "profiles": [{"id": k, **p} for k, p in st["profiles"].items()]}))
         sys.exit(0)
@@ -144,7 +145,7 @@ FAKE_RIG = textwrap.dedent("""\
         pid = a[2]; opt = dict(zip(a[3::2], a[4::2]))
         mode = os.environ.get("FAKE_DETACH", "ok")
         st.setdefault("starts", []).append({"profile": pid, "gpus": opt["--gpus"], "port": opt["--port"],
-                                            "lease": opt["--lease"]})
+                                            "lease": opt["--lease"], "cache_ram": opt.get("--cache-ram")})
         if mode == "refuse":
             save(); print("error: manager placed it on a busy GPU"); sys.exit(4)
         if mode == "fail":
@@ -175,6 +176,7 @@ def menv(tmp_path, monkeypatch):
     profiles.write_text(json.dumps({"remote_profiles": [
         {"id": "small", "model": "s:7b", "ctx_size": 16384, "gpus_needed": [SMALL]},
         {"id": "big", "model": "b:20b", "ctx_size": 65536, "gpus_needed": [BIG]},
+        {"id": "worker", "model": "w:7b", "ctx_size": 8192, "gpus_needed": [SMALL], "use": "worker"},
     ]}))
     monkeypatch.setenv("FAKE_RIG_STATE", str(state))
     monkeypatch.setattr(core, "LOAD_POLL_S", 0.1)
@@ -210,7 +212,7 @@ def test_cold_request_takes_a_lease_and_hands_the_rig_one_job(menv):
     assert lease["controller"] == "interactive" and lease["gpu_ids"] == [1]
     assert lease["metadata"]["port"] == 11435 and lease["ports"] == [11435]
     (start,) = menv["rig"]()["starts"]
-    assert start == {"profile": "small", "gpus": "1", "port": "11435", "lease": lease["lease_id"]}
+    assert start == {"profile": "small", "gpus": "1", "port": "11435", "lease": lease["lease_id"], "cache_ram": "4096"}
     assert chat(menv["client"], "gpu-rig/small").status_code == 200  # warm: no second job
     assert len(menv["rig"]()["starts"]) == 1
 
@@ -290,3 +292,32 @@ def test_reconcile_renews_backed_and_releases_orphaned_leases(menv, monkeypatch)
     out = c.post("/v1/manager/reconcile").json()
     assert out["released"] == [orphan["lease_id"]] and len(out["renewed"]) == 1
     assert [l["run_id"] for l in menv["leases"]()] == ["profile-small"]
+
+
+def test_cache_follows_the_use_and_the_rig_free_ram(menv):
+    from llm_gateway.manager.memory import cache_ram_mib
+    assert cache_ram_mib("chat", 20000) == 4096
+    assert cache_ram_mib("chat", 10000) == 1792      # bounded by what is left above the reserve
+    assert cache_ram_mib("chat", 6000) == 0
+    assert cache_ram_mib("chat", None) == 0
+    assert cache_ram_mib("worker", 30000) == 0 and cache_ram_mib("benchmark", 30000) == 0
+    c = menv["client"]
+    assert chat(c, "gpu-rig/worker").status_code == 200
+    st = menv["rig"]()
+    st["guard"] = {"level": "ok", "mem_available_mb": 9000}
+    menv["write"](st)
+    assert chat(c, "gpu-rig/small").status_code == 200
+    starts = {s["profile"]: s["cache_ram"] for s in menv["rig"]()["starts"]}
+    assert starts == {"worker": "0", "small": "768"}
+
+
+def test_gone_runtime_is_cleared_and_its_lease_released(menv, monkeypatch):
+    c = menv["client"]
+    assert chat(c, "gpu-rig/small").status_code == 200
+    st = menv["rig"]()
+    st["profiles"]["small"]["state"] = "gone"   # the rig guard stopped it
+    menv["write"](st)
+    monkeypatch.setattr(core, "ORPHAN_GRACE_S", 0)
+    out = c.post("/v1/manager/reconcile").json()
+    assert len(out["released"]) == 1
+    assert menv["rig"]()["profiles"] == {} and menv["leases"]() == []

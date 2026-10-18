@@ -92,11 +92,13 @@ class Rig:
         except json.JSONDecodeError as exc:
             raise RigUnavailable(502, f"rig observe returned invalid JSON: {out[:200]}") from exc
 
-    async def start_detached(self, profile_id: str, gpus: list[int], port: int, lease_id: str) -> dict:
+    async def start_detached(self, profile_id: str, gpus: list[int], port: int, lease_id: str,
+                             cache_ram_mib: int | None = None) -> dict:
         """Hand one load to the rig as a job and return at once. The rig queues and runs it."""
+        extra = ("--cache-ram", str(int(cache_ram_mib))) if cache_ram_mib is not None else ()
         code, out = await self._run(
             "start", "remote", profile_id, "--gpus", ",".join(map(str, gpus)), "--port", str(port),
-            "--lease", lease_id, "--detach", "--json", timeout=60)
+            "--lease", lease_id, *extra, "--detach", "--json", timeout=60)
         if code != RIG_OK:
             status = 503 if code in (RIG_BUSY, RIG_NO_CAPACITY) else 502
             raise RigUnavailable(status, f"rig refused {profile_id}: {out[-800:]}")
