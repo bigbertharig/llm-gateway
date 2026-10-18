@@ -1,7 +1,9 @@
 # Rig manager: the process everything follows
 
-Status 2026-10-17: Phase A built (lease API, claims, placement, observed status, detached rig loads,
-gateway cold loads through the manager). Phases B-D and the rig guards are next (see Migration).
+Status 2026-10-17: Phase A built (leases, claims, placement, observed status, detached rig loads,
+gateway cold loads through the manager); lease record moved onto the rig; rig guard built (gates
+every load, frees RAM at critical); cache policy per use; Phase C started (lanes lease their GPU).
+Next: campaign leases, then B, then D (see "Pick up here").
 
 Design knowledge the manager has to balance (host RAM budget, cache policy per use, layouts, more
 than one rig): [DESIGN_NOTES.md](DESIGN_NOTES.md).
