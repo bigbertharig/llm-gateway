@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -9,6 +10,8 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from .manager import Manager, ManagerError
+from .manager.routes import router as manager_router
 from .profiles import ProfileError, Profiles
 from .rig import Rig, RigUnavailable
 from .settings import Settings
@@ -86,20 +89,41 @@ def create_app(
     *,
     rig: Rig | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
+    run_reconciler: bool = True,
 ) -> FastAPI:
     s = settings or Settings.from_env()
     profiles = Profiles(s.profiles_path)
     rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
+    manager: Manager | None = None
+    if s.manager_shared_path is not None:
+        s.validate()
+        manager = Manager(rig, s.manager_shared_path, s.leases_lib_path, s.start_timeout_seconds)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         s.validate()
         timeout = httpx.Timeout(s.request_timeout_seconds, connect=10.0)
         app.state.http = httpx.AsyncClient(timeout=timeout, transport=upstream_transport)
+        reconciler = asyncio.create_task(manager.run_reconciler()) if manager and run_reconciler else None
         yield
+        if reconciler:
+            reconciler.cancel()
         await app.state.http.aclose()
 
-    app = FastAPI(title="llm-gateway", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="llm-gateway", version="0.4.0", lifespan=lifespan)
+    app.state.manager = manager
+    if manager is not None:
+        app.include_router(manager_router(manager, profiles.all))
+
+    @app.exception_handler(ManagerError)
+    async def _manager_error(_req, exc: ManagerError):
+        return error_response(exc.status, str(exc), "manager_error", **exc.extra)
+
+    def start_for(pid: str):
+        """Cold-load path: through the manager when it runs, else plain `rig start remote`."""
+        if manager is None:
+            return None
+        return lambda: manager.load_profile(pid, profiles.all()[pid])
 
     @app.exception_handler(GatewayError)
     async def _gateway_error(_req, exc: GatewayError):
@@ -214,7 +238,7 @@ def create_app(
     async def completions(request: Request):
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
-        port = await rig.ensure_ready(pid)
+        port = await rig.ensure_ready(pid, start_for(pid))
         return await forward(request, request.url.path, raw, port, stream=bool(body.get("stream")), profile=pid)
 
     @app.post("/tokenize")
@@ -222,7 +246,8 @@ def create_app(
     async def tokenize(request: Request):
         """llama-server tokenizer, routed by `model`. Exact token counts for compaction decisions."""
         raw, body = await read_json(request)
-        port = await rig.ensure_ready(resolve_profile(body.get("model")))
+        pid = resolve_profile(body.get("model"))
+        port = await rig.ensure_ready(pid, start_for(pid))
         return await forward(request, request.url.path, raw, port, stream=False)
 
     return app

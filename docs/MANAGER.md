@@ -1,92 +1,81 @@
 # Rig manager: the process everything follows
 
-Status: proposed 2026-10-17. Phase A is the next build; B-D follow (see Migration).
+Status 2026-10-17: Phase A built (lease API, claims, placement, observed status, detached rig loads,
+gateway cold loads through the manager). Phases B-D and the rig guards are next (see Migration).
 
-The harness (this repo, on the Pi) is the one manager for the rig's GPUs. Roo, the orchestration
-brain and workers, and benchmark campaigns are all clients. Each one asks the manager for GPUs
-before loading a model, and the manager is the only thing that decides who holds which card.
+## Two layers
 
-## Why
+| | Pi: controller management (this repo) | Rig: hardware management (`llm_orchestration/shared/scripts/rig/`) |
+|---|---|---|
+| Decides | who holds which GPUs (leases, claims), placement, ports; later the job queue | nothing about allocation |
+| Does | sends the rig one command per action, observes, reconciles, reports | runs what it was given on the GPUs it was told; reports `rig observe` |
+| Enforces | allocation rules | physical rules, whoever asks: one model load at a time, GPU health, port in use; next: power and thermal guards, VRAM fit |
+| Disconnected | reports the rig unreachable | keeps going: finishes running and queued work; new loads wait for new leases |
 
-On 2026-10-17 four controllers placed models with no shared view: `rig.py` remote mode (own
-allocator, looks only at free VRAM), the orchestration brain (lease store), benchmark launchers
-(`run_runtime.sh` directly, `BENCHMARK_DISABLE_AUTO_RESERVE=1`) and the gateway (through `rig.py`).
-Results: `rig status` said idle while a 3090 campaign and four 1060 benchmark lanes ran; a 1060
-profile was placed on the 3090; remote profiles took ports 11434-11441 while benchmark lanes used
-11435-11438. The only shared guards were `run_runtime.sh`'s load lock and occupied-port check.
+The Pi never micromanages: it does not sequence loads, poll temperatures or retry around the rig's
+rules. Monitoring and safety live on the rig, next to the hardware. The rig is meant to run fully
+offline: its state is rig-local, observations and heartbeats exist for the Pi's benefit, and (to
+build) results fall back to local storage when the shared drive is gone and sync on reconnect.
 
 ## Rules
 
-1. **One writer.** Only the manager grants, renews and releases GPU leases. Everyone else reads.
-   The store keeps the existing contract and location (`llm_orchestration/shared/agents/gpu_leases.py`
-   schema, `shared/gpus/leases.json`), so workers and the brain keep reading it unchanged. A single
-   writer also removes cross-host file locking (the Pi writes the drive locally, the rig over NFS).
-2. **No lease, no load.** Every llama runtime starts under a lease that names its GPUs and port.
-   Every launcher already goes through `run_runtime.sh` (brain, workers, split workers, `rig.py`,
-   `run_campaign.py`, integration lanes, runtime smoke), so that is where it is enforced.
-3. **The port comes from the lease:** 11434 + the lowest GPU index in it (GPU 0 = 11434,
-   GPU 1 = 11435, ...). That is the existing worker and benchmark-lane convention, and since a lease
-   is exclusive on its GPUs, two leases can never get the same port.
-4. **Placement is the manager's.** A client states what it needs (`gpus_needed`: per card
-   `min_vram_mb` and optional `max_vram_mb`, or explicit GPU ids for benchmarks that must pin a card).
-   The manager picks the cards, smallest fit first, honoring admission.
-5. **Admission is operator intent.** Per controller, which GPUs it may lease (for example "3090:
-   benchmarks only today"). It extends `control_policy.json` and the manager owns it.
-6. **Status is observed, not assumed.** The manager reconciles leases against what the rig shows
-   (`nvidia-smi`, llama containers, port identities) and reports differences instead of hiding them.
-7. **Expiry never frees a GPU by itself** (existing lease rule). The manager releases an expired
-   lease only after checking that its runtime is gone; if it is still running, it is reported stale.
+1. **One writer.** Only the manager grants, renews and releases GPU leases. The store keeps the
+   orchestration contract and file (`shared/agents/gpu_leases.py`, `shared/gpus/leases.json` on the
+   drive, the rig's `/mnt/shared/gpus/leases.json`), so GPU workers and the brain read it unchanged.
+2. **No lease, no load.** Every runtime starts under a lease naming its GPUs and port. Every launcher
+   already goes through `run_runtime.sh` (brain, workers, split workers, `rig.py`, `run_campaign.py`,
+   integration lanes, runtime smoke), so that is where Phase D enforces it.
+3. **The port comes from the lease:** 11434 + the lowest GPU index. A lease reserves 11434 + each of
+   its GPUs, so two leases never share a port (the worker and benchmark-lane convention already).
+4. **Placement is the manager's.** A request gives `gpus_needed` (per card `min_vram_mb`, optional
+   `max_vram_mb`) or explicit `gpu_ids`. A card is available only if no lease holds it, nothing runs on
+   it, and it is unclaimed (or claimed by the claim the request names). Smallest fit first.
+5. **Everything is in the pool by default. A claim takes cards out** (`rigctl claim bench --gpus 0`):
+   only requests naming the claim get them. Claims live in `shared/gpus/claims.json`.
+6. **Status is observed.** Each GPU gets a verdict from leases plus `rig observe`: `free`, `leased`,
+   `loading`, `lease_idle`, `stale` (expired lease), `unleased_busy` (something runs without a lease).
+7. **Expiry never frees a GPU by itself.** The manager auto-releases only its own leases with no load
+   or runtime behind them; other controllers' expired leases are reported, not touched.
 
 ## The client process
 
 ```text
-1. ask      POST /v1/manager/leases        {controller, owner, run_id, gpus_needed | gpu_ids,
-                                             ttl_s, model, purpose}
-            -> 201 {lease_id, gpu_ids, port, expires_at}
-            -> 403 not admitted | 409 held (names the holder) | 503 no capacity (says what is free)
-2. launch   run_runtime.sh --lease <lease_id> ...   (refuses GPUs or a port the lease does not hold)
-            or, for interactive profiles, the manager launches it (`rig start remote` with the lease)
-3. renew    POST /v1/manager/leases/<id>/renew      every ttl/3 while the runtime is in use
-4. release  DELETE /v1/manager/leases/<id>          after stopping the runtime; 409 if it still serves
+1. ask      POST /v1/manager/leases  {controller, owner, run_id, gpus_needed | gpu_ids, claim?, ttl_s, model, purpose}
+            -> 201 {lease, port} | 403 wrong owner | 404 unknown claim | 409 held (names holder) | 503 no capacity
+2. launch   on the GPUs and port of the lease (Phase C/D: run_runtime.sh --lease <id>)
+3. renew    POST /v1/manager/leases/<id>/renew    {owner, ttl_s}, every ttl/3
+4. release  POST /v1/manager/leases/<id>/release  {owner}; 409 while a runtime still runs on its GPUs
 ```
 
-Controllers are the existing ones: `plans`, `benchmarks`, `interactive`, `supervision`, `system`.
-Clients on the rig (brain, workers, benchmark launchers) reach the manager through a small CLI run
-over ssh to the Pi (`ssh pi .../tools/rigctl lease acquire ...`), the same transport the manager uses
-to drive the rig. The manager's HTTP API stays on Pi loopback.
+`tools/rigctl.py` wraps all of it (stdlib only; exit codes like `rig`). From the rig:
+`ssh pi python3 ~/llm-gateway/tools/rigctl.py ...`. The HTTP API stays on Pi loopback.
 
-## Status
+## Interactive profiles (Roo)
 
-`GET /v1/manager/status`, one row per GPU:
+A cold request for `gpu-rig/<id>`: the manager leases cards for the profile (`interactive`, owner
+`llm-gateway`), then sends one command, `rig start remote <id> --gpus .. --port .. --lease .. --detach`.
+The rig runs the load as its own systemd job (`rig-load-<id>`, `hw_jobs.py`), waits its turn for the
+rig-wide load lock, and records the profile as `loading` then `ready`; the request is held until
+then. A failed job's log tail comes back as the 502 message and the lease is released. The
+reconciler renews leases with a load or runtime behind them and releases orphans. `rigctl unload`
+stops the profile and releases its lease.
 
-| Field | Meaning |
-|---|---|
-| `gpu`, `class`, `vram_mb` | inventory from the rig |
-| `lease` | controller, owner, run_id, model, port, expires_at (or none) |
-| `observed` | VRAM used, utilization, container, model served on the lease port |
-| `verdict` | `free`, `leased`, `loading`, `unleased_busy` (something runs without a lease), `stale` (expired lease, runtime alive), `lease_idle` (leased, nothing running) |
+## Requirements gathered (2026-10-17 benchmark lanes)
 
-`unleased_busy` is how a launcher that skipped the process shows up during migration.
-
-## Interactive (Roo) through the manager
-
-The gateway is a manager client like any other: for a cold profile it asks for an `interactive`
-lease with the profile's `gpus_needed`, then has the rig launch on the granted GPUs and port, then
-proxies. Unload releases the lease. Idle auto-unload (release after N minutes without requests) lands
-here later.
+- **Job queue:** benchmark lanes become jobs the manager schedules: each job states its model and
+  card needs, and the next one that fits starts when a card frees up. Adding or removing cards
+  mid-run is a claim change; stopping a run cancels its jobs (one stop path for every job).
+- **VRAM fit before placement:** a per-model VRAM estimate (weights + KV at the profile's ctx) from
+  the registry, checked against the card (ministral-3:8b at 16k ran at 5.97 of 6.1 GB).
+- **One rig guard:** a single always-on rig-side power and thermal guard that every job runs under
+  (today `startup_thermal_monitor.py` is started per run, and a lane started by hand sat outside it).
 
 ## Migration
 
 | Phase | Scope | Behavior change |
 |---|---|---|
-| A (now) | Manager in this repo: lease API as sole writer, placement, port rule, admission, observed status with `unleased_busy`. Gateway loads go through it; `rig start remote` takes `--gpus/--port/--lease` from the manager instead of choosing. `rigctl` CLI | Roo path only. Everything else is reported, not blocked |
-| B | Orchestration: brain and workers acquire and release through `rigctl` instead of writing `gpu_leases.py` directly; `rig start orchestration/bench` become manager requests | Plans run under leases |
-| C (after the current benches) | Benchmarking: `run_campaign.py`, `worker_lane.sh`, `phase4.sh`, `p45.sh` acquire a lease per lane and pass it to `run_runtime.sh` | Benchmarks visible and protected |
-| D | Enforce: `run_runtime.sh` refuses a load without a valid lease (audit-only before this) | Nothing loads outside the process |
-
-## Open decisions
-
-- Default admission: all controllers on any card, with operator reservations on top (proposed),
-  or reserved by class (3090 for benchmarks and interactive, 1060s for plans and benchmarks).
-- Default TTLs: interactive long (renewed by the gateway while loaded), benchmark lanes renewed by
-  the launcher loop, plans renewed by the worker heartbeat.
+| A (built) | Manager: leases, claims, placement, status, reconcile, `rigctl`; rig: `observe`, detached placed loads | Roo path only; everything else is reported (`unleased_busy`), not blocked |
+| Rig guards | Always-on power/thermal guard and VRAM fit on the rig; one stop path for rig jobs; local results fallback | Safety independent of the Pi |
+| B | Orchestration stays a mode for now (likely folded into the manager later); its brain and workers take leases through `rigctl` | Plans visible and protected |
+| C (after the current benches) | Benchmark lanes and campaigns become manager jobs / lease holders | Benchmarks visible and protected |
+| D | `run_runtime.sh` refuses a load without a valid lease | Nothing loads outside the process |

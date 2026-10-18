@@ -44,6 +44,7 @@ which port). Offers may use `active` or `candidate` registry models.
 | `POST /tokenize`, `POST /detokenize` | llama-server tokenizer, routed by `model`, e.g. `{"model": "gpu-rig/chat-27b", "content": "..."}`. Exact counts for compaction |
 | `GET /v1/rig/status` | `rig status --json`, plus `gateway_loading`: loads in progress with `since` and `elapsed_s` (the rig reports a profile only once it is ready) |
 | `GET /health` | liveness |
+| `/v1/manager/...` | rig manager: `status`, `leases` (acquire, renew, release), `claims`, `profiles/<id>/load\|unload`, `reconcile`. Process and rules: [docs/MANAGER.md](docs/MANAGER.md). CLI: `tools/rigctl.py` |
 
 Errors use the OpenAI shape `{"error": {"message", "type", "code"}}`:
 
@@ -70,6 +71,8 @@ Concurrent cold requests for one profile share a single load.
 | `MODEL_PREFIX` | `gpu-rig` | |
 | `GATEWAY_BIND` / `GATEWAY_PORT` | `127.0.0.1` / `8080` | a non-loopback bind is refused unless API keys are configured |
 | `GATEWAY_API_KEYS_FILE` | `/etc/llm-gateway/api_keys` | one bearer key per line (`#` comments). Missing file = auth off. With keys, every route but `/health` needs `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise) |
+| `MANAGER_SHARED_PATH` | unset (manager off) | Pi service: `/media/bryan/shared`. With it, cold loads take a lease and go to the rig as one detached job |
+| `MANAGER_LEASES_LIB` | `<shared>/agents/gpu_leases.py` | the lease store module (orchestration repo) |
 | `START_TIMEOUT_SECONDS` | `900` | |
 | `REQUEST_TIMEOUT_SECONDS` | `900` | |
 

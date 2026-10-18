@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 # Exit codes of the rig mode selector (llm_orchestration shared/scripts/rig/rig.py).
@@ -73,6 +74,35 @@ class Rig:
         except json.JSONDecodeError as exc:
             raise RigUnavailable(502, f"rig status returned invalid JSON: {out[:200]}") from exc
 
+    async def observe(self) -> dict:
+        """`rig observe`: GPUs, every llama container, served ports, remote profiles, rig jobs."""
+        code, out = await self._run("observe", timeout=60)
+        if code != RIG_OK:
+            raise RigUnavailable(502, f"rig observe failed: {out[-500:]}")
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as exc:
+            raise RigUnavailable(502, f"rig observe returned invalid JSON: {out[:200]}") from exc
+
+    async def start_detached(self, profile_id: str, gpus: list[int], port: int, lease_id: str) -> dict:
+        """Hand one load to the rig as a job and return at once. The rig queues and runs it."""
+        code, out = await self._run(
+            "start", "remote", profile_id, "--gpus", ",".join(map(str, gpus)), "--port", str(port),
+            "--lease", lease_id, "--detach", "--json", timeout=60)
+        if code != RIG_OK:
+            status = 503 if code in (RIG_BUSY, RIG_NO_CAPACITY) else 502
+            raise RigUnavailable(status, f"rig refused {profile_id}: {out[-800:]}")
+        try:
+            return json.loads(out.splitlines()[-1])
+        except (json.JSONDecodeError, IndexError) as exc:
+            raise RigUnavailable(502, f"rig start --detach returned no job: {out[:200]}") from exc
+
+    async def stop_profile(self, profile_id: str) -> str:
+        code, out = await self._run("stop", profile_id, timeout=120)
+        if code != RIG_OK:
+            raise RigUnavailable(502, f"rig stop {profile_id} failed: {out[-500:]}")
+        return out
+
     def loading(self) -> list[dict]:
         """Profiles this gateway is loading right now, with how long each has been loading."""
         now = time.monotonic()
@@ -89,9 +119,10 @@ class Rig:
                 return int(p["port"])
         return None
 
-    async def ensure_ready(self, profile_id: str) -> int:
+    async def ensure_ready(self, profile_id: str, start: Callable[[], Awaitable[None]] | None = None) -> int:
         """Return the port serving profile_id, loading it on the rig first if needed.
 
+        `start` replaces the plain `rig start remote <id>` (the rig manager passes its own load).
         Concurrent callers share one start. The start is shielded: a client that disconnects
         doesn't cancel a load other requests (or its own retry) are waiting on.
         """
@@ -100,7 +131,7 @@ class Rig:
             return port
         task = self._inflight.get(profile_id)
         if task is None:
-            task = asyncio.create_task(self._start(profile_id))
+            task = asyncio.create_task(start() if start else self._start(profile_id))
             self._inflight[profile_id] = task
             self._loading_since[profile_id] = time.monotonic()
 
