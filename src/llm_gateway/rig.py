@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -40,11 +42,17 @@ class Rig:
         self._inflight: dict[str, asyncio.Task] = {}
         self._loading_since: dict[str, float] = {}
         self._orphans: set[asyncio.Task] = set()
+        # ssh joins its arguments into one string for the remote shell, which splits it again.
+        self._over_ssh = bool(command) and os.path.basename(command[0]) == "ssh"
+
+    def argv(self, *args: str) -> list[str]:
+        """The full command line; over ssh each argument is shell-quoted so it arrives intact."""
+        return [*self.command, *(shlex.quote(a) for a in args)] if self._over_ssh else [*self.command, *args]
 
     async def _run(self, *args: str, timeout: float, kill_on_timeout: bool = True) -> tuple[int, str]:
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self.command, *args,
+                *self.argv(*args),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
         except OSError as exc:

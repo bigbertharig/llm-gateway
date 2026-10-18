@@ -76,6 +76,12 @@ stops the profile and releases its lease.
   the registry, checked against the card (ministral-3:8b at 16k ran at 5.97 of 6.1 GB).
 - **One rig guard:** a single always-on rig-side power and thermal guard that every job runs under
   (today `startup_thermal_monitor.py` is started per run, and a lane started by hand sat outside it).
+- **Runtime memory policy per use** (run notes `logs/benchmarks/worker_lanes_20261017_203028/RUN_NOTES.md`
+  section 9): host prompt cache (`--cache-ram`, llama.cpp default 8192 MiB per server), ctx, slots,
+  KV type and placement, mmap, container memory limits. Registry settings per model, merged at load
+  time with a use profile (benchmark: cache-ram 0, parallel 1; agent: small cache; chat: bounded cache
+  on the 3090 profile), plus a rig-wide RAM budget next to the VRAM fit check. Evidence: five lanes x
+  8 GB default cache against 31 GB RAM, earlyoom killed a lane's runtime at 21:41.
 
 ## Migration
 

@@ -304,3 +304,14 @@ def test_lan_bind_requires_keys(env, tmp_path):
     keys.write_text("# comment\n\nk-one\n  k-two  \n")
     assert read_api_keys(keys) == ("k-one", "k-two")
     assert read_api_keys(tmp_path / "missing") == ()
+
+
+def test_rig_arguments_survive_ssh():
+    """ssh hands the remote shell one string; spaces and JSON must arrive as single arguments."""
+    import shlex
+    spec = '{"controller": "interactive", "gpu_ids": [0]}'
+    over_ssh = Rig(("/usr/bin/ssh", "-o", "BatchMode=yes", "10.0.0.3", "/usr/local/bin/rig"), 30)
+    remote_line = " ".join(over_ssh.argv("lease", "acquire", "--spec", spec)[5:])
+    assert shlex.split(remote_line) == ["lease", "acquire", "--spec", spec]
+    local = Rig(("rig",), 30)
+    assert local.argv("claim", "add", "x", "--note", "two words") == ["rig", "claim", "add", "x", "--note", "two words"]
