@@ -67,7 +67,7 @@ class Manager:
         for r in rows:
             counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
         return {"observed_at": obs.get("observed_at"), "mode": obs.get("mode"), "summary": counts,
-                "gpus": rows, "profiles": obs.get("profiles", {}), "jobs": obs.get("jobs", []),
+                "guard": obs.get("guard"), "gpus": rows, "profiles": obs.get("profiles", {}), "jobs": obs.get("jobs", []),
                 "last_error": obs.get("last_error"), "state_error": obs.get("state_error"),
                 "leases": leases, "claims": claims}
 

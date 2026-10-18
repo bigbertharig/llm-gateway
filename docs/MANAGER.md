@@ -92,3 +92,32 @@ stops the profile and releases its lease.
 | B | Orchestration stays a mode for now (likely folded into the manager later); its brain and workers take leases through `rigctl` | Plans visible and protected |
 | C (after the current benches) | Benchmark lanes and campaigns become manager jobs / lease holders | Benchmarks visible and protected |
 | D | `run_runtime.sh` refuses a load without a valid lease | Nothing loads outside the process |
+
+## Pick up here (entry points per phase)
+
+**B, orchestration (left as a mode for now; likely folded into the manager later).**
+- `rig start orchestration|bench` (`rig.py` `start_stack`) become manager requests: the manager leases
+  the brain's GPU and the worker GPUs (`plans` controller) before starting the stack, releases on stop.
+- Workers already refuse plan claims on leased GPUs (`agents/gpu.py` `_read_gpu_lease`, reading
+  `/mnt/shared/gpus/leases.json`, now the rig's mirror). Change the reader to the rig-local record
+  (`shared/brain/hw/gpus/`, `scripts/rig/hw_state.py`) so it works without the drive.
+- Brain meta tasks (`agents/brain_resources.py` `_insert_resource_task`, executed by
+  `agents/gpu_llama.py` `load_model`) keep their shape; a load_llm targets only GPUs under the
+  stack's lease.
+- Open: does the brain's model-choice logic move into the manager (the user expects so, not decided).
+
+**C, benchmarking (after the 2026-10-17 lane run reports LANE_DONE on every lane).**
+- Lane scripts: `benchmarking/scripts/integration/run_worker_lanes.sh`, `worker_lane.sh`, `phase4.sh`,
+  `p45.sh`; campaigns: `llm_orchestration/shared/scripts/benchmarks/run_campaign.py`.
+- Each lane takes a `benchmarks` lease for its GPU (`rigctl acquire --gpus N`, renew in its loop,
+  release at LANE_DONE); campaigns the same per lane. Drop `BENCHMARK_DISABLE_AUTO_RESERVE`.
+- Then the job queue: a lane run becomes a set of manager jobs (model + card needs) instead of
+  fixed lanes, so cards can join or leave mid-run and one stop cancels everything.
+- Run-note fixes to fold in: `RUN_NOTES.md` sections 1-5 in `logs/benchmarks/worker_lanes_20261017_203028/`.
+
+**D, enforcement.**
+- `run_runtime.sh` gains `--lease <id>` and checks it against the rig record (`rig lease list`): the
+  GPUs and port it is asked to start must be held by that lease. Every launcher in rule 2 passes it.
+- Audit first (log loads without a lease for a while), then refuse.
+
+**Rig guards (in progress 2026-10-17):** always-on `rig-guard.service` on the rig, see `hw_guard.py`.

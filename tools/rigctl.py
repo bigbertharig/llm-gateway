@@ -53,6 +53,11 @@ def need(text: str) -> dict:
 
 def print_status(s: dict) -> None:
     print(f"rig mode {s.get('mode')}  observed {s.get('observed_at')}  {s.get('summary')}")
+    g = s.get("guard")
+    if g:
+        print(f"guard {g['level']} (loads {'admitted' if g['loads_admitted'] else 'held'}): {g['why']}  "
+              f"[GPU {g.get('gpu_power_total_w')} W, max {g.get('gpu_temp_max_c')} C; "
+              f"CPU {g.get('cpu_package_c')} C; {g.get('mem_available_mb')} MB free]")
     for g in s["gpus"]:
         lease, obs = g["lease"], g["observed"]
         held = f"{lease['controller']}/{lease['owner']} {lease['model'] or ''} :{lease['port']}" if lease else "-"
