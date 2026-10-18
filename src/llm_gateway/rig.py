@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 
 # Exit codes of the rig mode selector (llm_orchestration shared/scripts/rig/rig.py).
 RIG_OK = 0
@@ -10,6 +11,8 @@ RIG_FAILED = 1
 RIG_BUSY = 2
 RIG_LOCKED = 3
 RIG_NO_CAPACITY = 4
+# ssh's own exit code when it cannot reach the rig (RIG_COMMAND="ssh ... rig" on the Pi).
+SSH_UNREACHABLE = 255
 
 LOCKED_RETRY_SECONDS = 3.0
 
@@ -23,14 +26,21 @@ class RigUnavailable(RuntimeError):
 
 
 class Rig:
-    """Async wrapper around `rig status --json` / `rig start remote <id>`."""
+    """Async wrapper around `rig status --json` / `rig start remote <id>`.
+
+    The command may run the rig selector locally or over ssh. Over ssh, killing the client can
+    kill the remote `rig start` mid-load (which frees the rig's model-load lock early), so a
+    start is never killed: past its deadline the gateway stops waiting and lets it finish.
+    """
 
     def __init__(self, command: tuple[str, ...], start_timeout_seconds: float):
         self.command = command
         self.start_timeout_seconds = start_timeout_seconds
         self._inflight: dict[str, asyncio.Task] = {}
+        self._loading_since: dict[str, float] = {}
+        self._orphans: set[asyncio.Task] = set()
 
-    async def _run(self, *args: str, timeout: float) -> tuple[int, str]:
+    async def _run(self, *args: str, timeout: float, kill_on_timeout: bool = True) -> tuple[int, str]:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self.command, *args,
@@ -38,13 +48,21 @@ class Rig:
             )
         except OSError as exc:
             raise RigUnavailable(502, f"cannot run rig command {self.command}: {exc}") from exc
+        done = asyncio.ensure_future(proc.communicate())
         try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+            out, _ = await asyncio.wait_for(asyncio.shield(done), timeout)
         except TimeoutError as exc:
-            proc.kill()
-            await proc.wait()
+            if kill_on_timeout:
+                proc.kill()
+                await done
+            else:
+                self._orphans.add(done)  # keep a reference until it exits; output is dropped
+                done.add_done_callback(self._orphans.discard)
             raise RigUnavailable(504, f"rig {' '.join(args)} timed out after {timeout:.0f}s") from exc
-        return proc.returncode, out.decode("utf-8", "replace").strip()
+        text = out.decode("utf-8", "replace").strip()
+        if proc.returncode == SSH_UNREACHABLE:
+            raise RigUnavailable(502, f"rig unreachable over ssh: {text[-500:] or 'no output'}")
+        return proc.returncode, text
 
     async def status(self) -> dict:
         code, out = await self._run("status", "--json", timeout=30)
@@ -54,6 +72,16 @@ class Rig:
             return json.loads(out)
         except json.JSONDecodeError as exc:
             raise RigUnavailable(502, f"rig status returned invalid JSON: {out[:200]}") from exc
+
+    def loading(self) -> list[dict]:
+        """Profiles this gateway is loading right now, with how long each has been loading."""
+        now = time.monotonic()
+        return [
+            {"id": pid,
+             "since": datetime.fromtimestamp(time.time() - (now - t0), timezone.utc).isoformat(timespec="seconds"),
+             "elapsed_s": round(now - t0, 1)}
+            for pid, t0 in self._loading_since.items()
+        ]
 
     async def ready_port(self, profile_id: str) -> int | None:
         for p in (await self.status()).get("profiles", []):
@@ -74,7 +102,13 @@ class Rig:
         if task is None:
             task = asyncio.create_task(self._start(profile_id))
             self._inflight[profile_id] = task
-            task.add_done_callback(lambda _t: self._inflight.pop(profile_id, None))
+            self._loading_since[profile_id] = time.monotonic()
+
+            def _done(_t: asyncio.Task) -> None:
+                self._inflight.pop(profile_id, None)
+                self._loading_since.pop(profile_id, None)
+
+            task.add_done_callback(_done)
         await asyncio.shield(task)
         port = await self.ready_port(profile_id)
         if port is None:
@@ -87,7 +121,14 @@ class Rig:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RigUnavailable(504, f"{profile_id} not ready within {self.start_timeout_seconds:.0f}s")
-            code, out = await self._run("start", "remote", profile_id, timeout=remaining)
+            try:
+                code, out = await self._run("start", "remote", profile_id, timeout=remaining,
+                                            kill_on_timeout=False)
+            except RigUnavailable as exc:
+                if exc.status == 504:
+                    raise RigUnavailable(504, f"{profile_id} not ready within {self.start_timeout_seconds:.0f}s; "
+                                              "the rig is still loading it, retry shortly") from exc
+                raise
             if code == RIG_OK:
                 return
             if code == RIG_LOCKED:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -112,6 +113,17 @@ def create_app(
     async def _profile_error(_req, exc: ProfileError):
         return error_response(500, str(exc), "profiles_error")
 
+    @app.middleware("http")
+    async def _auth(request: Request, call_next):
+        """Bearer keys, when configured. /health stays open for liveness checks."""
+        if s.api_keys and request.url.path != "/health":
+            header = request.headers.get("authorization", "")
+            token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+            if not any(hmac.compare_digest(token.encode(), k.encode()) for k in s.api_keys):
+                return error_response(401, "invalid or missing API key", "invalid_request_error",
+                                      code="invalid_api_key")
+        return await call_next(request)
+
     def resolve_profile(model: object) -> str:
         prefix = s.model_prefix + "/"
         published = profiles.all()
@@ -194,7 +206,8 @@ def create_app(
 
     @app.get("/v1/rig/status")
     async def rig_status():
-        return await rig.status()
+        """`rig status --json`, plus the loads this gateway is waiting on and for how long."""
+        return {**await rig.status(), "gateway_loading": rig.loading()}
 
     @app.post("/v1/chat/completions")
     @app.post("/v1/completions")

@@ -1,0 +1,24 @@
+# Forwards the rig's remote-profile ports (rig.py REMOTE_PORTS, 11434-11441) to Pi loopback, so
+# llm-gateway on the Pi reaches llama-server while the rig keeps its runtimes loopback-only.
+# Installed by deploy/deploy_pi.sh.
+[Unit]
+Description=SSH forward of rig model ports 11434-11441 to Pi loopback (llm-gateway upstream)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bryan
+Group=bryan
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none \
+  -L 127.0.0.1:11434:127.0.0.1:11434 -L 127.0.0.1:11435:127.0.0.1:11435 \
+  -L 127.0.0.1:11436:127.0.0.1:11436 -L 127.0.0.1:11437:127.0.0.1:11437 \
+  -L 127.0.0.1:11438:127.0.0.1:11438 -L 127.0.0.1:11439:127.0.0.1:11439 \
+  -L 127.0.0.1:11440:127.0.0.1:11440 -L 127.0.0.1:11441:127.0.0.1:11441 \
+  bryan@10.0.0.3
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

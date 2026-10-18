@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import sys
@@ -16,13 +17,16 @@ from fastapi.testclient import TestClient
 
 from llm_gateway.app import create_app, translate_upstream_error
 from llm_gateway.rig import Rig, RigUnavailable
-from llm_gateway.settings import Settings
+from llm_gateway.settings import Settings, read_api_keys
 
 UPSTREAM_PORT = 11499
 
-# State in $FAKE_RIG_STATE; `start` behavior from $FAKE_RIG_START (ok|busy|nocap|fail|locked-once).
+# State in $FAKE_RIG_STATE; `start` behavior from $FAKE_RIG_START (ok|busy|nocap|fail|locked-once|slow).
+# $FAKE_RIG_SSH=down makes every call exit 255, as ssh does when the rig is unreachable.
 FAKE_RIG = textwrap.dedent("""\
     import json, os, sys, time
+    if os.environ.get("FAKE_RIG_SSH") == "down":
+        print("ssh: connect to host 10.0.0.3 port 22: No route to host"); sys.exit(255)
     state_path = os.environ["FAKE_RIG_STATE"]
     st = json.load(open(state_path))
     args = sys.argv[1:]
@@ -36,7 +40,7 @@ FAKE_RIG = textwrap.dedent("""\
         if mode == "fail": print("FAILED: container exited"); sys.exit(1)
         if mode == "locked-once" and not os.path.exists(state_path + ".locked"):
             open(state_path + ".locked", "w").close(); print("locked"); sys.exit(3)
-        time.sleep(0.5)
+        time.sleep(2.5 if mode == "slow" else 0.5)
         st["profiles"].append({"id": args[2], "port": %d, "state": "ready"})
         json.dump(st, open(state_path, "w")); sys.exit(0)
     sys.exit(64)
@@ -228,3 +232,75 @@ def test_usage_logged_from_timings(caplog):
     assert lines[0] == lines[1]
     assert "cached=19000 prompt=412 prompt_s=0.9" in lines[0]
     assert "(no timings)" in lines[2]
+
+
+def test_unreachable_rig_returns_502(client, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_SSH", "down")
+    r = chat(client)
+    assert r.status_code == 502
+    assert "rig unreachable over ssh" in r.json()["error"]["message"]
+
+
+def test_start_past_deadline_is_not_killed(env, monkeypatch):
+    """Over ssh, killing `rig start` could stop a load mid-way; the gateway only stops waiting."""
+    monkeypatch.setenv("FAKE_RIG_START", "slow")
+    settings = dataclasses.replace(env["settings"], start_timeout_seconds=1)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama))
+    with TestClient(app) as c:
+        r = chat(c)
+        assert r.status_code == 504 and "still loading" in r.json()["error"]["message"]
+        time.sleep(2.5)
+        assert chat(c).status_code == 200
+    assert env["starts"]() == ["coder-7b"]
+
+
+def test_status_shows_loads_in_progress(env, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_START", "slow")
+    rig = Rig(env["settings"].rig_command, 30)
+
+    async def go():
+        load = asyncio.create_task(rig.ensure_ready("coder-7b"))
+        await asyncio.sleep(1.0)
+        during = rig.loading()
+        await load
+        return during, rig.loading()
+
+    during, after = asyncio.run(go())
+    assert [x["id"] for x in during] == ["coder-7b"] and during[0]["elapsed_s"] >= 0.5
+    assert after == []
+
+
+def test_status_route_includes_gateway_loading(client):
+    body = client.get("/v1/rig/status").json()
+    assert body["mode"] == "idle" and body["gateway_loading"] == []
+
+
+@pytest.fixture
+def keyed_client(env):
+    settings = dataclasses.replace(env["settings"], api_keys=("k-one", "k-two"))
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama))
+    with TestClient(app) as c:
+        yield c
+
+
+def test_api_keys_required_when_configured(keyed_client):
+    assert keyed_client.get("/v1/models").status_code == 401
+    r = keyed_client.get("/v1/models", headers={"Authorization": "Bearer wrong"})
+    assert r.status_code == 401 and r.json()["error"]["code"] == "invalid_api_key"
+    assert keyed_client.get("/v1/models", headers={"Authorization": "Bearer k-two"}).status_code == 200
+    assert keyed_client.get("/health").status_code == 200
+
+
+def test_no_keys_means_no_auth(client):
+    assert client.get("/v1/models", headers={"Authorization": "Bearer anything"}).status_code == 200
+
+
+def test_lan_bind_requires_keys(env, tmp_path):
+    lan = dataclasses.replace(env["settings"], bind="10.0.0.2")
+    with pytest.raises(RuntimeError, match="not loopback"):
+        lan.validate()
+    dataclasses.replace(lan, api_keys=("k",)).validate()
+    keys = tmp_path / "keys"
+    keys.write_text("# comment\n\nk-one\n  k-two  \n")
+    assert read_api_keys(keys) == ("k-one", "k-two")
+    assert read_api_keys(tmp_path / "missing") == ()

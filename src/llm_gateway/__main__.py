@@ -13,7 +13,8 @@ def main() -> None:
     settings = Settings.from_env()
     settings.validate()
     logging.getLogger("llm_gateway").info(
-        "rig=%s profiles=%s", " ".join(settings.rig_command), settings.profiles_path
+        "rig=%s profiles=%s bind=%s:%s auth=%s", " ".join(settings.rig_command), settings.profiles_path,
+        settings.bind, settings.port, f"{len(settings.api_keys)} key(s)" if settings.api_keys else "off",
     )
     uvicorn.run(create_app(settings), host=settings.bind, port=settings.port, log_level="info")
 
