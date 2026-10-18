@@ -7,7 +7,8 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 
-from .core import Manager, ManagerError
+from .core import Manager
+from .errors import ManagerError
 
 
 async def _body(request: Request) -> dict[str, Any]:
@@ -36,7 +37,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
 
     @r.get("/leases")
     async def leases():
-        return {"leases": await manager.leases()}
+        return {"leases": await manager.leases(), "claims": await manager.claims()}
 
     @r.post("/leases", status_code=201)
     async def acquire(request: Request):
@@ -65,7 +66,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
 
     @r.get("/claims")
     async def claims():
-        return {"claims": manager.claims.list()}
+        return {"claims": await manager.claims()}
 
     @r.post("/claims", status_code=201)
     async def add_claim(request: Request):

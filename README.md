@@ -71,8 +71,7 @@ Concurrent cold requests for one profile share a single load.
 | `MODEL_PREFIX` | `gpu-rig` | |
 | `GATEWAY_BIND` / `GATEWAY_PORT` | `127.0.0.1` / `8080` | a non-loopback bind is refused unless API keys are configured |
 | `GATEWAY_API_KEYS_FILE` | `/etc/llm-gateway/api_keys` | one bearer key per line (`#` comments). Missing file = auth off. With keys, every route but `/health` needs `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise) |
-| `MANAGER_SHARED_PATH` | unset (manager off) | Pi service: `/media/bryan/shared`. With it, cold loads take a lease and go to the rig as one detached job |
-| `MANAGER_LEASES_LIB` | `<shared>/agents/gpu_leases.py` | the lease store module (orchestration repo) |
+| `RIG_MANAGER` | `off` | Pi service: `on`. Cold loads take a lease (recorded on the rig) and go to the rig as one detached job |
 | `START_TIMEOUT_SECONDS` | `900` | |
 | `REQUEST_TIMEOUT_SECONDS` | `900` | |
 

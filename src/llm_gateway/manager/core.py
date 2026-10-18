@@ -1,8 +1,9 @@
-"""The rig manager: controller management on the Pi (docs/MANAGER.md).
+"""The rig manager: controller management (docs/MANAGER.md).
 
-It decides who holds which GPUs and sends the rig one command per action. Hardware rules (one load
-at a time, health, power and thermal limits) are enforced on the rig, which keeps running whatever
-it was given if the Pi goes away; this side only observes it (`rig observe`) and reconciles.
+It decides who holds which GPUs and sends the rig one command per action. It keeps no allocation
+state: the lease and claim record lives on the rig (store.RigRecord), and hardware rules (one load
+at a time, health, power and thermal limits) are enforced there. The rig keeps running whatever it
+was given if the controller goes away; this side observes it (`rig observe`) and reconciles.
 """
 
 from __future__ import annotations
@@ -11,13 +12,13 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from ..rig import Rig, RigUnavailable
 from . import placement
+from .errors import ManagerError
 from .status import gpu_rows, is_expired
-from .store import ClaimError, ClaimStore, load_lease_module
+from .store import RigRecord
 
 log = logging.getLogger("llm_gateway.manager")
 
@@ -32,24 +33,16 @@ ORPHAN_GRACE_S = 60
 JOB_PREFIX = "rig-load-"  # rig hw_jobs unit prefix; the rest is the profile id
 
 
-class ManagerError(Exception):
-    def __init__(self, status: int, message: str, **extra: Any):
-        super().__init__(message)
-        self.status = status
-        self.extra = extra
-
-
 class Manager:
-    def __init__(self, rig: Rig, shared_path: Path, leases_lib: Path, start_timeout_s: float = 900):
+    def __init__(self, rig: Rig, start_timeout_s: float = 900):
         self.rig = rig
-        self.leases_mod = load_lease_module(leases_lib)
-        self.store = self.leases_mod.GPULeaseStore(shared_path)
-        self.claims = ClaimStore(shared_path)
+        self.record = RigRecord(rig)
         self.start_timeout_s = start_timeout_s
         self._obs: dict | None = None
         self._obs_at = 0.0
         self._obs_lock = asyncio.Lock()
-        self._place_lock = asyncio.Lock()  # one placement decision at a time (this process is the only writer)
+        # This controller makes one placement decision at a time; the rig refuses overlaps across controllers.
+        self._place_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ observation
 
@@ -61,18 +54,22 @@ class Manager:
             return self._obs
 
     async def leases(self) -> list[dict]:
-        return await asyncio.to_thread(self.store.list_leases)
+        return (await self.observe(fresh=True)).get("leases", [])
+
+    async def claims(self) -> list[dict]:
+        return (await self.observe(fresh=True)).get("claims", [])
 
     async def status(self) -> dict:
         obs = await self.observe()
-        leases, claims = await self.leases(), self.claims.list()
+        leases, claims = obs.get("leases", []), obs.get("claims", [])
         rows = gpu_rows(obs, leases, claims)
         counts: dict[str, int] = {}
         for r in rows:
             counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
         return {"observed_at": obs.get("observed_at"), "mode": obs.get("mode"), "summary": counts,
                 "gpus": rows, "profiles": obs.get("profiles", {}), "jobs": obs.get("jobs", []),
-                "last_error": obs.get("last_error"), "leases": leases, "claims": claims}
+                "last_error": obs.get("last_error"), "state_error": obs.get("state_error"),
+                "leases": leases, "claims": claims}
 
     # ------------------------------------------------------------------ leases
 
@@ -83,9 +80,9 @@ class Manager:
             raise ManagerError(400, "give exactly one of gpus_needed or gpu_ids")
         async with self._place_lock:
             obs = await self.observe(fresh=True)
-            leases = await self.leases()
+            leases, claims = obs.get("leases", []), obs.get("claims", [])
             try:
-                free, why = placement.availability(obs, leases, self.claims.list(), claim)
+                free, why = placement.availability(obs, leases, claims, claim)
             except KeyError as exc:
                 raise ManagerError(404, str(exc.args[0])) from exc
             if gpu_ids:
@@ -103,64 +100,42 @@ class Manager:
             conflict = placement.port_conflict(port, obs, leases)
             if conflict:
                 raise ManagerError(409, conflict)
-            try:
-                lease = await asyncio.to_thread(
-                    self.store.acquire, controller=controller, owner=owner, gpu_ids=gpus, run_id=run_id,
-                    lane=lane, ttl_seconds=int(ttl_s), ports=placement.lease_ports(gpus),
-                    metadata={"port": port, "model": model, "purpose": purpose, "claim": claim})
-            except self.leases_mod.GPULeaseConflict as exc:
-                raise ManagerError(409, str(exc)) from exc
-            except ValueError as exc:
-                raise ManagerError(400, str(exc)) from exc
+            lease = await self.record.acquire({
+                "controller": controller, "owner": owner, "run_id": run_id, "gpu_ids": gpus, "lane": lane,
+                "ttl_s": int(ttl_s), "ports": placement.lease_ports(gpus),
+                "metadata": {"port": port, "model": model, "purpose": purpose, "claim": claim}})
+            self._obs = None  # the record changed
         log.info("lease %s %s/%s GPU %s :%s %s", lease["lease_id"], controller, owner, gpus, port, model)
         return lease
 
     async def renew(self, lease_id: str, owner: str, ttl_s: int = 120) -> dict:
-        try:
-            return await asyncio.to_thread(self.store.renew, lease_id, owner=owner, ttl_seconds=int(ttl_s))
-        except self.leases_mod.GPULeaseNotFound as exc:
-            raise ManagerError(404, str(exc)) from exc
-        except self.leases_mod.GPULeaseOwnershipError as exc:
-            raise ManagerError(403, str(exc)) from exc
-        except self.leases_mod.GPULeaseConflict as exc:
-            raise ManagerError(409, str(exc)) from exc
+        return await self.record.renew(lease_id, owner, ttl_s)
 
     async def release(self, lease_id: str, owner: str = "", force: bool = False) -> None:
-        """Release a lease. Unless forced, its runtime must be gone (nothing on its GPUs or port)."""
-        lease = await asyncio.to_thread(self.store.get, lease_id)
+        """Release a lease. Unless forced, its runtime must be gone (nothing on its GPUs)."""
+        obs = await self.observe(fresh=True)
+        lease = next((l for l in obs.get("leases", []) if l.get("lease_id") == lease_id), None)
         if lease is None:
             raise ManagerError(404, f"lease not found: {lease_id}")
         if not force:
-            obs = await self.observe(fresh=True)
             running = [c["name"] for c in obs.get("containers", []) if set(c.get("gpus", [])) & set(lease["gpu_ids"])]
             if running:
                 raise ManagerError(409, f"lease {lease_id} still has runtimes on its GPUs: {running}; stop them first")
-        try:
-            await asyncio.to_thread(self.store.release, lease_id, owner=owner, force=force)
-        except self.leases_mod.GPULeaseOwnershipError as exc:
-            raise ManagerError(403, str(exc)) from exc
-        except self.leases_mod.GPULeaseNotFound as exc:
-            raise ManagerError(404, str(exc)) from exc
+        await self.record.release(lease_id, owner, force)
+        self._obs = None
         log.info("released %s%s", lease_id, " (forced)" if force else "")
 
     # ------------------------------------------------------------------ claims
 
     async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "") -> dict:
-        obs = await self.observe()
-        known = {g["index"] for g in obs.get("gpus", [])}
-        unknown = sorted(set(int(g) for g in gpu_ids) - known)
-        if unknown:
-            raise ManagerError(400, f"unknown GPU(s) {unknown}; rig has {sorted(known)}")
-        try:
-            return self.claims.add(name, gpu_ids, note, by)
-        except ClaimError as exc:
-            raise ManagerError(409, str(exc)) from exc
+        claim = await self.record.add_claim(name, gpu_ids, note, by)
+        self._obs = None
+        return claim
 
     async def remove_claim(self, name: str) -> dict:
-        try:
-            return self.claims.remove(name)
-        except KeyError as exc:
-            raise ManagerError(404, str(exc.args[0])) from exc
+        claim = await self.record.remove_claim(name)
+        self._obs = None
+        return claim
 
     # ------------------------------------------------------------------ interactive profiles
 
@@ -185,8 +160,7 @@ class Manager:
         while True:
             obs = await self.observe(fresh=True)
             prof = obs.get("profiles", {}).get(profile_id)
-            jobs = {j["job"]: j for j in obs.get("jobs", [])}
-            j = jobs.get(job.get("job"))
+            j = {x["job"]: x for x in obs.get("jobs", [])}.get(job.get("job"))
             if prof and prof.get("state") == "ready":
                 return
             seen = seen or bool(prof) or bool(j)
@@ -208,7 +182,7 @@ class Manager:
             raise ManagerError(404, f"{profile_id} is not loaded")
         await self.rig.stop_profile(profile_id)
         released = None
-        if prof.get("lease") and await asyncio.to_thread(self.store.get, prof["lease"]):
+        if prof.get("lease") and any(l.get("lease_id") == prof["lease"] for l in obs.get("leases", [])):
             await self.release(prof["lease"], OWNER, force=True)
             released = prof["lease"]
         return {"unloaded": profile_id, "released": released}
@@ -227,7 +201,7 @@ class Manager:
                   if j.get("active_state") in ("active", "activating")}
         now = datetime.now(timezone.utc)
         renewed, released = [], []
-        for lease in await self.leases():
+        for lease in obs.get("leases", []):
             if lease.get("owner") != OWNER:
                 continue
             lid = lease["lease_id"]
@@ -239,9 +213,11 @@ class Manager:
             acquired = datetime.fromisoformat(str(lease["acquired_at"]).replace("Z", "+00:00"))
             if (now - acquired).total_seconds() < ORPHAN_GRACE_S:
                 continue
-            await self.release(lid, OWNER, force=True)
+            await self.record.release(lid, OWNER, force=True)
             released.append(lid)
             log.info("reconcile: released %s (no rig load or runtime behind it)", lid)
+        if renewed or released:
+            self._obs = None
         return {"renewed": renewed, "released": released}
 
     async def run_reconciler(self) -> None:

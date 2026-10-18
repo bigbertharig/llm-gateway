@@ -8,6 +8,7 @@ gateway cold loads through the manager). Phases B-D and the rig guards are next 
 | | Pi: controller management (this repo) | Rig: hardware management (`llm_orchestration/shared/scripts/rig/`) |
 |---|---|---|
 | Decides | who holds which GPUs (leases, claims), placement, ports; later the job queue | nothing about allocation |
+| Keeps | nothing persistent (reads the rig) | the lease and claim record, its own mode state, job state |
 | Does | sends the rig one command per action, observes, reconciles, reports | runs what it was given on the GPUs it was told; reports `rig observe` |
 | Enforces | allocation rules | physical rules, whoever asks: one model load at a time, GPU health, port in use; next: power and thermal guards, VRAM fit |
 | Disconnected | reports the rig unreachable | keeps going: finishes running and queued work; new loads wait for new leases |
@@ -19,9 +20,14 @@ build) results fall back to local storage when the shared drive is gone and sync
 
 ## Rules
 
-1. **One writer.** Only the manager grants, renews and releases GPU leases. The store keeps the
-   orchestration contract and file (`shared/agents/gpu_leases.py`, `shared/gpus/leases.json` on the
-   drive, the rig's `/mnt/shared/gpus/leases.json`), so GPU workers and the brain read it unchanged.
+1. **The rig keeps the record; controllers keep no state.** Leases and claims live on the rig
+   (`rig lease ...`, `rig claim ...`, `hw_state.py`, rig-local `shared/brain/hw/gpus/`), written only
+   by the rig under the lease store's own lock, in the orchestration schema (`gpu_leases.py`). Every
+   write is mirrored to the drive (`/mnt/shared/gpus/`) for orchestration workers when it is mounted.
+   A controller reads the record from `rig observe` and asks the rig to change it, so the record
+   survives a lost network, and another controller (desktop, laptop) can take over later without a
+   migration. The Pi is the only controller today; with several, the rig would also record which one
+   is active so two cannot issue commands at once.
 2. **No lease, no load.** Every runtime starts under a lease naming its GPUs and port. Every launcher
    already goes through `run_runtime.sh` (brain, workers, split workers, `rig.py`, `run_campaign.py`,
    integration lanes, runtime smoke), so that is where Phase D enforces it.
@@ -31,7 +37,8 @@ build) results fall back to local storage when the shared drive is gone and sync
    `max_vram_mb`) or explicit `gpu_ids`. A card is available only if no lease holds it, nothing runs on
    it, and it is unclaimed (or claimed by the claim the request names). Smallest fit first.
 5. **Everything is in the pool by default. A claim takes cards out** (`rigctl claim bench --gpus 0`):
-   only requests naming the claim get them. Claims live in `shared/gpus/claims.json`.
+   only requests naming the claim get them. The rig refuses a lease on a claimed card that does not
+   name the claim.
 6. **Status is observed.** Each GPU gets a verdict from leases plus `rig observe`: `free`, `leased`,
    `loading`, `lease_idle`, `stale` (expired lease), `unleased_busy` (something runs without a lease).
 7. **Expiry never frees a GPU by itself.** The manager auto-releases only its own leases with no load

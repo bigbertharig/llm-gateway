@@ -1,83 +1,48 @@
-"""Persistent manager state: GPU leases and operator claims.
+"""The lease and claim record, kept by the rig (`rig lease ...`, `rig claim ...`, rig-side hw_state.py).
 
-Leases use the orchestration repo's lease store (`shared/agents/gpu_leases.py`, file
-`shared/gpus/leases.json`) unchanged, so GPU workers and the brain keep reading the same file. The
-manager is its only writer. Claims are the manager's own (`shared/gpus/claims.json`): a claim takes
-cards out of the shared pool; only lease requests that name the claim can use them.
+The controller holds no allocation state of its own: it reads the record from `rig observe` and asks
+the rig to change it. The rig is the single writer, so the record survives a lost network and any
+controller (the Pi today) can pick up where another left off.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import os
-import threading
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-from types import ModuleType
 from typing import Any
 
-
-class ClaimError(ValueError):
-    pass
-
-
-def load_lease_module(path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location("rig_gpu_leases", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load lease store from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from ..rig import Rig, RigUnavailable
+from .errors import KIND_STATUS, ManagerError
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+class RigRecord:
+    def __init__(self, rig: Rig):
+        self.rig = rig
 
+    async def _call(self, *args: str) -> dict[str, Any]:
+        code, out = await self.rig._run(*args, timeout=60)
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError as exc:
+            raise RigUnavailable(502, f"rig {' '.join(args[:2])} returned no JSON: {out[-300:]}") from exc
+        if code != 0:
+            raise ManagerError(KIND_STATUS.get(payload.get("kind"), 502), payload.get("error", out[-300:]))
+        return payload
 
-class ClaimStore:
-    """{"schema_version": 1, "claims": [{name, gpu_ids, note, by, at}]}; written atomically."""
+    async def acquire(self, spec: dict[str, Any]) -> dict[str, Any]:
+        return (await self._call("lease", "acquire", "--spec", json.dumps(spec)))["lease"]
 
-    def __init__(self, shared_path: Path):
-        self.path = shared_path / "gpus" / "claims.json"
-        self._lock = threading.Lock()
+    async def renew(self, lease_id: str, owner: str, ttl_s: int) -> dict[str, Any]:
+        return (await self._call("lease", "renew", lease_id, "--owner", owner, "--ttl", str(int(ttl_s))))["lease"]
 
-    def list(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
-        return list(json.loads(self.path.read_text(encoding="utf-8")).get("claims", []))
+    async def release(self, lease_id: str, owner: str = "", force: bool = False) -> None:
+        args = ["lease", "release", lease_id, "--owner", owner] + (["--force"] if force else [])
+        await self._call(*args)
 
-    def _write(self, claims: list[dict[str, Any]]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        tmp.write_text(json.dumps({"schema_version": 1, "claims": claims}, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(self.path)
+    async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "") -> dict[str, Any]:
+        args = ["claim", "add", name, "--gpus", ",".join(str(int(g)) for g in gpu_ids), "--note", note]
+        if by:
+            args += ["--by", by]
+        return (await self._call(*args))["claim"]
 
-    def add(self, name: str, gpu_ids: list[int], note: str = "", by: str = "") -> dict[str, Any]:
-        name = str(name or "").strip()
-        if not name:
-            raise ClaimError("claim name is required")
-        ids = sorted({int(g) for g in gpu_ids})
-        if not ids:
-            raise ClaimError("a claim needs at least one GPU")
-        with self._lock:
-            claims = self.list()
-            if any(c["name"] == name for c in claims):
-                raise ClaimError(f"claim {name} already exists")
-            for c in claims:
-                overlap = sorted(set(ids) & set(c["gpu_ids"]))
-                if overlap:
-                    raise ClaimError(f"GPU {overlap} already claimed by {c['name']}")
-            claim = {"name": name, "gpu_ids": ids, "note": note, "by": by, "at": _now()}
-            self._write(claims + [claim])
-            return claim
-
-    def remove(self, name: str) -> dict[str, Any]:
-        with self._lock:
-            claims = self.list()
-            match = [c for c in claims if c["name"] == name]
-            if not match:
-                raise KeyError(f"no claim {name}")
-            self._write([c for c in claims if c["name"] != name])
-            return match[0]
+    async def remove_claim(self, name: str) -> dict[str, Any]:
+        return (await self._call("claim", "remove", name))["released"]

@@ -95,9 +95,8 @@ def create_app(
     profiles = Profiles(s.profiles_path)
     rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
     manager: Manager | None = None
-    if s.manager_shared_path is not None:
-        s.validate()
-        manager = Manager(rig, s.manager_shared_path, s.leases_lib_path, s.start_timeout_seconds)
+    if s.manager_enabled:
+        manager = Manager(rig, s.start_timeout_seconds)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

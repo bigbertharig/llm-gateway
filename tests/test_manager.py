@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import sys
 import textwrap
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import httpx
 import pytest
@@ -25,7 +22,6 @@ GPUS = [{"index": 0, "name": "3090", "total_mb": 24564, "used_mb": 15},
         {"index": 2, "name": "1060", "total_mb": 6144, "used_mb": 4}]
 SMALL = {"min_vram_mb": 5800, "max_vram_mb": 8192}
 BIG = {"min_vram_mb": 20000}
-LEASE_LIB = Path(os.getenv("GPU_LEASES_PY", "/media/bryan/shared/agents/gpu_leases.py"))
 
 
 def obs(**extra):
@@ -89,13 +85,58 @@ FAKE_RIG = textwrap.dedent("""\
             if p["state"] == "loading" and time.time() >= p["ready_at"]:
                 p["state"] = "ready"
     refresh(); save()
+    def fail(kind, msg):
+        print(json.dumps({"error": msg, "kind": kind})); sys.exit(1)
+    def opts(xs):
+        return dict(zip(xs[0::2], xs[1::2]))
+    if a[:2] == ["lease", "list"]:
+        print(json.dumps({"leases": st["leases"], "claims": st["claims"]})); sys.exit(0)
+    if a[:2] == ["lease", "acquire"]:
+        spec = json.loads(a[3])
+        gpus = spec["gpu_ids"]
+        for l in st["leases"]:
+            if set(gpus) & set(l["gpu_ids"]):
+                fail("conflict", f"GPU(s) {gpus} held by lease {l['lease_id']} ({l['controller']}/{l['owner']}, active)")
+        for c in st["claims"]:
+            if set(gpus) & set(c["gpu_ids"]) and (spec.get("metadata") or {}).get("claim") != c["name"]:
+                fail("conflict", f"GPU {gpus} claimed by {c['name']}")
+        now = time.time()
+        lease = {"lease_id": f"{spec['controller']}-{len(st['leases'])}-{int(now*1000)}", "controller": spec["controller"],
+                 "owner": spec["owner"], "run_id": spec["run_id"], "gpu_ids": gpus, "ports": spec["ports"],
+                 "metadata": spec.get("metadata") or {},
+                 "acquired_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+                 "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + spec["ttl_s"]))}
+        st["leases"].append(lease); save(); print(json.dumps({"lease": lease})); sys.exit(0)
+    if a[:2] in (["lease", "renew"], ["lease", "release"]):
+        o = opts(a[3:]); match = [l for l in st["leases"] if l["lease_id"] == a[2]]
+        if not match:
+            fail("not_found", f"lease not found: {a[2]}")
+        if o.get("--owner") != match[0]["owner"] and "--force" not in a:
+            fail("ownership", f"lease {a[2]} is owned by {match[0]['owner']}, not {o.get('--owner')}")
+        if a[1] == "renew":
+            match[0]["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + int(o["--ttl"])))
+            save(); print(json.dumps({"lease": match[0]})); sys.exit(0)
+        st["leases"].remove(match[0]); save(); print(json.dumps({"released": a[2]})); sys.exit(0)
+    if a[:2] == ["claim", "add"]:
+        o = opts(a[3:]); gpus = [int(g) for g in o["--gpus"].split(",")]
+        for c in st["claims"]:
+            if c["name"] == a[2] or set(gpus) & set(c["gpu_ids"]):
+                fail("conflict", f"GPU {gpus} already claimed by {c['name']}")
+        claim = {"name": a[2], "gpu_ids": gpus, "note": o.get("--note", "")}
+        st["claims"].append(claim); save(); print(json.dumps({"claim": claim})); sys.exit(0)
+    if a[:2] == ["claim", "remove"]:
+        match = [c for c in st["claims"] if c["name"] == a[2]]
+        if not match:
+            fail("not_found", f"no claim {a[2]}")
+        st["claims"].remove(match[0]); save(); print(json.dumps({"released": match[0]})); sys.exit(0)
     if a == ["observe"]:
         ctrs = list(st["containers"]) + [{"name": "rig-remote-" + k, "gpus": p["gpus"], "port": p["port"]}
                                          for k, p in st["profiles"].items()]
         ports = {str(p["port"]): k + ".gguf" for k, p in st["profiles"].items() if p["state"] == "ready"}
         print(json.dumps({"observed_at": "now", "mode": "remote" if st["profiles"] else "idle",
                           "gpus": st["gpus"], "containers": ctrs, "ports": ports, "profiles": st["profiles"],
-                          "jobs": st["jobs"], "last_error": st.get("last_error")})); sys.exit(0)
+                          "jobs": st["jobs"], "last_error": st.get("last_error"),
+                          "leases": st["leases"], "claims": st["claims"]})); sys.exit(0)
     if a[:2] == ["status", "--json"]:
         print(json.dumps({"mode": "remote", "profiles": [{"id": k, **p} for k, p in st["profiles"].items()]}))
         sys.exit(0)
@@ -126,16 +167,10 @@ def any_llama(request: httpx.Request) -> httpx.Response:
 
 @pytest.fixture
 def menv(tmp_path, monkeypatch):
-    pytest.importorskip("filelock")
-    if not LEASE_LIB.is_file():
-        pytest.skip(f"lease store not found at {LEASE_LIB}")
-    shared = tmp_path / "shared"
-    (shared / "gpus").mkdir(parents=True)
-    (shared / "agents").mkdir()
-    shutil.copy(LEASE_LIB, shared / "agents" / "gpu_leases.py")
     (tmp_path / "rig.py").write_text(FAKE_RIG)
     state = tmp_path / "state.json"
-    state.write_text(json.dumps({"gpus": GPUS, "containers": [], "profiles": {}, "jobs": []}))
+    state.write_text(json.dumps({"gpus": GPUS, "containers": [], "profiles": {}, "jobs": [],
+                                 "leases": [], "claims": []}))
     profiles = tmp_path / "remote_profiles.json"
     profiles.write_text(json.dumps({"remote_profiles": [
         {"id": "small", "model": "s:7b", "ctx_size": 16384, "gpus_needed": [SMALL]},
@@ -147,7 +182,7 @@ def menv(tmp_path, monkeypatch):
     settings = Settings(
         rig_command=(sys.executable, str(tmp_path / "rig.py")), profiles_path=profiles,
         upstream_host="127.0.0.1", model_prefix="gpu-rig", bind="127.0.0.1", port=0,
-        start_timeout_seconds=30, request_timeout_seconds=30, manager_shared_path=shared,
+        start_timeout_seconds=30, request_timeout_seconds=30, manager_enabled=True,
     )
     app = create_app(settings, upstream_transport=httpx.MockTransport(any_llama), run_reconciler=False)
 
@@ -158,8 +193,7 @@ def menv(tmp_path, monkeypatch):
         state.write_text(json.dumps(st))
 
     def leases():
-        p = shared / "gpus" / "leases.json"
-        return json.loads(p.read_text())["leases"] if p.exists() else []
+        return rig_state()["leases"]
 
     with TestClient(app) as c:
         yield {"client": c, "rig": rig_state, "write": write_state, "leases": leases, "app": app}

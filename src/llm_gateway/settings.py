@@ -48,10 +48,8 @@ class Settings:
     request_timeout_seconds: float
     # Bearer keys clients must send. Empty means no auth, which is only allowed on a loopback bind.
     api_keys: tuple[str, ...] = ()
-    # Rig manager (docs/MANAGER.md): the shared drive holding gpus/leases.json and the lease store
-    # module (default <shared>/agents/gpu_leases.py). None runs the gateway without the manager.
-    manager_shared_path: Path | None = None
-    leases_lib: Path | None = None
+    # Rig manager (docs/MANAGER.md). Off: cold loads are a plain `rig start remote <id>`.
+    manager_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -65,15 +63,8 @@ class Settings:
             start_timeout_seconds=float(os.getenv("START_TIMEOUT_SECONDS", "900")),
             request_timeout_seconds=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900")),
             api_keys=read_api_keys(Path(os.getenv("GATEWAY_API_KEYS_FILE", str(DEFAULT_API_KEYS_FILE)))),
-            manager_shared_path=Path(os.environ["MANAGER_SHARED_PATH"]) if os.getenv("MANAGER_SHARED_PATH") else None,
-            leases_lib=Path(os.environ["MANAGER_LEASES_LIB"]) if os.getenv("MANAGER_LEASES_LIB") else None,
+            manager_enabled=os.getenv("RIG_MANAGER", "off").lower() in ("on", "1", "true", "yes"),
         )
-
-    @property
-    def leases_lib_path(self) -> Path | None:
-        if self.manager_shared_path is None:
-            return None
-        return self.leases_lib or self.manager_shared_path / "agents" / "gpu_leases.py"
 
     def validate(self) -> None:
         if not self.rig_command:
@@ -82,10 +73,5 @@ class Settings:
             raise RuntimeError(f"PROFILES_PATH not found: {self.profiles_path}")
         if self.start_timeout_seconds <= 0 or self.request_timeout_seconds <= 0:
             raise RuntimeError("timeouts must be positive")
-        if self.manager_shared_path is not None:
-            if not (self.manager_shared_path / "gpus").is_dir():
-                raise RuntimeError(f"MANAGER_SHARED_PATH has no gpus/ directory: {self.manager_shared_path}")
-            if not self.leases_lib_path.is_file():
-                raise RuntimeError(f"lease store module not found: {self.leases_lib_path}")
         if not self.api_keys and not is_loopback(self.bind):
             raise RuntimeError(f"GATEWAY_BIND {self.bind} is not loopback: add keys to GATEWAY_API_KEYS_FILE first")
