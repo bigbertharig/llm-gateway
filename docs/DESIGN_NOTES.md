@@ -95,3 +95,35 @@ built to run side by side later. The defaults should make the single-use case si
 
 Risk to design against: double scheduling. Each kind of work needs exactly one layer that decides
 placement, or a controller queue and a rig's internal queue will both try to place the same job.
+
+## One model, many slots: capacity vs speed (2026-10-18)
+
+A llama-server holds the weights once and serves `--parallel N` slots; each slot runs one request,
+and all active slots advance together in one batched pass. Slot count and total context
+(`--ctx-size`) are fixed at load. By default the context is split evenly per slot; with unified KV
+(`--kv-unified`) the slots share one pool and each request takes what it needs. Every profile runs
+`--parallel 1` today.
+
+Two ways to run five instances of one small model on five 1060s:
+- five servers, one per card: five copies of the weights, small fixed context each, cards decode
+  independently (aggregate up to about 5x one card);
+- one server split across the five cards with five slots: the weights once, the VRAM of the other
+  four copies becomes one shared context pool; each step passes through every card over PCIe x1, so
+  aggregate speed is somewhere between one card and five, not measured.
+
+Known split costs (`distributed_work_guide.md`): 3090 plus one 1060 cost 2.6-3.1x; Nex on 4-5 1060s
+was 6.5x slower than the 3090 alone; 4-way and 5-way decode at the same speed. A small model split
+across 1060s vs the same model on one 1060 is not measured.
+
+Planned test (runtime experiment, 1060s):
+- one small model; five single-card servers vs one 5-card split server with five slots on unified KV;
+- 1, 3 and 5 concurrent requests; record aggregate and per-request tok/s, prompt tok/s, context
+  each setup holds (total and largest single request), VRAM per card;
+- first check that unified KV shares the pool on the runtime in use (b11669), and that one large
+  request can take most of it while others run;
+- repeat later for a mid-size model and on the 1070s.
+
+Harness decision (operator direction): capacity vs speed is the harness's call per use, learned
+from these measurements over time. Many small or unpredictable tasks, or occasional very large
+ones, favour the shared pool; steady small one-shots favour separate servers. Record each result in
+the runtime experiments so the harness's placement rules can read them.
