@@ -14,7 +14,8 @@
           "min_vram_mb": 20000
         },
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         }
       ],
       "tensor_split": "4,1",
@@ -37,7 +38,8 @@
       "default": true,
       "gpus_needed": [
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         }
       ],
       "gguf_path": "/mnt/shared/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
@@ -115,19 +117,24 @@
       "default": false,
       "gpus_needed": [
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         },
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         },
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         },
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         },
         {
-          "min_vram_mb": 5800
+          "min_vram_mb": 5800,
+          "max_vram_mb": 8192
         }
       ],
       "tensor_split": "0.75,1,1,1,1",

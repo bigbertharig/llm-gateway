@@ -35,14 +35,17 @@ the port.
 
 ## Placement today and later
 
-- Today: the gateway runs on the rig (`RIG_COMMAND=rig`, upstream 127.0.0.1). The desktop reaches
-  it through its SSH tunnel.
-- Later (Pi as coordinator): run the same code on the Pi with `RIG_COMMAND="ssh rig rig"`.
-  The upstream ports are loopback-only on the rig, so this also needs either an SSH forward from
-  the Pi or LAN-bound runtimes, plus bearer auth once the gateway listens on the LAN.
-  Multi-rig means one gateway route per rig prefix.
+- Today: the gateway runs on the Pi (`pi-gateway.service`), the one front door for the rig.
+  `RIG_COMMAND` is a multiplexed ssh to 10.0.0.3 running `/usr/local/bin/rig`, and
+  `pi-rig-tunnel.service` forwards the rig's remote ports (11434-11441) to Pi loopback, so the
+  rig's runtimes stay loopback-only. Clients work on the Pi (or forward its 8080).
+- Over ssh: exit 255 means the rig is unreachable (502). A `rig start` is never killed, since
+  killing the ssh client can stop a load mid-way and free the rig's model-load lock early.
+- LAN or external clients: put keys in `GATEWAY_API_KEYS_FILE` and bind a LAN address; the gateway
+  refuses a non-loopback bind without keys.
+- Later: multi-rig means one gateway route per rig prefix.
 
 ## Deliberately not here (yet)
 
-Cloud routing (Roo does OpenRouter natively), auth (loopback only), idle auto-unload,
+Cloud routing (Roo does OpenRouter natively), idle auto-unload,
 auto-evict when a profile doesn't fit (it returns 503 instead).

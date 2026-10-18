@@ -32,7 +32,8 @@ BENCHMARKING_ROOTS = (
 )
 # Registry statuses the gateway may offer. Candidates are allowed so they can be tried remotely.
 OFFERABLE_STATUSES = {"active", "candidate"}
-ONE_1060 = {"min_vram_mb": 5800}
+# max_vram_mb keeps 1060 profiles off the 3090 (rig place_profile honors it).
+ONE_1060 = {"min_vram_mb": 5800, "max_vram_mb": 8192}
 ONE_3090 = {"min_vram_mb": 20000}
 
 # The offer. Model settings come from the registry profile named here, never from this list.
@@ -106,6 +107,8 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             problems.append(f"{pid}: registry profile {r['profile']} lacks runtime ctx_size/batch_size")
         if not gpus:
             problems.append(f"{pid}: gpus_needed is required")
+        if any(int(g.get("max_vram_mb", g["min_vram_mb"])) < int(g["min_vram_mb"]) for g in gpus):
+            problems.append(f"{pid}: a gpus_needed entry has max_vram_mb below min_vram_mb")
         if split and len(str(split).split(",")) != len(gpus):
             problems.append(f"{pid}: tensor_split {split} needs one weight per gpus_needed entry ({len(gpus)})")
         if len(problems) > before:

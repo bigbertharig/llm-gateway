@@ -101,3 +101,13 @@ def test_the_offer_in_the_script_is_well_formed():
 def test_committed_file_matches_the_offer_ids():
     committed = json.loads((gen.OUTPUT_PATH).read_text(encoding="utf-8"))
     assert [p["id"] for p in committed["remote_profiles"]] == [o["id"] for o in gen.OFFER]
+
+
+def test_gpu_range_must_be_ordered():
+    bad = {"min_vram_mb": 8000, "max_vram_mb": 6000}
+    _, problems = build([{"id": "r", "model": "small:7b", "gpus_needed": [bad]}])
+    assert any("max_vram_mb below min_vram_mb" in p for p in problems), problems
+
+
+def test_1060_slot_excludes_the_3090():
+    assert gen.ONE_1060["max_vram_mb"] < gen.ONE_3090["min_vram_mb"]

@@ -1,10 +1,10 @@
 """Check rig profiles through the gateway: what an agent harness (Roo) actually depends on.
 
 Talks only to the gateway HTTP API, so it runs anywhere the gateway is reachable
-(rig: http://127.0.0.1:8080, desktop: through the rig-llm tunnel).
+(on the Pi: http://127.0.0.1:8080; elsewhere: forward the Pi's 8080).
 
     .venv/bin/python tools/model_check.py --profiles coder-7b chat-27b
-    .venv/bin/python tools/model_check.py --profiles coder-30b --exclusive   # on the rig: unload others first
+    .venv/bin/python tools/model_check.py --profiles coder-30b --exclusive   # unload others first (rig over ssh)
 
 Per profile: load time, advertised vs served context, thinking leak, streaming, tool calling,
 /tokenize, prompt-processing speed at growing prompt sizes, and the context-overflow error.
@@ -137,7 +137,7 @@ def main() -> int:
     ap.add_argument("--profiles", nargs="*", help="profile ids (default: all published)")
     ap.add_argument("--exclusive", action="store_true",
                     help="before each profile, unload every other loaded profile (needs --rig-command)")
-    ap.add_argument("--rig-command", default="rig")
+    ap.add_argument("--rig-command", default="ssh -o BatchMode=yes 10.0.0.3 /usr/local/bin/rig")
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "results"))
     args = ap.parse_args()
