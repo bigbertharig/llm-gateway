@@ -109,7 +109,10 @@ stops the profile and releases its lease.
   stack's lease.
 - Open: does the brain's model-choice logic move into the manager (the user expects so, not decided).
 
-**C, benchmarking (after the 2026-10-17 lane run reports LANE_DONE on every lane).**
+**C, benchmarking.** Started 2026-10-17: lanes (`worker_lane.sh`) hold a `benchmarks` lease per GPU
+through `harness_lease.sh` (rigctl over ssh), pass it to `run_runtime.sh`, release it on exit; a
+refused card stops the lane (`LANE_REFUSED`), an unreachable manager runs offline as `no-lease`.
+`LANE_STOP_AFTER=3` gives a quick check. Still open below: campaigns, the job queue, run-note fixes.
 - Lane scripts: `benchmarking/scripts/integration/run_worker_lanes.sh`, `worker_lane.sh`, `phase4.sh`,
   `p45.sh`; campaigns: `llm_orchestration/shared/scripts/benchmarks/run_campaign.py`.
 - Each lane takes a `benchmarks` lease for its GPU (`rigctl acquire --gpus N`, renew in its loop,

@@ -35,6 +35,8 @@ What follows from it:
 - Other host-RAM users to budget: Gemma-4 per-layer embeddings (2.2-2.4 GB, host by design),
   benchmark evaluation containers (EvalPlus peaked at 4.7 GB), OS and Docker, and earlyoom's kill
   line (about 10% available, and swap free below 50%).
+- Base footprint, first direct reading (2026-10-17 23:24): gpt-oss-20b on the 3090, fully offloaded,
+  just loaded with an empty cache: 269 MB host RAM (anonymous + swap, read by the rig guard).
 - To measure before fixing numbers: one server's footprint with `--cache-ram 0` after an hour of
   benchmark traffic, and per-device CUDA context cost for a 5-way split.
 
