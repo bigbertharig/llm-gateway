@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import time
 from collections.abc import Awaitable, Callable
@@ -44,7 +45,8 @@ class Rig:
         self._orphans: set[asyncio.Task] = set()
         # ssh joins its arguments into one string for the remote shell, which splits it again.
         # Matches ssh, ssh.exe and a full path to either (Windows OpenSSH).
-        self._over_ssh = bool(command) and os.path.splitext(os.path.basename(command[0]))[0].lower() == "ssh"
+        # Split on both separators: a Windows path reaches this code on Linux in tests and on the Pi.
+        self._over_ssh = bool(command) and os.path.splitext(re.split(r"[\\/]", command[0])[-1])[0].lower() == "ssh"
 
     def argv(self, *args: str) -> list[str]:
         """The full command line; over ssh each argument is shell-quoted so it arrives intact."""
