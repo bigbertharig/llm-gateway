@@ -50,6 +50,10 @@ class Manager:
         self._obs_lock = asyncio.Lock()
         # This controller makes one placement decision at a time; the rig refuses overlaps across controllers.
         self._place_lock = asyncio.Lock()
+        # Leases a load or unload of this manager is working on right now. The reconciler leaves them alone
+        # for the whole operation: between taking a lease and the rig recording the profile, and between the
+        # rig unloading a profile and this manager releasing its lease, the lease looks unbacked.
+        self._in_flight: set[str] = set()
 
     # ------------------------------------------------------------------ control
 
@@ -236,22 +240,27 @@ class Manager:
                                    model=profile.get("model", ""),
                                    purpose=f"gateway profile {profile_id} ({use}, cache {cache_mib} MiB)")
         lease_id = lease["lease_id"]
+        self._in_flight.add(lease_id)
         try:
-            item = await self.record.plan_add("load", {
-                "profile": profile_id, "gpus": lease["gpu_ids"], "port": lease["metadata"]["port"],
-                "lease": lease_id, "cache_ram": cache_mib})
-        except (ManagerError, RigUnavailable):
-            await self.release(lease_id, OWNER, force=True)
-            raise
-        log.info("load %s queued in the rig plan as %s (use %s, cache %s MiB)", profile_id, item["id"], use, cache_mib)
-        done = await self._wait_item(item["id"], profile_id, until_ready=True)
-        if done.get("state") in ("failed", "cancelled"):
-            obs = await self.observe(fresh=True)
-            if profile_id in obs.get("profiles", {}):
-                await self.rig.stop_profile(profile_id)
-            await self.release(lease_id, OWNER, force=True)
-            raise RigUnavailable(502, f"rig did not load {profile_id} ({done['state']}): "
-                                      f"{str(done.get('result') or '')[-1500:]}")
+            try:
+                item = await self.record.plan_add("load", {
+                    "profile": profile_id, "gpus": lease["gpu_ids"], "port": lease["metadata"]["port"],
+                    "lease": lease_id, "cache_ram": cache_mib})
+            except (ManagerError, RigUnavailable):
+                await self.release(lease_id, OWNER, force=True)
+                raise
+            log.info("load %s queued in the rig plan as %s (use %s, cache %s MiB)", profile_id, item["id"], use,
+                     cache_mib)
+            done = await self._wait_item(item["id"], profile_id, until_ready=True)
+            if done.get("state") in ("failed", "cancelled"):
+                obs = await self.observe(fresh=True)
+                if profile_id in obs.get("profiles", {}):
+                    await self.rig.stop_profile(profile_id)
+                await self.release(lease_id, OWNER, force=True)
+                raise RigUnavailable(502, f"rig did not load {profile_id} ({done['state']}): "
+                                          f"{str(done.get('result') or '')[-1500:]}")
+        finally:
+            self._in_flight.discard(lease_id)
 
     async def unload_profile(self, profile_id: str) -> dict:
         await self._require_control()
@@ -259,17 +268,23 @@ class Manager:
         prof = obs.get("profiles", {}).get(profile_id)
         if not prof:
             raise ManagerError(404, f"{profile_id} is not loaded")
-        item = await self.record.plan_add("unload", {"profile": profile_id})
-        done = await self._wait_item(item["id"], profile_id, until_ready=False)
-        released = None
-        if prof.get("lease") and any(l.get("lease_id") == prof["lease"] for l in obs.get("leases", [])):
-            try:
-                await self.release(prof["lease"], OWNER, force=True)
-            except ManagerError as exc:
-                # The reconciler can release it first: once the profile is gone the lease is unbacked.
-                if exc.status != 404:
-                    raise
-            released = prof["lease"]
+        lease_id = prof.get("lease")
+        if lease_id:
+            self._in_flight.add(lease_id)
+        try:
+            item = await self.record.plan_add("unload", {"profile": profile_id})
+            done = await self._wait_item(item["id"], profile_id, until_ready=False)
+            released = None
+            if lease_id and any(l.get("lease_id") == lease_id for l in obs.get("leases", [])):
+                try:
+                    await self.release(lease_id, OWNER, force=True)
+                except ManagerError as exc:
+                    if exc.status != 404:  # already gone (released by an operator or another controller)
+                        raise
+                released = lease_id
+        finally:
+            if lease_id:
+                self._in_flight.discard(lease_id)
         return {"unloaded": profile_id, "item": item["id"], "state": done["state"], "released": released}
 
     # ------------------------------------------------------------------ model loads (any model, any cards)
@@ -344,23 +359,27 @@ class Manager:
                                    run_id=f"model-{pid}", gpu_ids=gpus, claim=claim, ttl_s=INTERACTIVE_TTL_S,
                                    model=r["model"], purpose=f"model load {pid} ({use}, ctx {plan_['ctx']})")
         lease_id = lease["lease_id"]
+        self._in_flight.add(lease_id)
         try:
-            item = await self.record.plan_add("load", {
-                "profile": pid, "spec": spec, "gpus": gpus, "port": lease["metadata"]["port"],
-                "lease": lease_id, "cache_ram": cache_mib})
-        except (ManagerError, RigUnavailable):
-            await self.release(lease_id, OWNER, force=True)
-            raise
-        log.info("model load %s queued as %s (GPU %s ctx %s split %s)", pid, item["id"], gpus, plan_["ctx"],
-                 plan_.get("tensor_split"))
-        done = await self._wait_item(item["id"], pid, until_ready=True)
-        obs = await self.observe(fresh=True)
-        if done.get("state") in ("failed", "cancelled"):
-            if pid in obs.get("profiles", {}):
-                await self.rig.stop_profile(pid)
-            await self.release(lease_id, OWNER, force=True)
-            raise RigUnavailable(502, f"rig did not load {pid} ({done['state']}): "
-                                      f"{str(done.get('result') or '')[-1500:]}")
+            try:
+                item = await self.record.plan_add("load", {
+                    "profile": pid, "spec": spec, "gpus": gpus, "port": lease["metadata"]["port"],
+                    "lease": lease_id, "cache_ram": cache_mib})
+            except (ManagerError, RigUnavailable):
+                await self.release(lease_id, OWNER, force=True)
+                raise
+            log.info("model load %s queued as %s (GPU %s ctx %s split %s)", pid, item["id"], gpus, plan_["ctx"],
+                     plan_.get("tensor_split"))
+            done = await self._wait_item(item["id"], pid, until_ready=True)
+            obs = await self.observe(fresh=True)
+            if done.get("state") in ("failed", "cancelled"):
+                if pid in obs.get("profiles", {}):
+                    await self.rig.stop_profile(pid)
+                await self.release(lease_id, OWNER, force=True)
+                raise RigUnavailable(502, f"rig did not load {pid} ({done['state']}): "
+                                          f"{str(done.get('result') or '')[-1500:]}")
+        finally:
+            self._in_flight.discard(lease_id)
         loaded = obs.get("profiles", {}).get(pid, {})
         return {"profile": pid, "model": r["model"], "state": "ready", "port": lease["metadata"]["port"],
                 "gpus": gpus, "lease": lease_id, "ctx": loaded.get("ctx_size", plan_["ctx"]),
@@ -404,6 +423,8 @@ class Manager:
             if lease.get("owner") != OWNER:
                 continue
             lid = lease["lease_id"]
+            if lid in self._in_flight:
+                continue  # a load or unload of ours is working on it; it settles the lease itself
             if lid in backed:
                 if not is_expired(lease, now):
                     await self.record.renew(lid, OWNER, INTERACTIVE_TTL_S)

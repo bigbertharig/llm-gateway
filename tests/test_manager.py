@@ -423,18 +423,24 @@ def test_unload_is_a_plan_item(menv):
     assert kinds == ["load", "unload"]
 
 
-def test_unload_succeeds_when_the_reconciler_released_the_lease_first(menv, monkeypatch):
+def test_reconcile_leaves_a_lease_alone_while_its_unload_runs(menv, monkeypatch):
+    """2026-10-18: a lane's unload got 404 because the reconciler released the lease mid-unload."""
     c = menv["client"]
+    manager = menv["app"].state.manager
     assert chat(c, "gpu-rig/small").status_code == 200
+    (lease,) = menv["leases"]()
+    monkeypatch.setattr(core, "ORPHAN_GRACE_S", 0)
     real_wait = core.Manager._wait_item
+    seen = {}
 
-    async def wait_then_lose_the_lease(self, *a, **kw):
-        done = await real_wait(self, *a, **kw)
-        st = menv["rig"]()
-        st["leases"] = []  # the reconciler got there first
-        menv["write"](st)
+    async def reconcile_mid_unload(self, *a, **kw):
+        done = await real_wait(self, *a, **kw)  # the rig has unloaded the profile: the lease looks unbacked
+        seen["reconcile"] = await self.reconcile_once()
         return done
 
-    monkeypatch.setattr(core.Manager, "_wait_item", wait_then_lose_the_lease)
+    monkeypatch.setattr(core.Manager, "_wait_item", reconcile_mid_unload)
     r = c.post("/v1/manager/profiles/small/unload")
-    assert r.status_code == 200 and r.json()["state"] == "done"
+    assert r.status_code == 200 and r.json()["released"] == lease["lease_id"]
+    assert lease["lease_id"] not in seen["reconcile"]["released"]  # the unload released it, not the reconciler
+    assert menv["leases"]() == [] and manager._in_flight == set()
+
