@@ -65,7 +65,7 @@ def need(text: str) -> dict:
 
 def print_plan(plan: dict, limit: int = 8) -> None:
     for i in (plan.get("items") or [])[-limit:]:
-        result = str(i.get("result") or "").splitlines()[-1:] if i["state"] in ("failed",) else []
+        result = str(i.get("result") or "").splitlines()[-1:] if i["state"] in ("failed", "interrupted") else []
         print(f"  plan {i['id']:<20} {i['state']:<9} {i['kind']:<6} {json.dumps(i['args'])}"
               + (f"  ({result[0][:120]})" if result else ""))
 
@@ -82,7 +82,17 @@ def print_fit(f: dict) -> None:
 
 
 def print_status(s: dict) -> None:
+    rig = s.get("rig") or {}
+    if s.get("from_copy"):
+        print(f"RIG UNREACHABLE since {rig.get('down_since')}; last report {s.get('observed_at')} "
+              f"(this controller's copy, saved {rig.get('copy_saved_at')})")
     print(f"rig mode {s.get('mode')}  observed {s.get('observed_at')}  {s.get('summary')}")
+    hold = (s.get("plan") or {}).get("hold")
+    if hold:
+        print(f"plan HELD ({hold.get('reason')}) since {hold.get('since')}; interrupted: "
+              f"{', '.join(hold.get('interrupted') or []) or 'none'}")
+    for e in rig.get("events", [])[-5:]:
+        print(f"  event {e['at']}  {e['event']}")
     c = s.get("controller") or {}
     active = c.get("active") or {}
     print(f"controller: this={c.get('this')} {'IN CONTROL' if c.get('in_control') else 'read-only'}; "

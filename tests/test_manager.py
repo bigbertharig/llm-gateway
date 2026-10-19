@@ -104,8 +104,19 @@ FAKE_RIG = textwrap.dedent("""\
         if c and o.get("--controller") != c["id"]:
             fail("not_controller", f"controller {o.get('--controller')!r} is not active (active: {c['id']})")
     def plan_report():
-        return {"controller": st["controller"], "items": st["plan_items"],
+        return {"controller": st["controller"], "items": st["plan_items"], "version": st.get("plan_version", 1),
+                "hold": st.get("plan_hold"), "boot_id": st.get("boot_id", "boot-1"),
                 "next": [i for i in st["plan_items"] if i["state"] in ("queued", "running")]}
+    if a[:2] == ["plan", "resume"]:
+        o = opts(a[2:]); require(o)
+        st["plan_hold"] = None; st["plan_version"] = st.get("plan_version", 1) + 1
+        save(); print(json.dumps({"plan": plan_report()})); sys.exit(0)
+    if a[:2] == ["plan", "restore"]:
+        o = opts(a[2:]); doc = json.loads(o["--doc"])
+        if doc.get("version", 0) <= st.get("plan_version", 1):
+            fail("state", "the rig's plan is current")
+        st["plan_items"] = doc["items"]; st["plan_version"] = doc["version"] + 1; st["restored"] = True
+        save(); print(json.dumps({"plan": plan_report()})); sys.exit(0)
     if a[:2] == ["controller", "claim"]:
         o = opts(a[2:]); c = st["controller"]
         if c and c["id"] != o["--id"] and not o.get("--force") and not st.get("controller_stale"):
@@ -226,6 +237,7 @@ def menv(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "LOAD_POLL_S", 0.1)
     monkeypatch.setattr(core, "OBSERVE_CACHE_S", 0.0)
     settings = Settings(
+        mirror_path=tmp_path / "copy" / "rig_report.json",
         rig_command=(sys.executable, str(tmp_path / "rig.py")), profiles_path=profiles,
         upstream_host="127.0.0.1", model_prefix="gpu-rig", bind="127.0.0.1", port=0,
         start_timeout_seconds=30, request_timeout_seconds=30, manager_enabled=True,
@@ -242,7 +254,8 @@ def menv(tmp_path, monkeypatch):
         return rig_state()["leases"]
 
     with TestClient(app) as c:
-        yield {"client": c, "rig": rig_state, "write": write_state, "leases": leases, "app": app}
+        yield {"client": c, "rig": rig_state, "write": write_state, "leases": leases, "app": app,
+               "copy": tmp_path / "copy" / "rig_report.json", "rig_py": tmp_path / "rig.py"}
 
 
 def chat(c, model):
@@ -443,4 +456,51 @@ def test_reconcile_leaves_a_lease_alone_while_its_unload_runs(menv, monkeypatch)
     assert r.status_code == 200 and r.json()["released"] == lease["lease_id"]
     assert lease["lease_id"] not in seen["reconcile"]["released"]  # the unload released it, not the reconciler
     assert menv["leases"]() == [] and manager._in_flight == set()
+
+
+# ------------------------------------------------------------------ shared report (rule 1c)
+
+def test_the_controller_keeps_a_copy_and_answers_from_it_when_the_rig_is_gone(menv):
+    c = menv["client"]
+    assert c.get("/v1/manager/status").status_code == 200
+    copy = json.loads(menv["copy"].read_text())
+    assert copy["plan"]["version"] == 1 and copy["gpus"]
+    menv["rig_py"].write_text("import sys; print('ssh: connect to host 10.0.0.3: No route to host'); sys.exit(255)")
+    r = c.get("/v1/manager/status")
+    assert r.status_code == 200 and r.json()["from_copy"] and not r.json()["rig"]["reachable"]
+    assert "rig unreachable" in r.json()["rig"]["events"][-1]["event"]
+
+
+def test_a_reboot_hold_is_reviewed_and_resumed(menv, monkeypatch):
+    monkeypatch.setattr(core, "ORPHAN_GRACE_S", 0)
+    c = menv["client"]
+    manager = menv["app"].state.manager
+    assert chat(c, "gpu-rig/small").status_code == 200
+    st = menv["rig"]()
+    st.update(boot_id="boot-2", plan_hold={"reason": "boot", "since": "now", "interrupted": ["load-0"]},
+              profiles={})
+    st["plan_items"][0].update(state="interrupted", result="interrupted: the rig restarted while it ran (load small)")
+    menv["write"](st)
+    import asyncio
+    out = asyncio.run(manager.reconcile_once())
+    assert out["in_control"] and menv["rig"]()["plan_hold"] is None
+    events = [e["event"] for e in manager.events]
+    assert any("rig rebooted" in e for e in events)
+    assert any("resumed; interrupted, not retried: load-0" in e for e in events)
+    assert menv["leases"]() == []  # the interrupted load left an unbacked lease: released
+
+
+def test_a_rig_that_lost_its_plan_gets_the_controller_copy_back(menv):
+    c = menv["client"]
+    manager = menv["app"].state.manager
+    assert chat(c, "gpu-rig/small").status_code == 200
+    st = menv["rig"]()
+    saved = len(st["plan_items"])
+    manager.mirror["plan"]["version"] = 40
+    st.update(plan_items=[], plan_version=2, plan_hold={"reason": "boot", "since": "now", "interrupted": []})
+    menv["write"](st)
+    import asyncio
+    asyncio.run(manager.reconcile_once())
+    st = menv["rig"]()
+    assert st.get("restored") and len(st["plan_items"]) == saved and st["plan_hold"] is None
 

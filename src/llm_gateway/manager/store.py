@@ -72,5 +72,11 @@ class RigRecord:
     async def plan_add(self, kind: str, args: dict[str, Any]) -> dict[str, Any]:
         return (await self._call("plan", "add", "--kind", kind, "--args", json.dumps(args), *self._as_me()))["item"]
 
+    async def plan_resume(self) -> dict[str, Any]:
+        return (await self._call("plan", "resume", *self._as_me()))["plan"]
+
+    async def plan_restore(self, doc: dict[str, Any]) -> dict[str, Any]:
+        return (await self._call("plan", "restore", "--doc", json.dumps(doc), *self._as_me()))["plan"]
+
     async def plan_cancel(self, item_id: str) -> dict[str, Any]:
         return (await self._call("plan", "cancel", item_id, *self._as_me()))["item"]

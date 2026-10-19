@@ -6,6 +6,11 @@ and claim record, the active-controller record and the plan queue all live on th
 hardware rules (one load at a time, health, power, thermal, RAM). So the rig keeps going if this
 controller goes away, and this or another controller picks up from `rig observe`.
 
+Shared report (rule 1c): the rig keeps the record and the plan; this controller keeps a copy on its own
+disk, saved on every observation. When the rig reboots it holds its plan; the reconciler reviews it
+(restoring the plan from the copy if the rig's is behind) and resumes it. When the rig is unreachable,
+status answers from the copy and says since when.
+
 One controller is active at a time. This one takes control when there is none or the active one's
 heartbeat is stale, heartbeats while it holds it, and is read-only (writes refused with 409) while
 another controller is active. A handoff is an explicit takeover (`take_control(force=True)`).
@@ -14,8 +19,12 @@ another controller is active. A handoff is an explicit takeover (`take_control(f
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
+from collections import deque
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,7 +47,8 @@ ORPHAN_GRACE_S = 60
 
 
 class Manager:
-    def __init__(self, rig: Rig, start_timeout_s: float = 900, controller_id: str = "controller"):
+    def __init__(self, rig: Rig, start_timeout_s: float = 900, controller_id: str = "controller",
+                 mirror_path: Path | None = None):
         self.rig = rig
         self.controller_id = controller_id
         self.record = RigRecord(rig, controller_id)
@@ -54,6 +64,11 @@ class Manager:
         # for the whole operation: between taking a lease and the rig recording the profile, and between the
         # rig unloading a profile and this manager releasing its lease, the lease looks unbacked.
         self._in_flight: set[str] = set()
+        # This controller's copy of the rig's report, and what it has seen happen to the rig.
+        self.mirror_path = mirror_path
+        self.mirror: dict | None = self._load_mirror()
+        self.rig_down_since: float | None = None
+        self.events: deque[dict] = deque(maxlen=50)
 
     # ------------------------------------------------------------------ control
 
@@ -94,9 +109,96 @@ class Manager:
     async def observe(self, fresh: bool = False) -> dict:
         async with self._obs_lock:
             if fresh or self._obs is None or time.monotonic() - self._obs_at > OBSERVE_CACHE_S:
-                self._obs = await self.rig.observe()
+                try:
+                    obs = await self.rig.observe()
+                except RigUnavailable as exc:
+                    if self.rig_down_since is None:
+                        self.rig_down_since = time.time()
+                        self._event(f"rig unreachable: {str(exc)[:200]}")
+                    raise
+                if self.rig_down_since is not None:
+                    self._event(f"rig back after {time.time() - self.rig_down_since:.0f} s")
+                    self.rig_down_since = None
+                self._note_boot(obs)
+                self._save_mirror(obs)
+                self._obs = obs
                 self._obs_at = time.monotonic()
             return self._obs
+
+    # ------------------------------------------------------------------ the copy of the rig's report
+
+    def _event(self, text: str) -> None:
+        log.warning("rig: %s", text)
+        self.events.append({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": text})
+
+    def _load_mirror(self) -> dict | None:
+        if not self.mirror_path or not self.mirror_path.is_file():
+            return None
+        try:
+            return json.loads(self.mirror_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.warning("rig report copy unreadable (%s); starting without it", exc)
+            return None
+
+    def mirror_plan(self) -> dict:
+        return (self.mirror or {}).get("plan") or {}
+
+    def _note_boot(self, obs: dict) -> None:
+        new = (obs.get("plan") or {}).get("boot_id")
+        old = self.mirror_plan().get("boot_id")
+        if new and old and new != old:
+            self._event(f"rig rebooted (booted {(obs.get('plan') or {}).get('booted_at')})")
+
+    def _save_mirror(self, obs: dict) -> None:
+        """Keep the latest report, except the plan when the rig's copy is behind ours (it lost its file):
+        then ours is kept until the reconciler has written it back."""
+        plan = obs.get("plan") or {}
+        keep = plan
+        mine = self.mirror_plan()
+        if int(mine.get("version") or 0) > int(plan.get("version") or 0):
+            keep = mine
+        self.mirror = {"saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "observed_at": obs.get("observed_at"), "rig_plan_version": plan.get("version"),
+                       "plan": keep, **{k: obs.get(k) for k in ("mode", "gpus", "profiles", "leases", "claims",
+                                                                "guard", "containers")}}
+        if not self.mirror_path:
+            return
+        try:
+            self.mirror_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.mirror_path.with_name(f".{self.mirror_path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(self.mirror, indent=1) + "\n", encoding="utf-8")
+            tmp.replace(self.mirror_path)
+        except OSError as exc:
+            log.warning("could not save the rig report copy: %s", exc)
+
+    async def settle_hold(self, obs: dict) -> dict | None:
+        """The rig rebooted (or lost its plan) and holds its queue: write back our copy if the rig's is
+        behind, report what was interrupted, and resume. Interrupted loads are not retried: their callers
+        got the failure, and their leases are released below as unbacked."""
+        plan = obs.get("plan") or {}
+        hold = plan.get("hold")
+        if not hold:
+            return None
+        mine = self.mirror_plan()
+        restored = None
+        if int(mine.get("version") or 0) > int(plan.get("version") or 0):
+            restored = await self.record.plan_restore(mine)
+            self._event(f"rig plan was behind (version {plan.get('version')} < {mine.get('version')}); "
+                        f"wrote back this controller's copy")
+        items = {i["id"]: i for i in (restored or plan).get("items", [])}
+        stopped = [f"{iid}: {items.get(iid, {}).get('result') or 'interrupted'}" for iid in hold.get("interrupted", [])]
+        await self.record.plan_resume()
+        self._obs = None
+        self._event(f"plan held ({hold.get('reason')}) since {hold.get('since')}; resumed"
+                    + (f"; interrupted, not retried: {'; '.join(stopped)}" if stopped else "; nothing interrupted"))
+        return {"hold": hold, "restored": bool(restored), "interrupted": stopped}
+
+    def rig_report(self) -> dict:
+        """Reachability and recent events, for status."""
+        return {"reachable": self.rig_down_since is None,
+                "down_since": (datetime.fromtimestamp(self.rig_down_since, timezone.utc).isoformat(timespec="seconds")
+                               if self.rig_down_since else None),
+                "copy_saved_at": (self.mirror or {}).get("saved_at"), "events": list(self.events)[-10:]}
 
     async def leases(self) -> list[dict]:
         return (await self.observe(fresh=True)).get("leases", [])
@@ -108,8 +210,18 @@ class Manager:
         return (await self.observe(fresh=True)).get("plan") or {}
 
     async def status(self) -> dict:
-        """The single report: what the rig is doing now (GPUs, profiles, guard) and next (plan)."""
-        obs = await self.observe()
+        """The single report: what the rig is doing now (GPUs, profiles, guard) and next (plan). With the
+        rig unreachable, the last copy this controller kept, marked as such."""
+        try:
+            obs = await self.observe()
+        except RigUnavailable:
+            if not self.mirror:
+                raise
+            m = self.mirror
+            return {"observed_at": m.get("observed_at"), "mode": m.get("mode"), "summary": {"rig": "unreachable"},
+                    "controller": self.control(), "guard": m.get("guard"), "gpus": [], "profiles": m.get("profiles", {}),
+                    "plan": m.get("plan") or {}, "jobs": [], "leases": m.get("leases", []),
+                    "claims": m.get("claims", []), "rig": self.rig_report(), "from_copy": True}
         leases, claims = obs.get("leases", []), obs.get("claims", [])
         rows = gpu_rows(obs, leases, claims)
         counts: dict[str, int] = {}
@@ -119,7 +231,7 @@ class Manager:
                 "controller": self.control(obs), "guard": obs.get("guard"), "gpus": rows,
                 "profiles": obs.get("profiles", {}), "plan": obs.get("plan") or {}, "jobs": obs.get("jobs", []),
                 "last_error": obs.get("last_error"), "state_error": obs.get("state_error"),
-                "leases": leases, "claims": claims}
+                "leases": leases, "claims": claims, "rig": self.rig_report()}
 
     # ------------------------------------------------------------------ leases
 
@@ -414,6 +526,9 @@ class Manager:
             return {"in_control": False, "note": self.control_note, "renewed": [], "released": []}
 
         obs = await self.observe(fresh=True)
+        if (obs.get("plan") or {}).get("hold"):
+            await self.settle_hold(obs)
+            obs = await self.observe(fresh=True)
         # A profile whose runtime is gone (the rig guard freed RAM, or it crashed): clear it on the rig;
         # its lease is then unbacked and released below.
         for pid, prof in obs.get("profiles", {}).items():

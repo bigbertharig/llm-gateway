@@ -96,7 +96,7 @@ def create_app(
     rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
     manager: Manager | None = None
     if s.manager_enabled:
-        manager = Manager(rig, s.start_timeout_seconds, s.controller_id)
+        manager = Manager(rig, s.start_timeout_seconds, s.controller_id, mirror_path=s.mirror_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

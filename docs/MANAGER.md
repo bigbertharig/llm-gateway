@@ -43,6 +43,21 @@ build) results fall back to local storage when the shared drive is gone and sync
    then waits. Loaded models stay loaded unless an `unload` item says otherwise. With no controller
    connected it finishes the queue. Item kinds today: `load`, `unload` (jobs such as benchmark lanes
    are the next kind). This mirrors the orchestration task queue in a single file.
+1c. **One report, two copies (2026-10-18).** The rig's record and plan are also kept by the active
+   controller: every observation (the 30 s heartbeat) saves `rig observe` to the controller's own disk
+   (`RIG_MIRROR_PATH`, default `~/.local/state/llm-gateway/rig_report.json`). The plan has a `version`
+   (bumped on every rig write) and the rig's `boot_id`. Either side recovers from the other:
+   - rig reboots: on the first start of a new boot it marks the item that was running `interrupted`
+     (with what it was doing) and holds the plan; it boots neutral and runs nothing. The controller's
+     reconciler sees the hold, writes its copy back if the rig's version is behind (lost or replaced
+     file, `rig plan restore`), reports what was interrupted and resumes (`rig plan resume`).
+     Interrupted loads are not retried (their caller got the failure); their leases are released as
+     unbacked. A lost network without a reboot is not a hold: the rig finishes what it was given.
+   - rig unreachable: status answers from the copy (`from_copy`, "RIG UNREACHABLE since ...") and the
+     controller logs when the rig went away, when it came back and whether it rebooted (`rig.events`).
+   - controller crashes: it restarts with its copy and reads the rig's live report.
+   Jobs (benchmark lanes) are not plan items yet, so after a reboot they do not come back; their suites
+   resume from checkpoints when restarted. Making them plan items is the job-queue work below.
 2. **No lease, no load.** Every runtime starts under a lease naming its GPUs and port. Every launcher
    already goes through `run_runtime.sh` (brain, workers, split workers, `rig.py`, `run_campaign.py`,
    integration lanes, runtime smoke), so that is where Phase D enforces it.

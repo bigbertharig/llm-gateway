@@ -53,6 +53,8 @@ class Settings:
     manager_enabled: bool = False
     # This controller's id on the rig (one active controller at a time), e.g. pi or desktop.
     controller_id: str = "controller"
+    # This controller's copy of the rig's report (MANAGER.md rule 1c); None: no copy kept.
+    mirror_path: Path | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -68,6 +70,8 @@ class Settings:
             api_keys=read_api_keys(Path(os.getenv("GATEWAY_API_KEYS_FILE", str(DEFAULT_API_KEYS_FILE)))),
             manager_enabled=os.getenv("RIG_MANAGER", "off").lower() in ("on", "1", "true", "yes"),
             controller_id=os.getenv("RIG_CONTROLLER_ID") or socket.gethostname().lower(),
+            mirror_path=Path(os.getenv("RIG_MIRROR_PATH") or
+                             Path.home() / ".local/state/llm-gateway/rig_report.json"),
         )
 
     def validate(self) -> None:
