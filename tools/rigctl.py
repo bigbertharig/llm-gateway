@@ -10,8 +10,10 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
     rigctl release LEASE --owner lanes | --force
     rigctl claim NAME --gpus 0 [--note "roo testing"]      rigctl unclaim NAME
     rigctl load PROFILE [--claim NAME]                     rigctl unload PROFILE
-    rigctl fit MODEL --cards 2 | --gpus 1,3 [--ctx N] [--use benchmark|chat|worker] [--profile P]
-    rigctl load-model MODEL --cards 2 | --gpus 1,3 [--ctx N] [--use ...] [--args "--reasoning on"] [--json]
+    rigctl fit MODEL [--cards 2 | --gpus 1,3] [--ctx N] [--use benchmark|chat|worker] [--profile P]
+    rigctl load-model MODEL [--cards 2 | --gpus 1,3] [--ctx N] [--use ...] [--args "--reasoning on"] [--json]
+                                                           no cards given: the harness takes the fewest free
+                                                           cards that give --ctx (or at least 4096)
                                                            any registry model on any cards; the harness
                                                            checks the fit first (exit 4: won't fit), the
                                                            rig loads it; unload with `rigctl unload <profile>`
@@ -131,7 +133,8 @@ def main() -> int:
     s = sub.add_parser("unload"); s.add_argument("profile")
     for name in ("fit", "load-model"):
         s = sub.add_parser(name); s.add_argument("model")
-        s.add_argument("--cards", type=int, help="how many cards (smallest free cards first)")
+        s.add_argument("--cards", type=int, help="how many cards (smallest free cards first); "
+                                                 "omit with --gpus to let the harness choose")
         s.add_argument("--gpus", help="explicit GPU ids, e.g. 1,3")
         s.add_argument("--ctx", help="exact context that must fit (default auto: the largest that fits)")
         s.add_argument("--ctx-min", type=int, help="smallest acceptable context for auto (default 4096)")

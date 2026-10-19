@@ -101,6 +101,23 @@ def test_wont_fit_says_why_and_suggests_cards(tmp_path):
     assert any("GPU 0" in a for a in alts) and any(a.startswith("4 card(s)") for a in alts)
 
 
+def test_harness_picks_one_card_for_small_context_and_splits_for_big(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, ctx_train=262144), "m")
+    free = [card(1), card(2), card(3), card(0, 24564)]
+    one = fit.choose(s, free)                      # no context asked: one small card is enough
+    assert one["gpus"] == [1]
+    two = fit.choose(s, free, ctx=one["ctx"] * 2)  # more than one 1060 holds: split on two 1060s
+    assert two["gpus"] == [1, 2]
+    huge = fit.choose(s, free, ctx=one["ctx"] * 6)  # more than two 1060s hold: the big card, not three small
+    assert huge["gpus"] == [0]
+
+
+def test_harness_prefers_the_big_card_over_many_small_ones(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=40, layer_mb=400), "big")  # 16 GB: needs 3+ 1060s
+    p = fit.choose(s, [card(1), card(2), card(3), card(4), card(0, 24564)])
+    assert p["gpus"] == [0]
+
+
 # ------------------------------------------------------------------ end to end (fake rig)
 
 FAKE_LIBRARY = textwrap.dedent("""\
@@ -140,6 +157,8 @@ def test_fit_endpoint_answers_without_loading(menv, registry):  # noqa: F811
     assert r.status_code == 422 and "won't fit" in r.json()["error"]["message"]
     assert "GPU [0]" in r.json()["error"]["message"] or "GPU 0" in r.json()["error"]["message"]
     assert menv["leases"]() == [] and not menv["rig"]().get("plan_items")
+    r = c.post("/v1/manager/models/fit", json={"model": "big:30b"})  # no cards: the harness chooses
+    assert r.status_code == 200 and r.json()["gpus"] == [0] and r.json()["chosen_by"].startswith("harness")
 
 
 def test_load_model_leases_queues_the_spec_and_reports_ready(menv, registry):  # noqa: F811

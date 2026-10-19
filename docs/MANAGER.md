@@ -87,9 +87,12 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
 
 "Load X on Y cards" is two checks, one per layer:
 
-1. **The harness decides** (`manager/fit.py`, `manager/models.py`). The request names a registry model
-   and either a card count (smallest free cards first) or explicit GPUs, plus a use (benchmark, chat,
-   worker) that picks the registry profile and the prompt cache. The manager reads the model's GGUF header
+1. **The harness decides** (`manager/fit.py`, `manager/models.py`). The request names a registry model,
+   optionally a card count (smallest free cards first) or explicit GPUs, a context, and a use (benchmark,
+   chat, worker) that picks the registry profile and the prompt cache. With no cards named the harness
+   chooses: the smallest card class that holds the model on up to two of its cards (one card first), then
+   the next class, then the fewest cards of any mix (`fit.choose`). So Ornith-9B goes on one 1060 at
+   ctx 26880, or two 1060s when asked for 100k; a 27B goes on the 3090, not three 1060s. The manager reads the model's GGUF header
    from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
@@ -111,6 +114,7 @@ estimate was checked on Ornith-1.5-9B over two 1060s: weights 4812 MiB and KV 17
 the same as llama.cpp measured.
 
 ```text
+rigctl fit ornith-1.5:9b [--ctx 100000]         # answer only; the harness picks the cards
 rigctl fit ornith-1.5:9b --cards 2              # answer only: ctx, split, MiB per card, or won't fit
 rigctl load-model ornith-1.5:9b --gpus 1,3 [--ctx N] [--use benchmark] [--args "--reasoning on"]
 rigctl unload ornith-1.5-9b-g1-3                # profile id: model plus its cards

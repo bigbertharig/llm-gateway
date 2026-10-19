@@ -293,10 +293,11 @@ class Manager:
                         ctx: int | None = None, ctx_min: int = fit.CTX_MIN_DEFAULT, use: str = "benchmark",
                         profile: str | None = None, claim: str | None = None,
                         margin_mb: int = fit.MARGIN_MB_DEFAULT) -> dict:
-        """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`)": will it fit, at what
-        context and split. Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
-        if bool(cards) == bool(gpu_ids):
-            raise ManagerError(400, "give exactly one of cards (a count) or gpu_ids")
+        """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`, or, with neither, on the
+        fewest free cards that give `ctx` / at least `ctx_min`)": will it fit, at what context and split.
+        Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
+        if cards and gpu_ids:
+            raise ManagerError(400, "give cards (a count) or gpu_ids, not both")
         if use not in memory.USES:
             raise ManagerError(400, f"use must be one of {memory.USES}")
         try:
@@ -322,12 +323,18 @@ class Manager:
                 raise ManagerError(409, "GPU(s) not available: " + "; ".join(f"GPU {g} {w}" for g, w in blocked.items()),
                                    unavailable=blocked)
             chosen = [f for f in free if f["index"] in wanted]
-        else:
+        elif cards:
             if cards > len(free):
                 raise ManagerError(503, f"{cards} card(s) asked, {len(free)} free: {[f['index'] for f in free]}",
                                    unavailable=why)
             chosen = fit.choose_cards(free, int(cards))
-        result = fit.plan(shape, chosen, **kw)
+        else:
+            chosen = None
+        if chosen is None:
+            result = fit.choose(shape, free, **kw) or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
+            result["chosen_by"] = "harness: fewest free cards that fit"
+        else:
+            result = fit.plan(shape, chosen, **kw)
         result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"])
         if not result["fits"]:
             alts = fit.suggest(shape, free, **kw)

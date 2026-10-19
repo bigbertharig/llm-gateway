@@ -346,6 +346,45 @@ def choose_cards(free_cards: list[dict[str, Any]], n: int) -> list[dict[str, Any
     return sorted(free_cards, key=lambda g: (g["total_mb"], g["index"]))[:n]
 
 
+def candidate_sets(free_cards: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
+    """Card sets of size n to try, in preference order: the n smallest (big cards stay free), then the
+    biggest free card with the n-1 smallest others (one big card often beats several small ones)."""
+    by_size = sorted(free_cards, key=lambda g: (g["total_mb"], g["index"]))
+    sets = [by_size[:n]] if len(by_size) >= n else []
+    if by_size and n <= len(by_size):
+        big = by_size[-1]
+        alt = [big] + [g for g in by_size if g is not big][:n - 1]
+        if sorted(g["index"] for g in alt) != sorted(g["index"] for g in sets[0]):
+            sets.append(alt)
+    return sets
+
+
+# Splitting across more cards costs speed (3090 + one 1060 2.6-3.1x slower, Nex on 4-5 1060s 6.5x;
+# distributed_work_guide.md), so a model stays on the small cards only while it fits on this many of them.
+SAME_CLASS_MAX_CARDS = 2
+
+
+def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+    """The plan the harness picks when the request names no cards: the smallest card class that holds it on
+    up to SAME_CLASS_MAX_CARDS cards (one card first), so big cards stay free for big models; failing that,
+    the fewest cards of any mix. With an exact `ctx` that context must fit, otherwise at least ctx_min."""
+    classes: dict[int, list[dict[str, Any]]] = {}
+    for g in free_cards:
+        classes.setdefault(int(g["total_mb"]), []).append(g)
+    for size in sorted(classes):
+        group = sorted(classes[size], key=lambda g: g["index"])
+        for n in range(1, min(SAME_CLASS_MAX_CARDS, len(group)) + 1):
+            p = plan(s, group[:n], **kw)
+            if p["fits"]:
+                return p
+    for n in range(1, len(free_cards) + 1):
+        for cards in candidate_sets(free_cards, n):
+            p = plan(s, cards, **kw)
+            if p["fits"]:
+                return p
+    return None
+
+
 def suggest(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> list[str]:
     """Alternatives for a request that does not fit: fewest small cards, or one card that holds it."""
     out = []
