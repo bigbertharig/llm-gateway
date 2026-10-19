@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 
+from . import fit
 from .core import Manager
 from .errors import ManagerError
 
@@ -91,6 +92,29 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
     @r.post("/profiles/{profile_id}/unload")
     async def unload(profile_id: str):
         return await manager.unload_profile(profile_id)
+
+    def _model_request(b: dict) -> dict:
+        _require(b, "model")
+        ctx = b.get("ctx")
+        return {"cards": int(b["cards"]) if b.get("cards") else None, "gpu_ids": b.get("gpu_ids"),
+                "ctx": None if ctx in (None, "", "auto") else int(ctx),
+                "ctx_min": int(b.get("ctx_min") or fit.CTX_MIN_DEFAULT), "use": b.get("use", "benchmark"),
+                "profile": b.get("profile"), "claim": b.get("claim"),
+                "margin_mb": int(b.get("margin_mb") or fit.MARGIN_MB_DEFAULT)}
+
+    @r.post("/models/fit")
+    async def fit_model(request: Request):
+        """Would `model` fit on `cards` cards (or `gpu_ids`), and at what context? Nothing is loaded."""
+        b = await _body(request)
+        req = _model_request(b)
+        return await manager.fit_model(b["model"], **req)
+
+    @r.post("/models/load")
+    async def load_model(request: Request):
+        """Fit, lease, load on the rig, wait until it serves. Unload with /profiles/<profile>/unload."""
+        b = await _body(request)
+        req = _model_request(b)
+        return await manager.load_model(b["model"], extra_args=[str(a) for a in b.get("extra_args") or []], **req)
 
     @r.post("/reconcile")
     async def reconcile():

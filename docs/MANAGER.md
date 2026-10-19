@@ -83,13 +83,56 @@ reconciler heartbeats, renews leases with a load, runtime or queued item behind 
 orphans. `rigctl unload` queues an `unload` item and releases the lease when it is done.
 `rigctl status` shows the controller (this one, the active one) and the last plan items.
 
+## Model loads: any registry model on any cards (2026-10-18)
+
+"Load X on Y cards" is two checks, one per layer:
+
+1. **The harness decides** (`manager/fit.py`, `manager/models.py`). The request names a registry model
+   and either a card count (smallest free cards first) or explicit GPUs, plus a use (benchmark, chat,
+   worker) that picks the registry profile and the prompt cache. The manager reads the model's GGUF header
+   from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
+   embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
+   nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
+   state, the compute buffer (grows with context x micro-batch x heads) and a 512 MiB margin per card.
+   It plans the largest context that fits (capped at the trained context or the request, floor 4096),
+   balances a contiguous layer split across the cards, and gives exact llama.cpp arguments:
+   `--ctx-size`, `--tensor-split` as layer counts, `--n-gpu-layers all`. If it will not fit it answers
+   422 "won't fit" with the numbers and the free cards that would hold it; nothing is leased or sent.
+2. **The rig loads and confirms** (`rig start remote <id> --spec JSON`, via a plan `load` item). It runs
+   the spec through `run_runtime.sh` on the leased cards, then reads llama.cpp's own startup log
+   (`scripts/rig/hw_loadlog.py`): the fit projection per card, layers offloaded, the context allocated
+   and the buffers per card. A load that is not fully on the GPUs is refused and unloaded. A ready load
+   records `fit` (measured per card) and the real `ctx_size` in its rig profile, and the manager returns
+   both next to its estimate.
+
+Layers are never left to llama.cpp's `--fit`: given the choice it moves layers to the CPU (on
+Ornith-9B it balanced two 1060s by putting the output layer in host RAM, 33/34 layers on GPU). The
+estimate was checked on Ornith-1.5-9B over two 1060s: weights 4812 MiB and KV 17.0 KiB per token,
+the same as llama.cpp measured.
+
+```text
+rigctl fit ornith-1.5:9b --cards 2              # answer only: ctx, split, MiB per card, or won't fit
+rigctl load-model ornith-1.5:9b --gpus 1,3 [--ctx N] [--use benchmark] [--args "--reasoning on"]
+rigctl unload ornith-1.5-9b-g1-3                # profile id: model plus its cards
+```
+
+HTTP: `POST /v1/manager/models/fit`, `POST /v1/manager/models/load` with
+{model, cards | gpu_ids, ctx?, ctx_min?, use?, profile?, claim?, margin_mb?, extra_args?}.
+The lease is the manager's (owner llm-gateway; controller by use: benchmarks, interactive, plans), so
+the reconciler renews it while the rig profile lives and `rigctl unload` releases it.
+
+Open: calibrating the estimate from the measured `fit` records (the compute buffer is the loosest
+term, within about 10% on the 1060s); a VRAM check for published profiles; context per slot with
+`--parallel`.
+
 ## Requirements gathered (2026-10-17 benchmark lanes)
 
 - **Job queue:** benchmark lanes become jobs the manager schedules: each job states its model and
   card needs, and the next one that fits starts when a card frees up. Adding or removing cards
   mid-run is a claim change; stopping a run cancels its jobs (one stop path for every job).
 - **VRAM fit before placement:** a per-model VRAM estimate (weights + KV at the profile's ctx) from
-  the registry, checked against the card (ministral-3:8b at 16k ran at 5.97 of 6.1 GB).
+  the registry, checked against the card (ministral-3:8b at 16k ran at 5.97 of 6.1 GB). Built
+  2026-10-18 for model loads ("Model loads" above); published profiles still use fixed shapes.
 - **One rig guard:** a single always-on rig-side power and thermal guard that every job runs under
   (today `startup_thermal_monitor.py` is started per run, and a lane started by hand sat outside it).
 - **Runtime memory policy per use** (run notes `logs/benchmarks/worker_lanes_20261017_203028/RUN_NOTES.md`

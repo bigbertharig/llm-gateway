@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..rig import Rig, RigUnavailable
-from . import memory, placement
+from . import fit, memory, models, placement
 from .errors import ManagerError
 from .status import gpu_rows, is_expired
 from .store import RigRecord
@@ -266,6 +266,100 @@ class Manager:
             await self.release(prof["lease"], OWNER, force=True)
             released = prof["lease"]
         return {"unloaded": profile_id, "item": item["id"], "state": done["state"], "released": released}
+
+    # ------------------------------------------------------------------ model loads (any model, any cards)
+
+    async def fit_model(self, model: str, *, cards: int | None = None, gpu_ids: list[int] | None = None,
+                        ctx: int | None = None, ctx_min: int = fit.CTX_MIN_DEFAULT, use: str = "benchmark",
+                        profile: str | None = None, claim: str | None = None,
+                        margin_mb: int = fit.MARGIN_MB_DEFAULT) -> dict:
+        """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`)": will it fit, at what
+        context and split. Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
+        if bool(cards) == bool(gpu_ids):
+            raise ManagerError(400, "give exactly one of cards (a count) or gpu_ids")
+        if use not in memory.USES:
+            raise ManagerError(400, f"use must be one of {memory.USES}")
+        try:
+            r = models.resolve(model, use, profile)
+        except (KeyError, FileNotFoundError) as exc:
+            raise ManagerError(404, str(exc.args[0] if exc.args else exc)) from exc
+        try:
+            shape = await asyncio.to_thread(fit.shape_for, models.local_path(r["gguf_path"]), r["model"])
+        except fit.FitError as exc:
+            raise ManagerError(404, str(exc)) from exc
+        obs = await self.observe(fresh=True)
+        try:
+            free, why = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), claim)
+        except KeyError as exc:
+            raise ManagerError(404, str(exc.args[0])) from exc
+        rt = r.get("runtime", {})
+        kw = {"ctx": ctx, "ctx_min": ctx_min, "ubatch": min(int(rt.get("batch_size", 64)), 512),
+              "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb}
+        if gpu_ids:
+            wanted = sorted({int(g) for g in gpu_ids})
+            blocked = {g: why.get(g, "unknown GPU") for g in wanted if g not in {f["index"] for f in free}}
+            if blocked:
+                raise ManagerError(409, "GPU(s) not available: " + "; ".join(f"GPU {g} {w}" for g, w in blocked.items()),
+                                   unavailable=blocked)
+            chosen = [f for f in free if f["index"] in wanted]
+        else:
+            if cards > len(free):
+                raise ManagerError(503, f"{cards} card(s) asked, {len(free)} free: {[f['index'] for f in free]}",
+                                   unavailable=why)
+            chosen = fit.choose_cards(free, int(cards))
+        result = fit.plan(shape, chosen, **kw)
+        result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"])
+        if not result["fits"]:
+            alts = fit.suggest(shape, free, **kw)
+            msg = result["reason"] + (". Fits on: " + "; ".join(alts) if alts else
+                                      ". No combination of the free cards holds it.")
+            raise ManagerError(422, msg, fit=result, suggestions=alts)
+        return result
+
+    async def load_model(self, model: str, *, extra_args: list[str] | None = None, claim: str | None = None,
+                         use: str = "benchmark", **fit_kw) -> dict:
+        """Fit, lease, queue the load in the rig's plan, wait until it serves, and report what the rig
+        actually loaded (context, split, memory per card). The rig re-checks with llama.cpp's own
+        projection and refuses a load that would not fit."""
+        await self._require_control()
+        plan_ = await self.fit_model(model, claim=claim, use=use, **fit_kw)
+        r = models.resolve(model, use, fit_kw.get("profile"))
+        rt = r.get("runtime", {})
+        gpus = plan_["gpus"]
+        pid = models.profile_id(r["model"], gpus)
+        spec = {"model": r["model"], "gguf_path": r["gguf_path"], "ctx_size": plan_["ctx"],
+                "batch_size": int(rt.get("batch_size", 64)), "parallel": int(rt.get("parallel", 1)),
+                "n_gpu_layers": "all", "extra_args": [*r.get("extra_args", []), *(extra_args or [])],
+                "image": r.get("image"), "use": use, "registry_profile": r["profile"],
+                **({"tensor_split": plan_["tensor_split"]} if plan_.get("tensor_split") else {})}
+        guard = (await self.observe(fresh=True)).get("guard") or {}
+        cache_mib = memory.cache_ram_mib(use, guard.get("mem_available_mb"))
+        # Owner llm-gateway, like profile loads: the reconciler renews it while the rig profile lives.
+        lease = await self.acquire(controller=models.CONTROLLER_BY_USE.get(use, "interactive"), owner=OWNER,
+                                   run_id=f"model-{pid}", gpu_ids=gpus, claim=claim, ttl_s=INTERACTIVE_TTL_S,
+                                   model=r["model"], purpose=f"model load {pid} ({use}, ctx {plan_['ctx']})")
+        lease_id = lease["lease_id"]
+        try:
+            item = await self.record.plan_add("load", {
+                "profile": pid, "spec": spec, "gpus": gpus, "port": lease["metadata"]["port"],
+                "lease": lease_id, "cache_ram": cache_mib})
+        except (ManagerError, RigUnavailable):
+            await self.release(lease_id, OWNER, force=True)
+            raise
+        log.info("model load %s queued as %s (GPU %s ctx %s split %s)", pid, item["id"], gpus, plan_["ctx"],
+                 plan_.get("tensor_split"))
+        done = await self._wait_item(item["id"], pid, until_ready=True)
+        obs = await self.observe(fresh=True)
+        if done.get("state") in ("failed", "cancelled"):
+            if pid in obs.get("profiles", {}):
+                await self.rig.stop_profile(pid)
+            await self.release(lease_id, OWNER, force=True)
+            raise RigUnavailable(502, f"rig did not load {pid} ({done['state']}): "
+                                      f"{str(done.get('result') or '')[-1500:]}")
+        loaded = obs.get("profiles", {}).get(pid, {})
+        return {"profile": pid, "model": r["model"], "state": "ready", "port": lease["metadata"]["port"],
+                "gpus": gpus, "lease": lease_id, "ctx": loaded.get("ctx_size", plan_["ctx"]),
+                "tensor_split": plan_.get("tensor_split"), "estimate": plan_, "measured": loaded.get("fit")}
 
     # ------------------------------------------------------------------ reconcile
 

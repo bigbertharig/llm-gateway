@@ -10,6 +10,11 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
     rigctl release LEASE --owner lanes | --force
     rigctl claim NAME --gpus 0 [--note "roo testing"]      rigctl unclaim NAME
     rigctl load PROFILE [--claim NAME]                     rigctl unload PROFILE
+    rigctl fit MODEL --cards 2 | --gpus 1,3 [--ctx N] [--use benchmark|chat|worker] [--profile P]
+    rigctl load-model MODEL --cards 2 | --gpus 1,3 [--ctx N] [--use ...] [--args "--reasoning on"] [--json]
+                                                           any registry model on any cards; the harness
+                                                           checks the fit first (exit 4: won't fit), the
+                                                           rig loads it; unload with `rigctl unload <profile>`
     rigctl controller                                      who is in control (this one, the active one)
     rigctl takeover                                        explicit handoff: this controller takes control
     rigctl plan [--json]                                   the rig's queue (now and next)
@@ -24,12 +29,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import urllib.error
 import urllib.request
 
 URL = os.getenv("RIGCTL_URL", "http://127.0.0.1:8080").rstrip("/")
-EXIT = {200: 0, 201: 0, 400: 1, 403: 2, 404: 1, 409: 2, 502: 1, 503: 4, 504: 1}
+EXIT = {200: 0, 201: 0, 400: 1, 403: 2, 404: 1, 409: 2, 422: 4, 502: 1, 503: 4, 504: 1}
 
 
 def call(method: str, path: str, body: dict | None = None, timeout: float = 1000) -> tuple[int, dict]:
@@ -60,6 +66,17 @@ def print_plan(plan: dict, limit: int = 8) -> None:
         result = str(i.get("result") or "").splitlines()[-1:] if i["state"] in ("failed",) else []
         print(f"  plan {i['id']:<20} {i['state']:<9} {i['kind']:<6} {json.dumps(i['args'])}"
               + (f"  ({result[0][:120]})" if result else ""))
+
+
+def print_fit(f: dict) -> None:
+    print(f.get("reason", ""))
+    if f.get("tensor_split"):
+        print(f"  tensor split {f['tensor_split']} (layers per card, output on the last)")
+    for c in f.get("cards") or []:
+        print(f"  GPU{c['gpu']} {c['layers']:>3} layers  weights {c['weights_mb']} + KV {c['kv_mb']} + compute "
+              f"{c['compute_mb']} MiB = {c['projected_mb']} of {c['free_mb']} free (headroom {c['headroom_mb']})")
+    for n in f.get("notes") or []:
+        print(f"  note: {n}")
 
 
 def print_status(s: dict) -> None:
@@ -112,6 +129,18 @@ def main() -> int:
     s = sub.add_parser("unclaim"); s.add_argument("name")
     s = sub.add_parser("load"); s.add_argument("profile"); s.add_argument("--claim")
     s = sub.add_parser("unload"); s.add_argument("profile")
+    for name in ("fit", "load-model"):
+        s = sub.add_parser(name); s.add_argument("model")
+        s.add_argument("--cards", type=int, help="how many cards (smallest free cards first)")
+        s.add_argument("--gpus", help="explicit GPU ids, e.g. 1,3")
+        s.add_argument("--ctx", help="exact context that must fit (default auto: the largest that fits)")
+        s.add_argument("--ctx-min", type=int, help="smallest acceptable context for auto (default 4096)")
+        s.add_argument("--use", default="benchmark", choices=("benchmark", "chat", "worker"))
+        s.add_argument("--profile", help="registry profile (default: by use)")
+        s.add_argument("--claim"); s.add_argument("--margin-mb", type=int)
+        s.add_argument("--json", action="store_true")
+        if name == "load-model":
+            s.add_argument("--args", default="", help='extra llama-server args after the registry ones, e.g. "--reasoning on"')
     sub.add_parser("controller")
     sub.add_parser("takeover")
     s = sub.add_parser("plan"); s.add_argument("--json", action="store_true")
@@ -131,6 +160,27 @@ def main() -> int:
         code, out = call("POST", f"/v1/manager/plan/{a.item}/cancel")
     if a.cmd in ("controller", "takeover", "plan", "cancel"):
         print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
+
+    if a.cmd in ("fit", "load-model"):
+        body = {"model": a.model, "cards": a.cards, "ctx": a.ctx, "ctx_min": a.ctx_min, "use": a.use,
+                "profile": a.profile, "claim": a.claim, "margin_mb": a.margin_mb,
+                "gpu_ids": [int(g) for g in a.gpus.split(",")] if a.gpus else None}
+        if a.cmd == "load-model":
+            body["extra_args"] = shlex.split(a.args)
+        code, out = call("POST", "/v1/manager/models/" + ("fit" if a.cmd == "fit" else "load"), body)
+        if a.json:
+            print(json.dumps(out, indent=2))
+        elif code == 200 and a.cmd == "fit":
+            print_fit(out)
+        elif code == 200:
+            print(f"ready {out['profile']} on :{out['port']} GPU {out['gpus']} ctx {out['ctx']}"
+                  + (f" split {out['tensor_split']}" if out.get("tensor_split") else ""))
+            for c in (out.get("measured") or {}).get("cards", []):
+                print(f"  GPU{c.get('gpu')} measured {json.dumps(c)}")
+        else:
+            err = out.get("error") or {}
+            print(err.get("message", json.dumps(out)), file=sys.stderr)
         return EXIT.get(code, 1)
 
     if a.cmd == "status":
