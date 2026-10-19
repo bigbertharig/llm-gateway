@@ -421,3 +421,20 @@ def test_unload_is_a_plan_item(menv):
     assert out["state"] == "done" and out["released"]
     kinds = [i["kind"] for i in menv["rig"]()["plan_items"]]
     assert kinds == ["load", "unload"]
+
+
+def test_unload_succeeds_when_the_reconciler_released_the_lease_first(menv, monkeypatch):
+    c = menv["client"]
+    assert chat(c, "gpu-rig/small").status_code == 200
+    real_wait = core.Manager._wait_item
+
+    async def wait_then_lose_the_lease(self, *a, **kw):
+        done = await real_wait(self, *a, **kw)
+        st = menv["rig"]()
+        st["leases"] = []  # the reconciler got there first
+        menv["write"](st)
+        return done
+
+    monkeypatch.setattr(core.Manager, "_wait_item", wait_then_lose_the_lease)
+    r = c.post("/v1/manager/profiles/small/unload")
+    assert r.status_code == 200 and r.json()["state"] == "done"

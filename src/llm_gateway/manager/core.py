@@ -263,7 +263,12 @@ class Manager:
         done = await self._wait_item(item["id"], profile_id, until_ready=False)
         released = None
         if prof.get("lease") and any(l.get("lease_id") == prof["lease"] for l in obs.get("leases", [])):
-            await self.release(prof["lease"], OWNER, force=True)
+            try:
+                await self.release(prof["lease"], OWNER, force=True)
+            except ManagerError as exc:
+                # The reconciler can release it first: once the profile is gone the lease is unbacked.
+                if exc.status != 404:
+                    raise
             released = prof["lease"]
         return {"unloaded": profile_id, "item": item["id"], "state": done["state"], "released": released}
 
