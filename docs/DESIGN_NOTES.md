@@ -142,7 +142,7 @@ Combined model (for a task in a lane and a job across rigs):
 2. **Wait first for unreachable owners.** Keep giving other work to healthy workers or rigs. Reassign
    the missing owner's work when it is the tail (nothing else left), when it blocks later work
    (critical path), or when it has been gone about 3x its expected runtime (from benchmark history).
-   If capacity would otherwise sit idle, duplicate it right away; it only costs power.
+   No early duplication into idle capacity (decided 2026-10-20).
 3. **First result wins, with a claim id.** Every claim stamps a fresh `claim_id` (scrubbed on requeue).
    A success is accepted if no result exists yet (atomic create); the owner only cleans up its own
    claim; a failure from a claim that moved on is not recorded as a failure (no duplicate retry);
@@ -163,9 +163,13 @@ Combined model (for a task in a lane and a job across rigs):
 Order of work: (a) claim ids and first-result-wins in the lane - done; (b) this note - done; (c) the
 lane's `unreachable` state, wait-first reassignment and the claim as lease - done 2026-10-19, same
 rule for GPU and CPU workers (llm_orchestration `workspace/brain-behavior.md`, "Work Recovery", which
-also lists every time limit; the only new one is a 4 h LARGE DEFAULT cap). Not yet: expected runtime
-from history instead of the cap, duplicating early into idle capacity, `rigs_attempted`. (d) the same
-model here when jobs become plan items and there is more than one rig.
+also lists every time limit; the only new one is a 4 h LARGE DEFAULT cap). 2026-10-20: tasks a time
+limit moved carry `timed_out` and a `timeouts` record, every requeue lands in `recovery_history`,
+finished tasks record `duration_s`, and `scripts/review_task_durations.py` reports real durations next
+to the limits so they can be tuned from evidence. Decided: no early duplication; idle capacity stays
+idle (rule 2's "duplicate right away" is dropped). Not yet: limits learned per task type, and
+`rigs_attempted` (comes with (d)). (d) the same recovery model here when jobs become plan items and
+there is more than one rig.
 
 Known limits: a cut-off CPU worker's heartbeat thread can still refresh the shared heartbeat file of
 its old task after reconnecting (same file name as the new owner's), which can hide a stuck new owner
