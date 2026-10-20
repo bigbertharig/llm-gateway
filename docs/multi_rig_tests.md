@@ -33,7 +33,10 @@ Open question (2026-10-19): in each of three short `disconnect` runs with nothin
 request failed with `RemoteDisconnected` (the server finished it; the response was lost on the way back)
 3-8 s after a short ping-loss window to the desktop. Not reproduced in four standalone runs through the
 same tunnel (138 requests: alone, with 1/s health checks, across a tunnel restart, with continuous pings).
-The 90 s before the unplug prompt is the baseline for it.
+The 90 s before the unplug prompt is the baseline for it. In the full disconnect run the desktop missed
+both of two pings or a 1 s health check about every 20-40 s with the cable in, and one request failed the
+same way (+417 s); the rig never did. Next suspect: the desktop's network adapter or Windows side, not the
+tunnel.
 
 ## Need the multi-rig gateway first
 
@@ -49,4 +52,5 @@ The 90 s before the unplug prompt is the baseline for it.
 | Date | Test | Result |
 |---|---|---|
 | 2026-10-19 | dual_rig_bench (6 custom tests) | identical scores; rig 1060 3:06, desktop 1070 2:23; 18 of 18 GPU samples from both |
+| 2026-10-19 | disconnect (desktop Ethernet out about +87 to +216 s) | rig 73/73 ok throughout. Desktop: 18/18 before; the in-flight request hung 20.5 s then `RemoteDisconnected`; every request during the outage failed at once (`Connection refused`, the tunnel listener was gone), so nothing hung. The tunnel retried 16 times (`No route to host`) and reconnected by itself; first ok 5 s after the cable was back (2 failures at reconnect), then 36/37 ok. The desktop container stayed up (worker mode held WSL) |
 | 2026-10-19 | concurrency 1, 2 streams (20 s smoke) | rig 21.8 / 21.3 gen tok/s, desktop 25.3 / 25.6; p50 latency doubles at 2 streams (parallel 1 queues); 0 errors |
