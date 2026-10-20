@@ -82,6 +82,30 @@ built to run side by side later. The defaults should make the single-use case si
     claimed and holds the results until it reconnects.
 - Profile ids should stay rig-agnostic (`gpu-rig/<profile>`), with the rig chosen by placement.
 
+### First two-rig test (2026-10-19)
+
+A Windows desktop (GTX 1070 8GB, 10.0.0.4) ran as a second rig next to the GPU rig, both driven from
+the Pi. The gateway is still single-rig, so the desktop side was hand-started: a container plus a
+Pi tunnel, not `rig.py`.
+
+- Access: Windows OpenSSH server with its default shell set to WSL `bash.exe`, so `ssh desktop-rig`
+  lands in Ubuntu like `ssh rig`. Key-only, firewall open to 10.0.0.0/24 on the Ethernet adapter
+  only. Windows 10 has no WSL mirrored networking, so sshd inside WSL is not reachable.
+- Worker mode is a manual switch (`worker_mode.ps1 on|off|status`, llm_orchestration
+  `shared/scripts/desktop_worker/`). WSL stops the Ubuntu instance when no Windows process holds
+  it, which kills Docker and the containers; `on` starts a hidden keepalive. Nothing auto-starts.
+  After `on`, Docker takes about 40 s.
+- Model ports: `ssh -L <pi-port>:127.0.0.1:<port> desktop-rig` works, through WSL's localhost
+  forwarding, as long as worker mode is on.
+- Driver: WSL uses the Windows driver. The CUDA 12.9 runtime image needs the 580 branch there too
+  (Windows 582.78 for Pascal, same branch as the rig's Linux 580.159.03).
+- Result: the Pi ran the six custom tests on rig GPU 1 (1060) and the desktop 1070 at once, both
+  qwen2.5-coder:7b, while sampling both GPUs every 10 s (no failed samples). Identical scores;
+  the desktop finished in 2:23 vs 3:06 (decode about 30.7 vs 23 tok/s).
+  Tool: `tools/dual_rig_bench.sh`.
+- Still needed for one controller: a rig list in settings, per-rig observe and tunnels, cross-rig
+  placement (splits stay within a rig), and `rig.py` on the desktop so the gateway can load there.
+
 ## Same shape as orchestration, one level up
 
 | Orchestration (inside a rig) | Harness (across rigs) |
