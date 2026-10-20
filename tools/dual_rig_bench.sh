@@ -3,16 +3,18 @@
 # Usage: dual_rig_bench.sh   (rig GPU 1 on :11435, desktop 1070 on :11450 through the tunnel)
 # Pre multi-rig: the desktop runtime and the Pi tunnel are started by hand (docs/DESIGN_NOTES.md).
 BENCH=/media/bryan/shared/plans/shoulders/benchmarking
+# Model: the benchmarking role single_1060 unless MODEL is set (tools/role_model.py).
+MODEL="${MODEL:-$(python3 "$(dirname "$0")/role_model.py")}"
 OUT=~/rig_stress/dual_bench_$(date +%Y%m%d_%H%M%S)
 TESTS="custom_json_schema_strict custom_tool_plan_sequence custom_ambiguity_handling custom_command_safety custom_orchestration_tradeoff custom_long_context_extract"
 mkdir -p "$OUT/rig" "$OUT/desktop"
-echo "out $OUT"
+echo "out $OUT model $MODEL"
 
 run_lane() {  # name port
   local name=$1 port=$2
   for t in $TESTS; do
     local s=$(date +%s)
-    python3 "$BENCH/run_local_custom_task.py" --id "$t" --model qwen2.5-coder:7b \
+    python3 "$BENCH/run_local_custom_task.py" --id "$t" --model "$MODEL" \
       --base-url "http://127.0.0.1:$port" --no-record --output-dir "$OUT/$name" \
       > "$OUT/$name/$t.log" 2>&1
     echo "$(date +%T) $name $t exit $? in $(( $(date +%s) - s ))s" | tee -a "$OUT/progress.log"

@@ -1,13 +1,22 @@
 """Split-scaling sweep: same model on 1..5 cards, then prefill batch sizes on the 5-card split.
 
-Usage: python3 split_sweep.py LABEL   (writes ~/rig_stress/split_sweep_<LABEL>.json)
+Usage: python3 split_sweep.py LABEL [--role ROLE | --model MODEL]   (writes ~/rig_stress/split_sweep_<LABEL>.json)
+The model defaults to the benchmarking role single_1060 (tools/role_model.py), so it follows model_roles.json.
 Run from the controller; loads go through the harness (rigctl.py next to this file).
 """
-import json, random, statistics, subprocess, sys, time, urllib.request
+import argparse, json, random, statistics, subprocess, sys, time, urllib.request
 from pathlib import Path
 
-LABEL = sys.argv[1] if len(sys.argv) > 1 else "run"
-MODEL = "qwen2.5-coder:7b"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import role_model  # noqa: E402
+
+_ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+_ap.add_argument("label", nargs="?", default="run")
+_ap.add_argument("--role", default=role_model.DEFAULT_ROLE)
+_ap.add_argument("--model", help="model id; overrides --role")
+_args = _ap.parse_args()
+LABEL = _args.label
+MODEL = _args.model or role_model.resolve(_args.role)["model"]
 CTX = 8192
 RIGCTL = [sys.executable, str(Path(__file__).resolve().parent / "rigctl.py")]
 OUT = Path.home() / f"rig_stress/split_sweep_{LABEL}.json"

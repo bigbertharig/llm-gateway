@@ -7,7 +7,10 @@ rig". The first two-rig setup is the GPU rig plus the Windows desktop worker (GT
 ## Runnable now (before the gateway is multi-rig)
 
 `tools/multi_rig_tests.py` drives both rigs directly: the GPU rig through the harness, the desktop
-through `ssh desktop-rig` and a tunnel. Same model on both (qwen2.5-coder:7b, ctx 8192).
+through `ssh desktop-rig` and a tunnel. Same model on both, ctx 8192: the benchmarking role
+`single_1060` by default (`tools/role_model.py`, which reads model_roles.json; ornith-1.5:9b since
+2026-10-20, qwen2.5-coder:7b before). `--role ROLE` or `--model ID` picks another; the 2026-10-19
+results below used qwen2.5-coder:7b.
 
 ```bash
 # desktop: worker_on.cmd first

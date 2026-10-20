@@ -8,20 +8,33 @@
 Rigs: the GPU rig through the harness (rigctl, port 11435 via pi-rig-tunnel) and the desktop worker
 (`ssh desktop-rig`, container on its port 11434, tunnelled here to 11450). The desktop must be in
 worker mode (llm_orchestration shared/scripts/desktop_worker/). Standard library only.
+Model: the benchmarking role single_1060 by default (`--role ROLE` or `--model ID` before the test
+name); the desktop needs that model's GGUF under ~/models/ (setup prints the copy command if not).
 Output: ~/rig_stress/multi_rig_<test>_<time>/ (events.log, requests.csv, probes.csv, summary.json).
 See docs/multi_rig_tests.md.
 """
-import argparse, base64, csv, json, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, base64, csv, json, re, statistics, subprocess, sys, threading, time, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import role_model  # noqa: E402
+
 RIGCTL = [sys.executable, str(HERE / "rigctl.py")]
-MODEL = "qwen2.5-coder:7b"
 RIG_GPU, RIG_PORT, RIG_HOST = "1", 11435, "10.0.0.3"
 DESK_SSH, DESK_HOST, DESK_REMOTE_PORT, DESK_PORT = "desktop-rig", "10.0.0.4", 11434, 11450
-DESK_CONTAINER = "desk-qwen2.5-coder-7b"
-DESK_GGUF = "/home/bryan/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
+DESK_MODELS = "/home/bryan/models"
 LANES = {"rig": RIG_PORT, "desktop": DESK_PORT}
+# Set by pick_model() from --role / --model.
+MODEL = DESK_GGUF = DESK_CONTAINER = None
+
+
+def pick_model(role, model):
+    global MODEL, DESK_GGUF, DESK_CONTAINER
+    info = role_model.resolve_model(model) if model else role_model.resolve(role)
+    MODEL = info["model"]
+    DESK_GGUF = f"{DESK_MODELS}/{info['gguf_relative']}"
+    DESK_CONTAINER = "desk-" + re.sub(r"[^a-z0-9.-]+", "-", MODEL.lower())
 
 
 class Run:
@@ -126,7 +139,34 @@ def free_port(port):
 
 # ---------------------------------------------------------------- setup / teardown
 
+def serving_gguf(port):
+    """Basename of the GGUF a local port serves, or None."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5) as r:
+            data = json.loads(r.read())
+        return Path((data.get("models") or data.get("data") or [{}])[0].get("model")
+                    or data["data"][0]["id"]).name
+    except Exception:
+        return None
+
+
+def unload_rig_port():
+    st = subprocess.run(RIGCTL + ["status", "--json"], capture_output=True, text=True, timeout=60)
+    try:
+        for pid, prof in (json.loads(st.stdout).get("profiles") or {}).items():
+            if prof.get("port") == RIG_PORT:
+                subprocess.run(RIGCTL + ["unload", pid], capture_output=True, timeout=300)
+                print("rig: unloaded", pid)
+    except (ValueError, AttributeError):
+        print("rig: could not read status; unload by hand with rigctl unload")
+
+
 def setup(_args):
+    want = Path(DESK_GGUF).name
+    print(f"model: {MODEL} ({want})")
+    if health(RIG_PORT) and serving_gguf(RIG_PORT) != want:
+        print(f"rig: port {RIG_PORT} serves {serving_gguf(RIG_PORT)}, replacing it")
+        unload_rig_port()
     if not health(RIG_PORT):
         p = subprocess.run(RIGCTL + ["load-model", MODEL, "--gpus", RIG_GPU, "--ctx", "8192", "--use", "benchmark",
                                      "--json"], capture_output=True, text=True, timeout=900)
@@ -134,13 +174,21 @@ def setup(_args):
             print("rig:", json.loads(p.stdout).get("state"))
         else:  # rigctl explains on stdout (for example a plan held after a rig reboot)
             print(f"rig load failed (rc {p.returncode}):", (p.stdout + p.stderr).strip()[-400:])
-    print("rig health:", health(RIG_PORT))
+    print("rig health:", health(RIG_PORT), serving_gguf(RIG_PORT))
     rc, out = ssh(DESK_SSH, "docker info >/dev/null 2>&1 && echo up")
     if "up" not in out:
         sys.exit("desktop: Docker is not up; switch the desktop to worker mode (worker_on.cmd) first")
-    rc, out = ssh(DESK_SSH, f"curl -sf http://127.0.0.1:{DESK_REMOTE_PORT}/health >/dev/null && echo serving")
+    rc, out = ssh(DESK_SSH, f"test -f {DESK_GGUF} && echo present")
+    if "present" not in out:
+        rel = DESK_GGUF[len(DESK_MODELS) + 1:]
+        sys.exit(f"desktop: {DESK_GGUF} is missing. Copy it from the Pi share, e.g. on the Pi:\n"
+                 f"  ssh desktop-rig 'mkdir -p {Path(DESK_GGUF).parent}' && "
+                 f"cat /media/bryan/shared/models/{rel} | ssh desktop-rig 'cat > {DESK_GGUF}'")
+    rc, out = ssh(DESK_SSH, f"docker ps --filter name=^{DESK_CONTAINER}$ -q | grep -q . && "
+                            f"curl -sf http://127.0.0.1:{DESK_REMOTE_PORT}/health >/dev/null && echo serving")
     if "serving" not in out:
-        cmd = (f"docker rm -f {DESK_CONTAINER} >/dev/null 2>&1; docker run --detach --name {DESK_CONTAINER} "
+        cmd = (f"docker ps -aq --filter name=^desk- | xargs -r docker rm -f >/dev/null 2>&1; "
+               f"docker run --detach --name {DESK_CONTAINER} "
                f"--gpus device=0 --oom-score-adj 500 --network host -v $(dirname {DESK_GGUF}):$(dirname {DESK_GGUF}):ro "
                f"llama-runtime:b11669 llama-server --model {DESK_GGUF} --host 127.0.0.1 --port {DESK_REMOTE_PORT} "
                f"--n-gpu-layers 999 --batch-size 64 --parallel 1 --flash-attn on -ctk q8_0 -ctv q8_0 "
@@ -162,15 +210,8 @@ def ensure_tunnel():
 
 
 def teardown(_args):
-    st = subprocess.run(RIGCTL + ["status", "--json"], capture_output=True, text=True, timeout=60)
-    try:
-        for pid, prof in (json.loads(st.stdout).get("profiles") or {}).items():
-            if prof.get("port") == RIG_PORT:
-                subprocess.run(RIGCTL + ["unload", pid], capture_output=True, timeout=300)
-                print("rig: unloaded", pid)
-    except (ValueError, AttributeError):
-        print("rig: could not read status; unload by hand with rigctl unload")
-    rc, out = ssh(DESK_SSH, f"docker rm -f {DESK_CONTAINER} >/dev/null 2>&1 && echo removed")
+    unload_rig_port()
+    rc, out = ssh(DESK_SSH, "docker ps -aq --filter name=^desk- | xargs -r docker rm -f >/dev/null 2>&1 && echo removed")
     print("desktop container:", out or f"not reachable (rc {rc})")
     print("tunnel: closed pid", free_port(DESK_PORT))
 
@@ -313,6 +354,8 @@ def concurrency(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--role", default=role_model.DEFAULT_ROLE, help="benchmarking role for the test model")
+    ap.add_argument("--model", help="model id from the registry; overrides --role")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("setup")
     sub.add_parser("teardown")
@@ -327,6 +370,7 @@ def main():
     c.add_argument("--seconds", type=int, default=60)
     c.add_argument("--max-tokens", type=int, default=128)
     args = ap.parse_args()
+    pick_model(args.role, args.model)
     {"setup": setup, "teardown": teardown, "disconnect": disconnect, "concurrency": concurrency}[args.cmd](args)
 
 
