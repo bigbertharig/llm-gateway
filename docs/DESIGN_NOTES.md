@@ -105,6 +105,70 @@ Pi tunnel, not `rig.py`.
   Tool: `tools/dual_rig_bench.sh`.
 - Still needed for one controller: a rig list in settings, per-rig observe and tunnels, cross-rig
   placement (splits stay within a rig), and `rig.py` on the desktop so the gateway can load there.
+- Disconnect test (`docs/multi_rig_tests.md`): the rig lane never failed; desktop requests failed at
+  once while it was gone (the tunnel listener disappears, so nothing hangs except the request already
+  in flight); the tunnel reconnected by itself and the desktop container survived.
+
+### Work recovery: one model at both levels (2026-10-19)
+
+The same shape twice: a GPU (or CPU) worker keeps its own health and pulls tasks from the
+orchestration brain; a rig keeps its own health and takes jobs from this controller. Lane logic lives
+in llm_orchestration (`shared/agents/`), rig logic here. Build and prove it in the lane, then mirror it.
+
+What each level already had:
+
+| | Orchestration lane (inside a rig) | Controller (across rigs) |
+|---|---|---|
+| Liveness | process check or GPU heartbeat under 120 s; CPU workers by heartbeat only | rig observe, controller heartbeat (takeover after 120 s) |
+| Progress | per-task heartbeat sidecar, class limits (llm 420 s, script 600 s, cpu 900 s, meta 180 s) | none yet (jobs are not plan items) |
+| Lost work | orphan: requeue once 120 s stale; stuck: abort, abort, kill, requeue after 60 s; thermal wait exempt | rig reboot: plan held, running item marked interrupted; lost network: rig finishes its queue |
+| Retries | 3 attempts, `workers_attempted`, incident history, HUMAN file after | interrupted loads not retried |
+| Leases | none on tasks | TTL, renew every ttl/3; expiry never frees a GPU by itself |
+| Late results | fixed 2026-10-19: `task_claims.py` (below) | to build |
+
+Combined model (for a task in a lane and a job across rigs):
+
+1. **Classify a missing owner by what is known, not by silence alone.**
+
+   | State | Signal | Action |
+   |---|---|---|
+   | dead | process gone (in-rig), or rig back with a new boot_id | reassign now; no result is coming |
+   | stuck | alive, no progress past the class limit | abort, kill, requeue (lane, as today) |
+   | busy-healthy | thermal wait, or progress heartbeat still moving | leave it |
+   | unreachable | no heartbeat, no proof of death (network, shared drive) | wait first (rule 2) |
+
+   CPU workers on other hosts and whole rigs are the ones that become `unreachable`; a local GPU
+   agent whose process is gone stays on the fast `dead` path.
+2. **Wait first for unreachable owners.** Keep giving other work to healthy workers or rigs. Reassign
+   the missing owner's work when it is the tail (nothing else left), when it blocks later work
+   (critical path), or when it has been gone about 3x its expected runtime (from benchmark history).
+   If capacity would otherwise sit idle, duplicate it right away; it only costs power.
+3. **First result wins, with a claim id.** Every claim stamps a fresh `claim_id` (scrubbed on requeue).
+   A success is accepted if no result exists yet (atomic create); the owner only cleans up its own
+   claim; a failure from a claim that moved on is not recorded as a failure (no duplicate retry);
+   anything not accepted goes to `late/` for audit. Done in the lane:
+   llm_orchestration `shared/agents/task_claims.py` (GPU and CPU workers). Across rigs the same rule
+   guards the benchmark ledger: one record per job id.
+4. **Progress heartbeats are lease renewals.** An expired task lease means "may be reassigned", not
+   "is dead", the same as the GPU lease rule above.
+5. **The owner side when cut off:** finish what was claimed, claim nothing new, keep results locally,
+   report on reconnect (the rig already finishes its queue; local result buffering is still to build).
+6. **Retry memory carries up:** `workers_attempted` becomes `rigs_attempted`; do not hand work back to
+   the place that just lost it; three attempts, then a HUMAN file.
+7. **Small jobs bound the loss.** Benchmarks split into per-test chunks lose minutes, not campaigns;
+   chunks finished before a disconnect are not redone.
+8. **Interactive requests fail over at once.** A waiting chat request goes to another rig on the
+   first refused connection or a short timeout; rules 2 to 7 are for batch work.
+
+Order of work: (a) claim ids and first-result-wins in the lane - done; (b) this note; (c) the lane's
+`unreachable` state, wait-first reassignment, leases and expected-duration limits in
+llm_orchestration (overlaps `shared/workspace/future/stale_task_cleanup_plan_20260304.md`); (d) the
+same model here when jobs become plan items and there is more than one rig.
+
+Known limits: a cut-off CPU worker's heartbeat thread can still refresh the shared heartbeat file of
+its old task after reconnecting (same file name as the new owner's), which can hide a stuck new owner
+for a while; a GPU that runs several models, or a big-memory box running several, turns "worker"
+into a pool of slots. Both later.
 
 ## Same shape as orchestration, one level up
 
