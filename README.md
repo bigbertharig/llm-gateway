@@ -120,4 +120,4 @@ since there's no auto-evict.
 - `tools/`: operator tools (profile generator, model check)
 - `remote_profiles.json`: generated offer, read by the gateway and `rig`
 - `deploy/`: rig systemd unit + deploy script
-- `docs/harness/`: agent-harness research and backlog (parked). Upstream clones live alongside in `~/`.
+- Agent harness work (research, lessons, backlog) moved to its own repo, llm-harness (Pi `~/llm-harness`), on 2026-10-20.
