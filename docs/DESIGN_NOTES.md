@@ -160,10 +160,12 @@ Combined model (for a task in a lane and a job across rigs):
 8. **Interactive requests fail over at once.** A waiting chat request goes to another rig on the
    first refused connection or a short timeout; rules 2 to 7 are for batch work.
 
-Order of work: (a) claim ids and first-result-wins in the lane - done; (b) this note; (c) the lane's
-`unreachable` state, wait-first reassignment, leases and expected-duration limits in
-llm_orchestration (overlaps `shared/workspace/future/stale_task_cleanup_plan_20260304.md`); (d) the
-same model here when jobs become plan items and there is more than one rig.
+Order of work: (a) claim ids and first-result-wins in the lane - done; (b) this note - done; (c) the
+lane's `unreachable` state, wait-first reassignment and the claim as lease - done 2026-10-19, same
+rule for GPU and CPU workers (llm_orchestration `workspace/brain-behavior.md`, "Work Recovery", which
+also lists every time limit; the only new one is a 4 h LARGE DEFAULT cap). Not yet: expected runtime
+from history instead of the cap, duplicating early into idle capacity, `rigs_attempted`. (d) the same
+model here when jobs become plan items and there is more than one rig.
 
 Known limits: a cut-off CPU worker's heartbeat thread can still refresh the shared heartbeat file of
 its old task after reconnecting (same file name as the new owner's), which can hide a stuck new owner
