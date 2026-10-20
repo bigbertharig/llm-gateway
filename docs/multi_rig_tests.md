@@ -50,6 +50,67 @@ tunnel.
 | Placement by card class | Small, latency-sensitive jobs go to the 1070 and bulk work to the 1060s |
 | Shared storage contention | Both rigs cold-loading from the Pi's NFS share over one gigabit link vs local disk on the desktop |
 
+## Cross-machine split over the network (llama.cpp RPC), planned
+
+Question: can one model split across the GPU rig and the desktop 1070 over gigabit without losing decode
+speed? If yes, two rigs act as one VRAM pool for models too big for either (a duplicate rig = about 160 GB
+for MoE); if no, each rig stays at its own VRAM. Not run yet (designed 2026-10-20).
+
+Why it might work: the 2026-10-19 PCIe sweep (benchmarking `BENCHMARK_LESSONS_LEARNED.md`, "PCIe
+generation and split scaling") measured 6-58 MB/s per card link during split inference; gigabit carries
+about 117 MB/s. Decode speed was set by each card's VRAM, not by the link. Unknown: per-hop latency over
+the network, llama.cpp RPC overhead, prefill (batched activations are much larger than decode), and load
+time (weights are sent to the RPC server unless it caches them). The harness research lists "too slow over
+gigabit" as a lesson, but that was never measured.
+
+### Setup
+
+1. **Network first.** All three machines are on the TL-SG105. Run `iperf3` rig <-> desktop both ways
+   (expect about 940 Mbit/s) and a 10-minute `ping -i 0.2` from the rig. The 2026-10-19 disconnect test
+   saw the desktop fail a health check every 20-40 s with the cable in (suspect: the desktop's adapter or
+   the Windows side); a split runtime dies with its link, so fix or rule this out before the RPC test.
+2. **Desktop on:** `setup_desktop_rig_ssh.ps1` (re-enables sshd and the RigNet rules), `worker_on.cmd`.
+3. **RPC builds, same llama.cpp commit on both sides** (the RPC protocol is versioned): build
+   `llama-runtime:b11669-rpc` on the rig from `shared/scripts/llama_runtime/Dockerfile` with
+   `-DGGML_RPC=ON` added, and the same image in desktop WSL (sm_61 covers the 1070). Today's image has no
+   RPC backend.
+4. **Reach the desktop's rpc-server.** WSL2 is NAT'd: either switch WSL to mirrored networking
+   (`.wslconfig`: `networkingMode=mirrored`) so the port binds on the LAN, or tunnel with `ssh -L` from the
+   rig. Prefer mirrored: a tunnel adds its own overhead to every hop. Measure both if mirrored is not
+   possible.
+5. **Lock it down.** `rpc-server` has no authentication and llama.cpp warns never to expose it. Bind it to
+   the desktop's Ethernet address and add a Windows firewall rule like the RigNet ones: inbound TCP on its
+   port, remote address 10.0.0.3 only, interface Ethernet. Remove the rule and stop the server after the
+   test (`teardown_desktop_rig_ssh.ps1 -Level pause` for ssh).
+6. **Cards:** hold rig cards with `rigctl claim` for the test's duration so lanes and campaigns cannot
+   take them. Loads go outside the harness (it does not know RPC devices), as in the 2026-10-19 tests.
+
+### Runs
+
+Same method as the PCIe sweep so the numbers compare: decode = median of 3 x 256 tokens; prefill = median
+of 3 unique ~3.7k-token prompts at `-ub 64` and `-ub 512`; ctx 8192; also record cold load time with and
+without the rpc-server cache (`-c`), rig NIC bytes per generated token (`/proc/net/dev` before and after),
+errors.
+
+| Run | Model | Cards | Compare with |
+|---|---|---|---|
+| A | qwen2.5-coder:7b | rig GPU 1 alone | sweep: 22.3 tok/s |
+| B | qwen2.5-coder:7b | desktop 1070 alone, through RPC from the rig | A, and the desktop's native 25.3 tok/s (concurrency test) |
+| C | qwen2.5-coder:7b | rig GPU 1 + desktop 1070 (RPC) | local split GPU 1+2: 23.6 tok/s |
+| D | ministral-3:14b | rig GPU 1 + desktop 1070 (RPC) | local 4+5 split (2026-10-20 lane, 13.5 tok/s) |
+| E | an MoE that needs both, e.g. gemma-4:26b-a4b | rig GPUs 1-3 + desktop 1070 | the 4-way 1060 split (24.2 tok/s) |
+| F | run C, with the desktop's cable pulled for 30 s | | the failure mode: does the runtime hang, error, or recover |
+
+### Reading the result
+
+- Decode in C-E within card-to-card variation of the local split: the network is not the limit for decode.
+- Decode clearly lower: compare bytes per token x tok/s with the link capacity. Near the link's limit means
+  a faster switch and NICs (2.5 or 10 GbE) would help; far below it means latency or RPC overhead, which a
+  faster switch would not fix.
+- Prefill matters for long chats: report it separately; a split that decodes fine but prefills slowly is
+  still usable for chat with prompt caching, not for long fresh prompts.
+- Record results in the table below and a short entry in `DESIGN_NOTES.md`, "More than one rig".
+
 ## Results
 
 | Date | Test | Result |
