@@ -38,3 +38,5 @@ harness (Roo Code in VS Code), not building our own. "Where it runs" stays deter
 3. Gateway into dispatcher: per-profile queue, queue depth in status, cancel on disconnect.
 4. Summary section 8 next steps (fork + prune DeepSeek Harness, bench-agent runs, roster generator).
 5. Summary section 2 small fix still open: worker.py `max_tokens = worker_num_ctx` (8192).
+6. Benchmark-run lessons for our own harness (context, compaction, caching, retries, exploration
+   budgets): `lessons_bench_checkpoint.md`.
