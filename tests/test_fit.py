@@ -183,3 +183,95 @@ def test_load_model_that_wont_fit_never_reaches_the_rig(menv, registry):  # noqa
     r = menv["client"].post("/v1/manager/models/load", json={"model": "big:30b", "cards": 2})
     assert r.status_code == 422
     assert menv["leases"]() == [] and not menv["rig"]().get("plan_items")
+
+
+# ------------------------------------------------------------------ reservations and overrides (MANAGER.md)
+
+def _hold(c, gpu, owner="lanes"):
+    r = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": owner, "run_id": f"hold-{gpu}",
+                                           "gpu_ids": [gpu], "model": "x"})
+    assert r.status_code == 201, r.text
+    return r.json()["lease"]["lease_id"]
+
+
+def test_split_load_reserves_busy_cards_and_loads_once_they_free(menv, registry, monkeypatch):  # noqa: F811
+    import threading
+    import time
+
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    held = _hold(c, 1)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
+        "model": "small:9b", "gpu_ids": [1, 2], "wait_s": 20})))
+    t.start()
+    deadline = time.time() + 10
+    while time.time() < deadline and not menv["rig"]()["claims"]:
+        time.sleep(0.05)
+    (claim,) = menv["rig"]()["claims"]
+    assert claim["name"] == "wait-small-9b-g1-2" and claim["gpu_ids"] == [1, 2] and claim["expires_at"]
+    # The free partner card cannot be taken by single work while the split waits for GPU 1.
+    single = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "solo", "run_id": "s",
+                                                "gpu_ids": [2]})
+    assert single.status_code == 409 and "wait-small-9b-g1-2" in single.json()["error"]["message"]
+    assert c.post(f"/v1/manager/leases/{held}/release", json={"owner": "lanes"}).status_code == 200
+    t.join(timeout=20)
+    assert out["r"].status_code == 200, out["r"].text
+    assert out["r"].json()["gpus"] == [1, 2]
+    assert menv["rig"]()["claims"] == []          # the lease holds the cards now; the reservation is gone
+    assert [l["gpu_ids"] for l in menv["leases"]()] == [[1, 2]]
+
+
+def test_a_wait_that_runs_out_drops_its_reservation(menv, registry, monkeypatch):  # noqa: F811
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    _hold(c, 1)
+    r = c.post("/v1/manager/models/load", json={"model": "small:9b", "gpu_ids": [1, 2], "wait_s": 0.4})
+    assert r.status_code == 504 and "GPU 1 leased by benchmarks/lanes" in r.json()["error"]["message"]
+    assert menv["rig"]()["claims"] == [] and not menv["rig"]().get("plan_items")
+
+
+def test_without_wait_a_busy_card_still_fails_at_once(menv, registry):  # noqa: F811
+    c = menv["client"]
+    _hold(c, 1)
+    r = c.post("/v1/manager/models/load", json={"model": "small:9b", "gpu_ids": [1, 2]})
+    assert r.status_code == 409 and menv["rig"]()["claims"] == []
+
+
+def test_kill_stops_runtimes_releases_leases_and_drops_claims(menv):  # noqa: F811
+    c = menv["client"]
+    lid = _hold(c, 2)
+    st = menv["rig"]()
+    st["containers"] = [{"name": "llama-lane-gpu2", "gpus": [2], "port": 11436}]
+    menv["write"](st)
+    assert c.post("/v1/manager/claims", json={"name": "pair", "gpu_ids": [1, 2], "owner": "lane-1-2",
+                                              "ttl_s": 600}).status_code == 201
+    r = c.post("/v1/manager/kill", json={"gpu_ids": [2], "reason": "test"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["stopped"] == ["llama-lane-gpu2"] and out["released"] == [lid] and out["claims_dropped"] == ["pair"]
+    st = menv["rig"]()
+    assert st["leases"] == [] and st["claims"] == [] and st["containers"] == []
+    events = c.get("/v1/manager/status").json()["rig"]["events"]
+    assert any("kill GPU [2] (test)" in e["event"] for e in events)
+
+
+def test_force_load_kills_what_runs_on_the_cards_first(menv, registry):  # noqa: F811
+    c = menv["client"]
+    _hold(c, 1, owner="someone-else")
+    r = c.post("/v1/manager/models/load", json={"model": "small:9b", "gpu_ids": [1, 2], "force": True})
+    assert r.status_code == 200, r.text
+    assert [l["owner"] for l in menv["leases"]()] == ["llm-gateway"]
+
+
+def test_claims_carry_owner_and_ttl_and_renew(menv):  # noqa: F811
+    c = menv["client"]
+    r = c.post("/v1/manager/claims", json={"name": "lane-4-5", "gpu_ids": [1, 2], "owner": "lane", "ttl_s": 600,
+                                           "purpose": "benchmark lane"})
+    assert r.status_code == 201 and r.json()["claim"]["expires_at"]
+    assert c.post("/v1/manager/claims/lane-4-5/renew", json={"owner": "lane", "ttl_s": 600}).status_code == 200
+    row = {g["gpu"]: g for g in c.get("/v1/manager/status").json()["gpus"]}[1]
+    assert row["claim"] == "lane-4-5" and row["claim_info"]["owner"] == "lane"
+    assert c.post("/v1/manager/claims/nope/renew", json={}).status_code == 404

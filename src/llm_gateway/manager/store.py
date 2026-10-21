@@ -48,14 +48,32 @@ class RigRecord:
         args = ["lease", "release", lease_id, "--owner", owner] + (["--force"] if force else [])
         await self._call(*args, *self._as_me())
 
-    async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "") -> dict[str, Any]:
+    async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "", *, owner: str = "",
+                        ttl_s: int | None = None, purpose: str = "", model: str = "") -> dict[str, Any]:
         args = ["claim", "add", name, "--gpus", ",".join(str(int(g)) for g in gpu_ids), "--note", note]
         if by:
             args += ["--by", by]
+        if owner:
+            args += ["--owner", owner]
+        if ttl_s:
+            args += ["--ttl", str(int(ttl_s))]
+        if purpose:
+            args += ["--purpose", purpose]
+        if model:
+            args += ["--model", model]
+        return (await self._call(*args, *self._as_me()))["claim"]
+
+    async def renew_claim(self, name: str, owner: str = "", ttl_s: int | None = None) -> dict[str, Any]:
+        args = ["claim", "renew", name] + (["--owner", owner] if owner else []) + (
+            ["--ttl", str(int(ttl_s))] if ttl_s else [])
         return (await self._call(*args, *self._as_me()))["claim"]
 
     async def remove_claim(self, name: str) -> dict[str, Any]:
         return (await self._call("claim", "remove", name, *self._as_me()))["released"]
+
+    async def kill(self, gpu_ids: list[int], reason: str = "") -> dict[str, Any]:
+        args = ["kill", "--gpus", ",".join(str(int(g)) for g in gpu_ids)] + (["--reason", reason] if reason else [])
+        return await self._call(*args, *self._as_me())
 
     # ---------------------------------------------------------------- controller and plan
 

@@ -71,13 +71,31 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
 
     @r.post("/claims", status_code=201)
     async def add_claim(request: Request):
+        """Take cards out of the pool, or reserve them while they are still leased (a split waiting for
+        its cards). ttl_s: the claim lapses unless its owner renews it."""
         b = await _body(request)
         _require(b, "name", "gpu_ids")
-        return {"claim": await manager.add_claim(b["name"], b["gpu_ids"], b.get("note", ""), b.get("by", ""))}
+        return {"claim": await manager.add_claim(
+            b["name"], b["gpu_ids"], b.get("note", ""), b.get("by", ""), owner=b.get("owner", ""),
+            ttl_s=int(b["ttl_s"]) if b.get("ttl_s") else None, purpose=b.get("purpose", ""),
+            model=b.get("model", ""))}
+
+    @r.post("/claims/{name}/renew")
+    async def renew_claim(name: str, request: Request):
+        b = await _body(request)
+        return {"claim": await manager.renew_claim(name, b.get("owner", ""),
+                                                   int(b["ttl_s"]) if b.get("ttl_s") else None)}
 
     @r.post("/claims/{name}/release")
     async def remove_claim(name: str):
         return {"released": await manager.remove_claim(name)}
+
+    @r.post("/kill")
+    async def kill(request: Request):
+        """Operator override: stop every runtime on these cards, release their leases, drop their claims."""
+        b = await _body(request)
+        _require(b, "gpu_ids")
+        return await manager.kill([int(g) for g in b["gpu_ids"]], b.get("reason", ""))
 
     @r.post("/profiles/{profile_id}/load")
     async def load(profile_id: str, request: Request):
@@ -111,10 +129,13 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
 
     @r.post("/models/load")
     async def load_model(request: Request):
-        """Fit, lease, load on the rig, wait until it serves. Unload with /profiles/<profile>/unload."""
+        """Fit, lease, load on the rig, wait until it serves. Unload with /profiles/<profile>/unload.
+        wait_s: reserve busy cards and wait for them (MANAGER.md, "Reservations"); force: kill what runs
+        on the named cards first (operator override)."""
         b = await _body(request)
         req = _model_request(b)
-        return await manager.load_model(b["model"], extra_args=[str(a) for a in b.get("extra_args") or []], **req)
+        return await manager.load_model(b["model"], extra_args=[str(a) for a in b.get("extra_args") or []],
+                                        wait_s=float(b.get("wait_s") or 0), force=bool(b.get("force")), **req)
 
     @r.post("/reconcile")
     async def reconcile():

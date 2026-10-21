@@ -8,10 +8,18 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
     rigctl acquire --controller benchmarks --owner lanes --run-id run1 --need 5800:8192 --need 5800:8192
     rigctl renew LEASE --owner lanes [--ttl 120]
     rigctl release LEASE --owner lanes | --force
-    rigctl claim NAME --gpus 0 [--note "roo testing"]      rigctl unclaim NAME
+    rigctl claim NAME --gpus 0 [--note "roo testing"] [--ttl S --owner O]    rigctl unclaim NAME
+                                                           a claim may cover cards still in use: it reserves
+                                                           them for when their holder releases; --ttl: it
+                                                           lapses unless renewed (rigctl renew-claim NAME)
+    rigctl claims                                          claims with owner, expiry and purpose
+    rigctl kill --gpus 1,3 [--reason TEXT]                 OVERRIDE: stop every runtime on the cards,
+                                                           release their leases, drop claims on them
     rigctl load PROFILE [--claim NAME]                     rigctl unload PROFILE
     rigctl fit MODEL [--cards 2 | --gpus 1,3] [--ctx N] [--use benchmark|chat|worker] [--profile P]
     rigctl load-model MODEL [--cards 2 | --gpus 1,3] [--ctx N] [--use ...] [--args "--reasoning on"] [--json]
+                      [--wait S]                           busy cards: reserve them and wait up to S seconds
+                      [--force]                            OVERRIDE: kill what runs on --gpus first
                                                            no cards given: the harness takes the fewest free
                                                            cards that give --ctx (or at least 4096)
                                                            any registry model on any cards; the harness
@@ -106,7 +114,10 @@ def print_status(s: dict) -> None:
     for g in s["gpus"]:
         lease, obs = g["lease"], g["observed"]
         held = f"{lease['controller']}/{lease['owner']} {lease['model'] or ''} :{lease['port']}" if lease else "-"
-        claim = f" claim={g['claim']}" if g["claim"] else ""
+        info = g.get("claim_info") or {}
+        claim = (f" claim={g['claim']}" + (f" ({info['owner']}" + (f", until {info['expires_at']}" if info.get("expires_at")
+                                                                   else "") + ")" if info.get("owner") else "")
+                 if g["claim"] else "")
         print(f"  GPU{g['gpu']} {g['verdict']:<14} {held:<44}{claim}  {obs['used_mb']} MB "
               f"{obs['util_pct']}% {obs['power_w']} W  {','.join(obs['containers']) or '-'}")
     print_plan(s.get("plan") or {}, limit=5)
@@ -138,7 +149,13 @@ def main() -> int:
     s.add_argument("--force", action="store_true")
     s = sub.add_parser("claim"); s.add_argument("name"); s.add_argument("--gpus", required=True)
     s.add_argument("--note", default=""); s.add_argument("--by", default=os.getenv("USER", ""))
+    s.add_argument("--owner", default=""); s.add_argument("--ttl", type=int)
+    s.add_argument("--purpose", default=""); s.add_argument("--model", default="")
+    s = sub.add_parser("renew-claim"); s.add_argument("name"); s.add_argument("--owner", default="")
+    s.add_argument("--ttl", type=int)
     s = sub.add_parser("unclaim"); s.add_argument("name")
+    sub.add_parser("claims")
+    s = sub.add_parser("kill"); s.add_argument("--gpus", required=True); s.add_argument("--reason", default="")
     s = sub.add_parser("load"); s.add_argument("profile"); s.add_argument("--claim")
     s = sub.add_parser("unload"); s.add_argument("profile")
     for name in ("fit", "load-model"):
@@ -154,6 +171,9 @@ def main() -> int:
         s.add_argument("--json", action="store_true")
         if name == "load-model":
             s.add_argument("--args", default="", help='extra llama-server args after the registry ones, e.g. "--reasoning on"')
+            s.add_argument("--wait", type=float, default=0,
+                           help="seconds to wait for busy --gpus, reserving them meanwhile (default: fail at once)")
+            s.add_argument("--force", action="store_true", help="override: kill what runs on --gpus first")
     sub.add_parser("controller")
     sub.add_parser("takeover")
     s = sub.add_parser("plan"); s.add_argument("--json", action="store_true")
@@ -179,9 +199,12 @@ def main() -> int:
         body = {"model": a.model, "cards": a.cards, "ctx": a.ctx, "ctx_min": a.ctx_min, "use": a.use,
                 "profile": a.profile, "claim": a.claim, "margin_mb": a.margin_mb,
                 "gpu_ids": [int(g) for g in a.gpus.split(",")] if a.gpus else None}
+        timeout = 1000.0
         if a.cmd == "load-model":
             body["extra_args"] = shlex.split(a.args)
-        code, out = call("POST", "/v1/manager/models/" + ("fit" if a.cmd == "fit" else "load"), body)
+            body["wait_s"], body["force"] = a.wait, a.force
+            timeout += a.wait
+        code, out = call("POST", "/v1/manager/models/" + ("fit" if a.cmd == "fit" else "load"), body, timeout=timeout)
         if a.json:
             print(json.dumps(out, indent=2))
         elif code == 200 and a.cmd == "fit":
@@ -217,9 +240,18 @@ def main() -> int:
         code, out = call("POST", f"/v1/manager/leases/{a.lease}/release", {"owner": a.owner, "force": a.force})
     elif a.cmd == "claim":
         code, out = call("POST", "/v1/manager/claims", {"name": a.name, "note": a.note, "by": a.by,
-                                                         "gpu_ids": [int(g) for g in a.gpus.split(",")]})
+                                                         "gpu_ids": [int(g) for g in a.gpus.split(",")],
+                                                         "owner": a.owner, "ttl_s": a.ttl, "purpose": a.purpose,
+                                                         "model": a.model})
+    elif a.cmd == "renew-claim":
+        code, out = call("POST", f"/v1/manager/claims/{a.name}/renew", {"owner": a.owner, "ttl_s": a.ttl})
     elif a.cmd == "unclaim":
         code, out = call("POST", f"/v1/manager/claims/{a.name}/release")
+    elif a.cmd == "claims":
+        code, out = call("GET", "/v1/manager/claims")
+    elif a.cmd == "kill":
+        code, out = call("POST", "/v1/manager/kill", {"gpu_ids": [int(g) for g in a.gpus.split(",")],
+                                                      "reason": a.reason})
     elif a.cmd == "load":
         code, out = call("POST", f"/v1/manager/profiles/{a.profile}/load", {"claim": a.claim})
     else:

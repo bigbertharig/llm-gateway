@@ -161,6 +161,53 @@ term, within about 10% on the 1060s); a VRAM check for published profiles; conte
   on the 3090 profile), plus a rig-wide RAM budget next to the VRAM fit check. Evidence: five lanes x
   8 GB default cache against 31 GB RAM, earlyoom killed a lane's runtime at 21:41.
 
+## Reservations: split loads wait for their cards (2026-10-20)
+
+One rule for every split load, whoever starts it (orchestration's brain, a benchmark lane, a campaign,
+the gateway): a split that cannot start because some of its cards are busy **reserves all of them**
+and waits. Single work can never take a reserved card, so the split gets a matching set as soon as the
+current holders finish. Without this, single tasks take every card as it frees and splits starve.
+
+The primitive is the rig's claim (`hw_state.py`), extended:
+
+| Field | Meaning |
+|---|---|
+| `name`, `gpu_ids` | as before |
+| `owner` | who renews it (a lane, a campaign run, a manager wait, orchestration) |
+| `ttl_s`, `expires_at` | optional. A claim with a TTL lapses unless its owner renews it, so a dead run frees its cards; a claim without one is permanent until removed (the old behavior) |
+| `purpose`, `model` | what it waits for, for status and for an operator deciding to override |
+
+Rules (automatic):
+
+1. A claim can be placed on busy cards. The current holder keeps them until it releases; from then on
+   the rig refuses them to any lease that does not name the claim (rule 5 above).
+2. Expired claims are ignored for placement and dropped from the record on the next claim write (each
+   drop is logged in `gpus/claims_expired.log`).
+3. A split load with `wait_s` (`rigctl load-model --gpus 1,3 --wait 7200`): when its cards are not all
+   free, the manager reserves them (or uses the claim the request names), renews the reservation while
+   it waits, and loads under it once every card is free. Past `wait_s` it drops the reservation and
+   answers 504. A reservation the manager made for the wait is dropped once the load's lease holds the
+   cards.
+4. A lane claims its card group with a TTL and renews it while it runs, and loads with `--wait`.
+5. A campaign block whose card is refused: a split or pinned block reserves its slot and waits (up to
+   its wait limit, 2 h by default) instead of failing; a `single` block tries its other cards, which
+   cannot include reserved ones.
+6. Orchestration's split reservations (`agents/gpu_split.py`: `waiting_partner` -> `joining` ->
+   `loading` -> `ready`) also hold a rig claim (`plans-split-<group>`, owner `plans`) for as long as the
+   reservation is in a loading state, renewed by the launcher while it waits; and orchestration workers
+   skip work on a card held by a claim that is not theirs, as they already do for leases.
+
+Operator overrides (`rigctl`, act immediately, logged in the manager's events):
+
+| Command | Does |
+|---|---|
+| `rigctl claim NAME --gpus 1,3 [--ttl S]` / `rigctl unclaim NAME` | reserve or free cards by hand (unclaim works on anyone's claim) |
+| `rigctl claims` | list claims with owner, expiry and purpose |
+| `rigctl kill --gpus 1,3` | stop every runtime on those cards, release their leases, drop claims on them |
+| `rigctl load-model MODEL --gpus 1,3 --force` | kill whatever is on those cards, then load |
+| `rigctl unload PROFILE` | unload a profile (releases its lease) |
+| `scripts/assign_task.py TASK_ID gpu-N` (llm_orchestration) | pin a queued task to one worker (`target_worker`, honored for work tasks as well as meta tasks) |
+
 ## Migration
 
 | Phase | Scope | Behavior change |
@@ -194,19 +241,7 @@ refused card stops the lane (`LANE_REFUSED`), an unreachable manager runs offlin
   release at LANE_DONE); campaigns the same per lane. Drop `BENCHMARK_DISABLE_AUTO_RESERVE`.
 - Then the job queue: a lane run becomes a set of manager jobs (model + card needs) instead of
   fixed lanes, so cards can join or leave mid-run and one stop cancels everything.
-- Split jobs must reserve their cards while they wait (the half claim), or single jobs take every
-  card as it frees and splits never get a matching set. The mechanism exists: a claim can be placed on
-  a card that is still leased (`hw_state.add_claim` checks only other claims), the holder keeps it
-  until release, and from then on the rig refuses it to any lease that does not name the claim. Still
-  missing: (1) a split job that claims its group, waits for every card to free, then leases under the
-  claim; (2) claim expiry or an owner heartbeat, so a dead run does not strand cards (claims never
-  expire today; lanes unclaim on exit, a killed lane does not); (3) a wait limit after which the split
-  gives up its claim. Reference: orchestration's split reservations (`agents/gpu_split.py` states
-  `waiting_partner` -> `joining` -> `loading` -> `ready`, members in a loading state refuse other
-  work, `expired` on timeout). Phase B must keep that behavior or move it onto manager claims.
-  Today (2026-10-20) `run_campaign.py` retries a refused card (60 s cooldown, 3 refusals per candidate
-  card) and `single` blocks move to the next free card, so a split block in a campaign is not
-  protected from them until (1) exists.
+- Split jobs reserve their cards while they wait: see "Reservations" above.
 - Run-note fixes to fold in: `RUN_NOTES.md` sections 1-5 in `logs/benchmarks/worker_lanes_20261017_203028/`.
 
 **D, enforcement.**

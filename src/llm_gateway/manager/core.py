@@ -44,6 +44,10 @@ LOAD_POLL_S = 3.0
 # A lease of ours with no rig profile or plan item behind it is released after this long (covers the
 # moment between taking the lease and the rig recording the load).
 ORPHAN_GRACE_S = 60
+# A split load that waits for its cards reserves them with a claim this long, renewed while it waits
+# (docs/MANAGER.md, "Reservations"): if this controller goes away mid-wait, the reservation lapses.
+WAIT_CLAIM_TTL_S = 180
+WAIT_POLL_S = 10.0
 
 
 class Manager:
@@ -294,17 +298,108 @@ class Manager:
 
     # ------------------------------------------------------------------ claims
 
-    async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "") -> dict:
+    async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "", *, owner: str = "",
+                        ttl_s: int | None = None, purpose: str = "", model: str = "") -> dict:
+        """Take cards out of the pool. They may still be leased: the claim then reserves them for when
+        their holder releases (how a split waits for a matching set). ttl_s: lapses unless renewed."""
         await self._require_control()
-        claim = await self.record.add_claim(name, gpu_ids, note, by)
+        claim = await self.record.add_claim(name, gpu_ids, note, by, owner=owner, ttl_s=ttl_s, purpose=purpose,
+                                            model=model)
         self._obs = None
         return claim
+
+    async def renew_claim(self, name: str, owner: str = "", ttl_s: int | None = None) -> dict:
+        await self._require_control()
+        return await self.record.renew_claim(name, owner, ttl_s)
 
     async def remove_claim(self, name: str) -> dict:
         await self._require_control()
         claim = await self.record.remove_claim(name)
         self._obs = None
         return claim
+
+    # ------------------------------------------------------------------ operator overrides
+
+    async def kill(self, gpu_ids: list[int], reason: str = "") -> dict:
+        """Stop every runtime on these cards, release every lease holding any of them, and drop every
+        claim on them; then reconcile, which clears the profiles whose runtimes went."""
+        await self._require_control()
+        gpus = sorted({int(g) for g in gpu_ids})
+        out = await self.record.kill(gpus, reason)
+        self._obs = None
+        self._event(f"kill GPU {gpus}" + (f" ({reason})" if reason else "") + f": stopped {out.get('stopped')}, "
+                    f"released {out.get('released')}, claims dropped {out.get('claims_dropped')}")
+        await self.reconcile_once()
+        return out
+
+    # ------------------------------------------------------------------ reservations (split waits)
+
+    async def _wait_for_cards(self, gpus: list[int], claim: str | None, wait_s: float, model: str,
+                              pid: str) -> tuple[str | None, str | None]:
+        """Wait until every card in `gpus` is free (for the claim, when one is named), reserving them
+        meanwhile so single work cannot take them as they free. Returns (claim to load under, the claim
+        this wait made, or None). Past wait_s: the reservation is dropped and ManagerError 504."""
+
+        def state(obs: dict, name: str | None) -> tuple[bool, dict]:
+            try:
+                free, why = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), name)
+            except KeyError:
+                return False, {g: f"claim {name} is gone" for g in gpus}
+            ids = {f["index"] for f in free}
+            return all(g in ids for g in gpus), {g: why.get(g) for g in gpus if g not in ids}
+
+        obs = await self.observe(fresh=True)
+        if claim:
+            named = next((c for c in obs.get("claims", []) if c["name"] == claim), None)
+            if named and not set(gpus) <= set(named["gpu_ids"]):
+                raise ManagerError(409, f"claim {claim} covers GPU {named['gpu_ids']}, not all of {gpus}")
+        ready, why = state(obs, claim)
+        if ready:
+            return claim, None
+        own = None
+        if not claim:
+            name = f"wait-{pid}"[:64]
+            try:
+                await self.add_claim(name, gpus, note=f"waiting to load {model}", by=self.controller_id, owner=OWNER,
+                                     ttl_s=WAIT_CLAIM_TTL_S, purpose=f"split wait for {pid}", model=model)
+                own = claim = name
+            except ManagerError as exc:
+                # Another claim covers some card: wait without a reservation of our own until it goes.
+                self._event(f"{pid}: cannot reserve GPU {gpus} ({exc}); waiting without a reservation")
+        self._event(f"{pid}: waiting up to {wait_s:.0f} s for GPU {gpus}"
+                    + (f" (reserved as {own})" if own else "") + f": {why}")
+        deadline = time.monotonic() + wait_s
+        renewed = time.monotonic()
+        while True:
+            await asyncio.sleep(WAIT_POLL_S)
+            obs = await self.observe(fresh=True)
+            ready, why = state(obs, claim)
+            if ready:
+                self._event(f"{pid}: GPU {gpus} free; loading")
+                return claim, own
+            if own and not any(c["name"] == own for c in obs.get("claims", [])):
+                # Our reservation lapsed (missed renewals) or an operator removed it: take it again.
+                try:
+                    await self.add_claim(own, gpus, note=f"waiting to load {model}", by=self.controller_id,
+                                         owner=OWNER, ttl_s=WAIT_CLAIM_TTL_S, purpose=f"split wait for {pid}",
+                                         model=model)
+                    renewed = time.monotonic()
+                except ManagerError:
+                    pass
+            if time.monotonic() > deadline:
+                if own:
+                    try:
+                        await self.remove_claim(own)
+                    except ManagerError:
+                        pass
+                raise ManagerError(504, f"GPU {gpus} not free after waiting {wait_s:.0f} s for {pid}: "
+                                        + "; ".join(f"GPU {g} {w}" for g, w in why.items()), unavailable=why)
+            if own and time.monotonic() - renewed > WAIT_CLAIM_TTL_S / 3:
+                try:
+                    await self.renew_claim(own, OWNER, WAIT_CLAIM_TTL_S)
+                    renewed = time.monotonic()
+                except ManagerError:
+                    pass  # gone: retaken above on the next pass
 
     # ------------------------------------------------------------------ plan
 
@@ -456,12 +551,49 @@ class Manager:
         return result
 
     async def load_model(self, model: str, *, extra_args: list[str] | None = None, claim: str | None = None,
-                         use: str = "benchmark", **fit_kw) -> dict:
+                         use: str = "benchmark", wait_s: float = 0, force: bool = False, **fit_kw) -> dict:
         """Fit, lease, queue the load in the rig's plan, wait until it serves, and report what the rig
         actually loaded (context, split, memory per card). The rig re-checks with llama.cpp's own
-        projection and refuses a load that would not fit."""
+        projection and refuses a load that would not fit.
+
+        wait_s: when the named cards (gpu_ids) are not all free, reserve them and wait up to this long
+        (docs/MANAGER.md, "Reservations"); with a card count instead, retry the fit until it succeeds.
+        force: operator override, kill whatever runs on the named cards first."""
         await self._require_control()
-        plan_ = await self.fit_model(model, claim=claim, use=use, **fit_kw)
+        gpu_ids = sorted({int(g) for g in fit_kw.get("gpu_ids") or []})
+        if force:
+            if not gpu_ids:
+                raise ManagerError(400, "force needs explicit gpu_ids")
+            await self.kill(gpu_ids, reason=f"force load {model}")
+        own = None
+        try:
+            if gpu_ids and wait_s > 0:
+                r0 = models.resolve(model, use, fit_kw.get("profile"))
+                claim, own = await self._wait_for_cards(gpu_ids, claim, wait_s, model,
+                                                        models.profile_id(r0["model"], gpu_ids))
+                plan_ = await self.fit_model(model, claim=claim, use=use, **fit_kw)
+            elif wait_s > 0:
+                deadline = time.monotonic() + wait_s
+                while True:
+                    try:
+                        plan_ = await self.fit_model(model, claim=claim, use=use, **fit_kw)
+                        break
+                    except ManagerError as exc:
+                        if exc.status not in (409, 503) or time.monotonic() > deadline:
+                            raise
+                    await asyncio.sleep(WAIT_POLL_S)
+            else:
+                plan_ = await self.fit_model(model, claim=claim, use=use, **fit_kw)
+            return await self._load_planned(model, plan_, extra_args=extra_args, claim=claim, use=use, **fit_kw)
+        finally:
+            if own:  # the lease holds the cards now (or the load failed): the wait's reservation goes
+                try:
+                    await self.remove_claim(own)
+                except ManagerError:
+                    pass
+
+    async def _load_planned(self, model: str, plan_: dict, *, extra_args: list[str] | None, claim: str | None,
+                            use: str, **fit_kw) -> dict:
         r = models.resolve(model, use, fit_kw.get("profile"))
         rt = r.get("runtime", {})
         gpus = plan_["gpus"]

@@ -191,8 +191,31 @@ FAKE_RIG = textwrap.dedent("""\
         for c in st["claims"]:
             if c["name"] == a[2] or set(gpus) & set(c["gpu_ids"]):
                 fail("conflict", f"GPU {gpus} already claimed by {c['name']}")
-        claim = {"name": a[2], "gpu_ids": gpus, "note": o.get("--note", "")}
+        claim = {"name": a[2], "gpu_ids": gpus, "note": o.get("--note", ""), "owner": o.get("--owner", "")}
+        if o.get("--ttl"):
+            claim["ttl_s"] = int(o["--ttl"])
+            claim["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + int(o["--ttl"])))
+        for k in ("--purpose", "--model"):
+            if o.get(k): claim[k[2:]] = o[k]
         st["claims"].append(claim); save(); print(json.dumps({"claim": claim})); sys.exit(0)
+    if a[:2] == ["claim", "renew"]:
+        o = opts(a[3:]); require(o)
+        match = [c for c in st["claims"] if c["name"] == a[2]]
+        if not match: fail("not_found", f"no claim {a[2]} (expired or removed)")
+        st["renewed"] = st.get("renewed", 0) + 1
+        save(); print(json.dumps({"claim": match[0]})); sys.exit(0)
+    if a[0] == "kill":
+        o = opts(a[1:]); require(o); gpus = {int(g) for g in o["--gpus"].split(",")}
+        stopped = [c["name"] for c in st["containers"] if gpus & set(c["gpus"])]
+        st["containers"] = [c for c in st["containers"] if not gpus & set(c["gpus"])]
+        for k, p in st["profiles"].items():
+            if gpus & set(p["gpus"]): stopped.append("rig-remote-" + k); p["state"] = "gone"
+        released = [l["lease_id"] for l in st["leases"] if gpus & set(l["gpu_ids"])]
+        st["leases"] = [l for l in st["leases"] if not gpus & set(l["gpu_ids"])]
+        dropped = [c["name"] for c in st["claims"] if gpus & set(c["gpu_ids"])]
+        st["claims"] = [c for c in st["claims"] if not gpus & set(c["gpu_ids"])]
+        save(); print(json.dumps({"gpus": sorted(gpus), "stopped": stopped, "released": released,
+                                  "claims_dropped": dropped})); sys.exit(0)
     if a[:2] == ["claim", "remove"]:
         require(opts(a[3:]))
         match = [c for c in st["claims"] if c["name"] == a[2]]
