@@ -41,7 +41,7 @@ RIG = os.getenv("RIG_HOST", "10.0.0.3")
 # 2026-10-18 assignment: the 3090 gets the dense 27B (it holds its 450 W limit), each 1060 a small model.
 DEFAULT_MODELS = "0=qwen3.6:27b,1=ornith-1.5:9b,2=ministral-3:8b,3=qwen2.5-coder:7b,4=gemma-4:e4b,5=llama3.2:3b"
 FALLBACK_SMALL = "llama3.2:3b"   # for a card the assignment does not name (new cards)
-UNCAP = {"by_model": {"GTX 1060": {"156": 156, "120": 120}}, "by_index": {}}
+UNCAP = {"by_model": {"GTX 1060": {"156": 156, "120": 120}, "RTX 3090 Ti": 450}, "by_index": {}}  # factory limits
 PROMPT = ("Write a very long, detailed story about a lighthouse keeper and a storm that lasts a week. "
           "Describe every day in depth, with dialogue, and do not stop or summarize.")
 FIELDS = "index,uuid,power.draw.instant,temperature.gpu,fan.speed,clocks.sm,clocks_event_reasons.active"
