@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .manager import Manager, ManagerError
 from .manager.routes import router as manager_router
+from .dashboard import router as dashboard_router
 from .profiles import ProfileError, Profiles
 from .rig import Rig, RigUnavailable
 from .settings import Settings
@@ -113,6 +114,7 @@ def create_app(
     app.state.manager = manager
     if manager is not None:
         app.include_router(manager_router(manager, profiles.all))
+        app.include_router(dashboard_router(manager))
 
     @app.exception_handler(ManagerError)
     async def _manager_error(_req, exc: ManagerError):

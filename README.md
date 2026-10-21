@@ -114,6 +114,10 @@ prompt tok/s at growing prompt sizes, and the overflow error. Reports go to `res
 `--exclusive` unloads every other profile before each one. Needed for the 3090-only candidates,
 since there's no auto-evict.
 
+## Dashboard
+
+One page for the rig, models, benchmarks and orchestration: `http://127.0.0.1:8080/dashboard/` on the Pi (from elsewhere: `ssh -N -L 8080:127.0.0.1:8080 pi`). See `docs/DASHBOARD.md`.
+
 ## Repo layout
 
 - `src/llm_gateway/`: the gateway

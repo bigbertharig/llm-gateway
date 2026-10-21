@@ -64,7 +64,8 @@ def gpu_rows(obs: dict, leases: list[dict], claims: list[dict], now: datetime | 
             "claim_info": None if not claim else {k: claim.get(k) for k in ("owner", "expires_at", "purpose", "model")
                                                   if claim.get(k)},
             "observed": {"used_mb": gpu.get("used_mb"), "util_pct": gpu.get("util_pct"),
-                         "power_w": gpu.get("power_w"), "containers": [c["name"] for c in containers],
+                         "power_w": gpu.get("power_w"), "temp_c": gpu.get("temp_c"), "fan_pct": gpu.get("fan_pct"),
+                         "power_limit_w": gpu.get("power_limit_w"), "containers": [c["name"] for c in containers],
                          "port": port, "serving": served},
         })
     return rows

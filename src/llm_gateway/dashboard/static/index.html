@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rig dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #1b2430; --panel: #222d3b; --panel2: #283546; --line: #34445a;
+  --text: #e6e9ee; --muted: #8a97a8; --cool: #5fa8d3; --warm: #e0a458; --hot: #d1495b;
+  --claim: #c3a6ff; --ok: #6cc08b;
+  --sans: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 var(--sans); }
+header { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; padding: 14px 20px 0; }
+header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: .02em; }
+header .stamp { color: var(--muted); font: 12px var(--mono); }
+nav { display: flex; gap: 2px; padding: 12px 20px 0; border-bottom: 1px solid var(--line); }
+nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted);
+  font: 600 15px var(--sans); padding: 8px 14px; cursor: pointer; }
+nav button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--cool); }
+nav button:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--claim); outline-offset: 2px; }
+main { padding: 16px 20px 40px; }
+section[hidden] { display: none; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 22px 0 8px; font-weight: 600; }
+.line { color: var(--muted); font: 13px var(--mono); margin: 4px 0; }
+.line b { color: var(--text); font-weight: 600; }
+.warn { color: var(--warm); } .bad { color: var(--hot); } .good { color: var(--ok); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--panel2); vertical-align: top; }
+td.num, .num { font-family: var(--mono); font-size: 13px; text-align: right; white-space: nowrap; }
+td.mono { font-family: var(--mono); font-size: 12.5px; }
+.scroll { overflow-x: auto; }
+button.act { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  font: 600 13px var(--sans); padding: 4px 10px; cursor: pointer; }
+button.act:hover { border-color: var(--muted); }
+button.danger { color: #ffd3d8; border-color: #6a2f3a; }
+button.danger:hover { border-color: var(--hot); }
+form.inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; background: var(--panel); padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px; }
+form.inline label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+input, select, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  font: 13px var(--mono); padding: 5px 7px; }
+textarea { width: 100%; min-height: 80px; }
+#toast { position: fixed; right: 16px; bottom: 16px; max-width: 520px; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 10px 14px; font: 13px var(--mono); white-space: pre-wrap; display: none; }
+#toast.show { display: block; }
+
+/* The signature: the rig's cards as slots on the board, claims as brackets spanning their cards. */
+.board { position: relative; display: grid; gap: 10px; padding: 30px 0 4px; }
+.slot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; min-width: 0; }
+.slot.big { background: linear-gradient(180deg, var(--panel2), var(--panel)); }
+.slot .head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.slot .idx { font: 700 26px var(--sans); line-height: 1; }
+.slot .card { color: var(--muted); font-size: 12px; text-align: right; }
+.slot .verdict { margin-top: 6px; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+.v-free { color: var(--ok); } .v-leased { color: var(--cool); } .v-loading { color: var(--warm); }
+.v-stale, .v-unleased_busy { color: var(--hot); } .v-lease_idle { color: var(--muted); }
+.slot .holder { font: 12px var(--mono); color: var(--text); margin-top: 2px; overflow-wrap: anywhere; min-height: 2.6em; }
+.meter { height: 6px; background: var(--bg); border-radius: 3px; margin-top: 7px; overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 3px; }
+.slot .stats { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--muted); margin-top: 3px; }
+.slot .stats b { color: var(--text); font-weight: 600; }
+.slot .ctl { margin-top: 9px; }
+.bracket { position: absolute; top: 4px; height: 20px; border: 2px solid var(--claim); border-bottom: 0; border-radius: 6px 6px 0 0;
+  color: var(--claim); font: 600 12px var(--mono); padding: 0 8px; display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; white-space: nowrap; overflow: hidden; }
+.bracket button { background: none; border: 0; color: var(--claim); font: 600 12px var(--sans); cursor: pointer; padding: 0 2px; }
+.score { font-family: var(--mono); font-size: 13px; }
+.score small { color: var(--muted); font-size: 10px; margin-left: 2px; }
+.tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); margin: 1px 2px 1px 0; }
+.tag.role { border-color: #3f5f7a; color: var(--cool); }
+a { color: var(--cool); }
+@media (max-width: 760px) { .board { grid-template-columns: 1fr 1fr !important; } .bracket { display: none; } }
+@media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .6s ease; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rig dashboard</h1>
+  <span class="stamp" id="stamp">loading</span>
+</header>
+<nav role="tablist">
+  <button role="tab" data-tab="rig" aria-selected="true">Rig</button>
+  <button role="tab" data-tab="models" aria-selected="false">Models</button>
+  <button role="tab" data-tab="benchmarks" aria-selected="false">Benchmarks</button>
+  <button role="tab" data-tab="orchestration" aria-selected="false">Orchestration</button>
+</nav>
+<main>
+  <section id="tab-rig">
+    <div id="rig-summary"></div>
+    <div class="board" id="board"></div>
+    <h2>Loaded models</h2><div class="scroll" id="profiles"></div>
+    <h2>Rig plan</h2><div class="scroll" id="plan"></div>
+    <h2>Load a model</h2>
+    <form class="inline" id="load-form">
+      <label>Model <select name="model" id="load-model"></select></label>
+      <label>Cards <input name="gpu_ids" placeholder="1,3" size="7"></label>
+      <label>Use <select name="use"><option>chat</option><option>benchmark</option><option>worker</option></select></label>
+      <label>Wait for busy cards (s) <input name="wait_s" value="0" size="6"></label>
+      <label>Extra args <input name="args" placeholder="--reasoning on" size="18"></label>
+      <label><span><input type="checkbox" name="force"> kill what runs there first</span></label>
+      <button class="act" type="submit">Load model</button>
+    </form>
+    <h2>Events</h2><div id="events"></div>
+  </section>
+
+  <section id="tab-models" hidden>
+    <p class="line">Best run per test: a limit-50 run (V) over a smoke run (S), then the newest. Speed is the latest runtime characterization.</p>
+    <div class="scroll" id="models"></div>
+  </section>
+
+  <section id="tab-benchmarks" hidden>
+    <h2>Lanes</h2><div class="scroll" id="lanes"></div>
+    <h2>Campaigns</h2><div class="scroll" id="campaigns"></div>
+  </section>
+
+  <section id="tab-orchestration" hidden>
+    <div id="orch-summary"></div>
+    <h2>Alerts</h2><div id="orch-alerts"></div>
+    <h2>Workers</h2><div class="scroll" id="orch-workers"></div>
+    <h2>Batches</h2><div class="scroll" id="orch-batches"></div>
+    <h2>Start a plan</h2>
+    <form class="inline" id="plan-form">
+      <label>Plan <select name="plan_name" id="plan-name"></select></label>
+      <label>Starter <select name="starter_file" id="plan-starter"></select></label>
+      <label style="flex:1 1 100%">Config (JSON) <textarea name="config_json" id="plan-config"></textarea></label>
+      <button class="act" type="submit">Start plan</button>
+    </form>
+    <h2>Housekeeping</h2>
+    <form class="inline" id="house-form">
+      <button class="act" type="button" data-orch="cleanup_stale">Clean up stale task files</button>
+      <label>Worker <input name="worker" placeholder="gpu-3" size="8"></label>
+      <button class="act" type="button" data-orch="requeue_worker">Requeue its tasks</button>
+      <button class="act danger" type="button" data-orch="kill_all_active">Kill all active plans</button>
+    </form>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmt = (v, d = 0) => (v === null || v === undefined || v === "") ? "-" : Number(v).toFixed(d);
+const age = (s) => s == null ? "-" : s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+let toastTimer;
+function toast(text, cls = "") {
+  const t = $("#toast"); t.textContent = text; t.className = "show " + cls;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "", 9000);
+}
+async function api(path, body) {
+  const opt = body === undefined ? {cache: "no-store"} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)};
+  const res = await fetch("/dashboard/api/" + path, opt);
+  let data = {};
+  try { data = await res.json(); } catch (e) { data = {}; }
+  if (!res.ok) throw new Error((data.error && data.error.message) || `${res.status} ${res.statusText}`);
+  return data;
+}
+async function act(label, path, body, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
+  toast(label + "...");
+  try {
+    const out = await api(path, body);
+    toast(label + ": done\n" + (out.message || JSON.stringify(out).slice(0, 400)), "good");
+    refresh(true);
+  } catch (e) { toast(label + " failed: " + e.message, "bad"); }
+}
+function heat(t) { return t == null ? "var(--line)" : t < 60 ? "var(--cool)" : t < 78 ? "var(--warm)" : "var(--hot)"; }
+
+// ---------------------------------------------------------------- rig
+function renderRig(s) {
+  const g = s.guard || {}, c = s.controller || {}, act_ = c.active || {};
+  $("#rig-summary").innerHTML =
+    `<div class="line">mode <b>${esc(s.mode)}</b> &middot; controller <b>${esc(act_.id || "none")}</b>${c.in_control ? "" : ' <span class="warn">(this one read-only)</span>'}` +
+    ` &middot; guard <b class="${g.level === "ok" ? "good" : g.level === "warn" ? "warn" : "bad"}">${esc(g.level || "?")}</b> ${esc(g.why || "")}` +
+    ` &middot; <b>${fmt(g.gpu_power_total_w)}</b> W total, CPU <b>${fmt(g.cpu_package_c)}</b> C, <b>${fmt((g.mem_available_mb || 0) / 1024, 1)}</b> GB RAM free</div>` +
+    (s.from_copy ? `<div class="line bad">Rig unreachable since ${esc((s.rig || {}).down_since)}; showing the last copy.</div>` : "");
+  const gpus = s.gpus || [];
+  const board = $("#board");
+  board.style.gridTemplateColumns = gpus.map((x) => (x.vram_mb || 0) > 12000 ? "1.7fr" : "1fr").join(" ");
+  board.innerHTML = gpus.map((x) => {
+    const o = x.observed || {}, l = x.lease;
+    const vram = x.vram_mb ? Math.round(100 * (o.used_mb || 0) / x.vram_mb) : 0;
+    const t = o.temp_c, tp = t == null ? 0 : Math.min(100, Math.max(0, (t - 30) * 100 / 60));
+    const holder = l ? `${esc(l.controller)}/${esc(l.owner)}<br>${esc(l.model || "")} :${esc(l.port)}` :
+      (o.containers || []).length ? esc(o.containers.join(", ")) : "nothing";
+    return `<div class="slot ${(x.vram_mb || 0) > 12000 ? "big" : ""}">
+      <div class="head"><span class="idx">${x.gpu}</span><span class="card">${esc((x.name || "").replace("NVIDIA GeForce ", ""))}</span></div>
+      <div class="verdict v-${esc(x.verdict)}">${esc(String(x.verdict).replace("_", " "))}</div>
+      <div class="holder">${holder}</div>
+      <div class="meter" title="temperature"><i style="width:${tp}%;background:${heat(t)}"></i></div>
+      <div class="stats"><span><b>${fmt(t)}</b> C fan ${fmt(o.fan_pct)}%</span><span><b>${fmt(o.power_w)}</b>/${fmt(o.power_limit_w)} W</span></div>
+      <div class="meter" title="VRAM"><i style="width:${vram}%;background:var(--muted)"></i></div>
+      <div class="stats"><span>VRAM <b>${fmt((o.used_mb || 0) / 1024, 1)}</b>/${fmt((x.vram_mb || 0) / 1024, 0)} GB</span><span>util <b>${fmt(o.util_pct)}</b>%</span></div>
+      <div class="ctl"><button class="act danger" data-kill="${x.gpu}">Kill card ${x.gpu}</button></div>
+    </div>`;
+  }).join("") + brackets(s.claims || [], gpus);
+  board.querySelectorAll("[data-kill]").forEach((b) => b.onclick = () => act(`Kill card ${b.dataset.kill}`, "rig/kill",
+    {gpu_ids: [Number(b.dataset.kill)], reason: "dashboard"},
+    `Stop every runtime on card ${b.dataset.kill}, release its lease and drop claims on it?`));
+  board.querySelectorAll("[data-unclaim]").forEach((b) => b.onclick = () => act(`Unclaim ${b.dataset.unclaim}`, "rig/unclaim",
+    {name: b.dataset.unclaim}, `Remove claim ${b.dataset.unclaim}? Its cards go back to the shared pool.`));
+
+  const profs = Object.entries(s.profiles || {});
+  $("#profiles").innerHTML = profs.length ? `<table><tr><th>Profile</th><th>Model</th><th>Cards</th><th>Port</th><th>State</th><th>Context</th><th></th></tr>` +
+    profs.map(([pid, p]) => `<tr><td class="mono">${esc(pid)}</td><td>${esc(p.model || "")}</td><td class="num">${esc((p.gpus || []).join(","))}</td>
+      <td class="num">${esc(p.port)}</td><td>${esc(p.state)}</td><td class="num">${esc(p.ctx_size || "")}</td>
+      <td><button class="act" data-unload="${esc(pid)}">Unload</button></td></tr>`).join("") + "</table>" : '<div class="line">Nothing loaded through the rig.</div>';
+  $("#profiles").querySelectorAll("[data-unload]").forEach((b) => b.onclick = () => act(`Unload ${b.dataset.unload}`, "rig/unload", {profile: b.dataset.unload}));
+
+  const items = ((s.plan || {}).items || []).slice(-10).reverse();
+  $("#plan").innerHTML = items.length ? `<table><tr><th>Item</th><th>State</th><th>Kind</th><th>Profile</th><th>Cards</th><th></th></tr>` +
+    items.map((i) => `<tr><td class="mono">${esc(i.id)}</td><td>${esc(i.state)}</td><td>${esc(i.kind)}</td><td class="mono">${esc((i.args || {}).profile || "")}</td>
+      <td class="num">${esc(((i.args || {}).gpus || []).join(","))}</td>
+      <td>${["queued", "running"].includes(i.state) ? `<button class="act" data-cancel="${esc(i.id)}">Cancel</button>` : ""}</td></tr>`).join("") + "</table>" : '<div class="line">The plan is empty.</div>';
+  $("#plan").querySelectorAll("[data-cancel]").forEach((b) => b.onclick = () => act(`Cancel ${b.dataset.cancel}`, "rig/cancel", {item: b.dataset.cancel}));
+
+  const ev = ((s.rig || {}).events || []).slice().reverse();
+  $("#events").innerHTML = ev.length ? ev.map((e) => `<div class="line">${esc(e.at)} &middot; ${esc(e.event)}</div>`).join("") : '<div class="line">No events since the gateway started.</div>';
+  $("#stamp").textContent = "observed " + (s.observed_at || "?");
+}
+function brackets(claims, gpus) {
+  // One bracket per claim over a run of adjacent cards (split pairs are adjacent in board order).
+  const total = gpus.reduce((a, x) => a + ((x.vram_mb || 0) > 12000 ? 1.7 : 1), 0), gap = 10;
+  const pos = {}; let acc = 0;
+  gpus.forEach((x) => { const w = (x.vram_mb || 0) > 12000 ? 1.7 : 1; pos[x.gpu] = [acc, w]; acc += w; });
+  return claims.map((c) => {
+    const ids = (c.gpu_ids || []).filter((i) => pos[i]).sort((a, b) => a - b);
+    if (!ids.length) return "";
+    const start = pos[ids[0]][0], end = pos[ids[ids.length - 1]][0] + pos[ids[ids.length - 1]][1];
+    const left = `calc(${start / total * 100}% + ${gap * start / total}px)`;
+    const width = `calc(${(end - start) / total * 100}% - ${gap * (1 - (end - start) / total)}px)`;
+    const until = c.expires_at ? ` until ${String(c.expires_at).slice(11, 16)}Z` : "";
+    return `<div class="bracket" style="left:${left};width:${width}" title="${esc(c.purpose || c.note || "")}">
+      <span>${esc(c.name)} &middot; ${esc(c.owner || c.by || "")}${esc(until)}</span><button data-unclaim="${esc(c.name)}">unclaim</button></div>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------- models
+let modelsData = null;
+function renderModels(d) {
+  modelsData = d;
+  const cols = d.key_tests || [];
+  $("#models").innerHTML = `<table><tr><th>Model</th><th>Status</th><th>Placement</th><th>Roles</th>` +
+    cols.map((c) => `<th class="num">${esc(c)}</th>`).join("") + `<th class="num">pipeline</th><th class="num">tok/s</th><th class="num">ctx</th><th>Source</th></tr>` +
+    d.models.map((m) => `<tr><td><b>${esc(m.model)}</b>${m.profiles.length > 1 ? "<br>" + m.profiles.map((p) => `<span class="tag">${esc(p)}</span>`).join("") : ""}</td>
+      <td>${esc(m.status)}</td><td>${esc(m.placement || "")}</td>
+      <td>${m.roles.map((r) => `<span class="tag role">${esc(r)}</span>`).join("")}</td>` +
+      cols.map((c) => { const s = m.scores[c]; return `<td class="score num">${s ? fmt(s.score, 2) + `<small>${s.run_class === "smoke" ? "S" : "V"}</small>` : "-"}</td>`; }).join("") +
+      `<td class="score num">${m.pipeline == null ? "-" : fmt(m.pipeline, 2)}</td>
+      <td class="num">${m.runtime ? fmt(m.runtime.decode_tps, 1) : "-"}</td><td class="num">${m.runtime ? esc(m.runtime.ctx || "") : "-"}</td>
+      <td>${m.source_url ? `<a href="${esc(m.source_url)}" rel="noopener" target="_blank">HF</a>` : ""}</td></tr>`).join("") + "</table>";
+  const sel = $("#load-model"), cur = sel.value;
+  sel.innerHTML = d.models.filter((m) => ["active", "candidate"].includes(m.status)).map((m) => `<option>${esc(m.model)}</option>`).join("");
+  if (cur) sel.value = cur;
+}
+
+// ---------------------------------------------------------------- benchmarks
+function renderBenchmarks(d) {
+  $("#lanes").innerHTML = d.lanes.length ? `<table><tr><th>Run</th><th>Lane</th><th></th><th>Last line</th><th class="num">Age</th><th>Queued</th></tr>` +
+    d.lanes.map((l) => `<tr><td class="mono">${esc(l.run.replace("worker_lanes_", ""))}</td><td>${esc(l.lane)}</td>
+      <td class="${l.active ? "good" : ""}">${l.active ? "running" : "idle"}</td><td class="mono">${esc(l.last)}</td>
+      <td class="num">${age(l.age_s)}</td><td class="mono">${esc((l.queued || []).join(", "))}</td></tr>`).join("") + "</table>" : '<div class="line">No lane runs on the drive.</div>';
+  $("#campaigns").innerHTML = d.campaigns.length ? `<table><tr><th>Campaign</th><th>Run</th><th>Status</th><th>Blocks</th><th>Now</th><th class="num">Updated</th></tr>` +
+    d.campaigns.map((c) => `<tr><td>${esc(c.campaign)}</td><td class="mono">${esc(c.run_id)}</td><td>${esc(c.status)}</td>
+      <td class="mono">${esc(Object.entries(c.blocks).map(([k, v]) => `${v} ${k}`).join(", "))}</td><td class="mono">${esc(c.current.join(", "))}</td>
+      <td class="num">${age(c.updated_age_s)}</td></tr>`).join("") + "</table>" : '<div class="line">No campaign runs on the drive.</div>';
+}
+
+// ---------------------------------------------------------------- orchestration
+let orchOptions = null;
+function renderOrch(d) {
+  const counts = d.counts || {}, policy = d.control_policy || {};
+  $("#orch-summary").innerHTML = `<div class="line">tasks: queue <b>${counts.queue ?? 0}</b> &middot; processing <b>${counts.processing ?? 0}</b> &middot; complete <b>${counts.complete ?? 0}</b> &middot; failed <b>${counts.failed ?? 0}</b>` +
+    ` &middot; policy <b>${esc(policy.boot_profile || "-")}</b> &middot; generated ${esc(d.generated_at || "")}</div>`;
+  const alerts = d.alerts || [];
+  $("#orch-alerts").innerHTML = alerts.length ? alerts.slice(0, 20).map((a) => `<div class="line ${a.severity === "bad" ? "bad" : "warn"}">${esc(a.worker || "")} &middot; ${esc(a.message)}</div>`).join("") : '<div class="line">No alerts.</div>';
+  const workers = [...(d.brain_gpus || []), ...(d.workers || [])];
+  $("#orch-workers").innerHTML = `<table><tr><th>Worker</th><th>State</th><th>Model</th><th>Busy</th><th class="num">Heartbeat</th><th class="num">Temp</th></tr>` +
+    workers.map((w) => `<tr><td>${esc(w.name)}</td><td>${esc(w.state)}</td><td class="mono">${esc(w.loaded_model || w.model || "-")}</td>
+      <td>${esc(w.busy ? (w.busy_lane || "busy") + (w.busy_owner ? " / " + w.busy_owner : "") : "")}</td>
+      <td class="num">${age(w.age_s)}</td><td class="num">${fmt(w.gpu_temp_c)}</td></tr>`).join("") + "</table>";
+  const batches = Object.entries(d.active_batches || {});
+  $("#orch-batches").innerHTML = batches.length ? `<table><tr><th>Batch</th><th>Plan</th><th class="num">Queue</th><th class="num">Running</th><th class="num">Done</th><th class="num">Failed</th><th>Started</th><th></th></tr>` +
+    batches.map(([id, b]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(b.display_name || b.plan || "")}</td>
+      <td class="num">${b.counts.queue}</td><td class="num">${b.counts.processing}</td><td class="num">${b.counts.complete}</td><td class="num">${b.counts.failed}</td>
+      <td class="mono">${esc(String(b.started_at || "").slice(0, 16))}</td>
+      <td><button class="act" data-batch="resume_plan" data-id="${esc(id)}">Resume</button>
+          <button class="act" data-batch="batch_outputs" data-id="${esc(id)}">Outputs</button>
+          <button class="act danger" data-batch="kill_plan" data-id="${esc(id)}">Kill</button></td></tr>`).join("") + "</table>" : '<div class="line">No active batches.</div>';
+  $("#orch-batches").querySelectorAll("[data-batch]").forEach((b) => b.onclick = () => {
+    const a = b.dataset.batch, id = b.dataset.id;
+    if (a === "batch_outputs") return api("orchestration/batch_outputs", {batch_id: id}).then((o) => toast(JSON.stringify(o, null, 1).slice(0, 1500))).catch((e) => toast(e.message, "bad"));
+    act(`${a.replace("_plan", "")} ${id}`, "orchestration/" + a, {batch_id: id}, a === "kill_plan" ? `Kill batch ${id}?` : "");
+  });
+}
+async function loadOrchOptions() {
+  try { orchOptions = await api("orchestration/options"); } catch (e) { return; }
+  const sel = $("#plan-name");
+  sel.innerHTML = orchOptions.plans.map((p) => `<option value="${esc(p)}">${esc(orchOptions.plan_scopes[p])} / ${esc(p)}</option>`).join("");
+  sel.onchange = planChanged; planChanged();
+}
+function planChanged() {
+  const p = $("#plan-name").value;
+  $("#plan-starter").innerHTML = (orchOptions.plan_starters[p] || []).map((s) => `<option${s === orchOptions.plan_default_starter[p] ? " selected" : ""}>${esc(s)}</option>`).join("");
+  $("#plan-config").value = JSON.stringify(orchOptions.plan_defaults[p] || {}, null, 1);
+}
+
+// ---------------------------------------------------------------- tabs, forms, refresh
+let tab = (() => { try { return localStorage.getItem("dash-tab") || "rig"; } catch (e) { return "rig"; } })();
+function show(name) {
+  tab = name;
+  try { localStorage.setItem("dash-tab", name); } catch (e) { /* private window */ }
+  document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
+  document.querySelectorAll("main > section").forEach((s) => s.hidden = s.id !== "tab-" + name);
+  refresh(true);
+}
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => show(b.dataset.tab));
+$("#load-form").onsubmit = (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = {model: f.get("model"), gpu_ids: f.get("gpu_ids"), use: f.get("use"), wait_s: Number(f.get("wait_s") || 0),
+                args: f.get("args"), force: f.get("force") === "on"};
+  act(`Load ${body.model}`, "rig/load", body, body.force ? `Kill whatever runs on cards ${body.gpu_ids} and load ${body.model}?` : "");
+};
+$("#plan-form").onsubmit = (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target), p = f.get("plan_name");
+  act(`Start ${p}`, "orchestration/start_plan", {plan_name: p, plan_scope: orchOptions ? orchOptions.plan_scopes[p] : "shoulders",
+    starter_file: f.get("starter_file"), config_json: f.get("config_json")});
+};
+document.querySelectorAll("[data-orch]").forEach((b) => b.onclick = () => {
+  const a = b.dataset.orch, worker = $("#house-form").worker.value.trim();
+  act(b.textContent, "orchestration/" + a, a === "requeue_worker" ? {worker} : {}, a === "kill_all_active" ? "Kill every active plan?" : "");
+});
+const every = {rig: 5000, models: 60000, benchmarks: 15000, orchestration: 10000};
+let last = {};
+async function refresh(now) {
+  const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
+  try {
+    if (tab === "rig" && due("rig")) { renderRig(await api("rig")); last.rig = Date.now(); if (!modelsData) renderModels(await api("models")); }
+    if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
+    if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
+    if (tab === "orchestration" && due("orchestration")) { renderOrch(await api("orchestration")); last.orchestration = Date.now(); if (!orchOptions) loadOrchOptions(); }
+  } catch (e) {
+    $("#stamp").textContent = "refresh failed: " + e.message;
+  }
+}
+show(tab);
+setInterval(() => refresh(false), 2500);
+</script>
+</body>
+</html>
