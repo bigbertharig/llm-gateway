@@ -206,10 +206,18 @@ def test_split_load_reserves_busy_cards_and_loads_once_they_free(menv, registry,
     t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
         "model": "small:9b", "gpu_ids": [1, 2], "wait_s": 20})))
     t.start()
+    def rig_state():  # the fake rig rewrites its state file in place on every call while the wait polls
+        for _ in range(50):
+            try:
+                return menv["rig"]()
+            except ValueError:
+                time.sleep(0.02)
+        return menv["rig"]()
+
     deadline = time.time() + 10
-    while time.time() < deadline and not menv["rig"]()["claims"]:
+    while time.time() < deadline and not rig_state()["claims"]:
         time.sleep(0.05)
-    (claim,) = menv["rig"]()["claims"]
+    (claim,) = rig_state()["claims"]
     assert claim["name"] == "wait-small-9b-g1-2" and claim["gpu_ids"] == [1, 2] and claim["expires_at"]
     # The free partner card cannot be taken by single work while the split waits for GPU 1.
     single = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "solo", "run_id": "s",
