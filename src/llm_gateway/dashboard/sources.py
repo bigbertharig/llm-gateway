@@ -29,17 +29,21 @@ SHARED_ROOTS = (Path("/media/bryan/shared"), Path("/mnt/shared"))
 ORCHESTRATION_ROOT_DEFAULT = Path.home() / "llm_orchestration"
 
 # The tests shown per model, in column order: (label, test_id).
+# Reasoning columns are the lenient rows (bench-reasoning extract v5): a correct answer counts however it
+# is written. IFEval stays strict because its prompts instruct the format.
 KEY_TESTS = (
-    ("bbh", "bbh"),
-    ("gsm8k", "gsm8k_strict"),
-    ("drop f1", "drop_f1"),
+    ("bbh", "bbh_flexible"),
+    ("gsm8k", "gsm8k_flexible"),
+    ("drop", "drop_flexible"),
     ("ifeval", "ifeval_prompt_level_strict_acc_none"),
-    ("mmlu-pro", "mmlu_pro_exact_match_custom-extract"),
+    ("mmlu-pro", "mmlu_pro_flexible"),
     ("humaneval+", "humaneval_plus"),
     ("mbpp+", "mbpp_plus"),
 )
-# Which run counts when a model has several: a limit-50 or full run over a smoke run, then the newest.
+# Which run counts when a model has several: a limit-50 or full run over a smoke run, then the newer
+# extractor (a re-scored row keeps its run's time), then the newest.
 CLASS_RANK = {"validated": 3, "full": 3, "smoke": 1}
+EXTRACT_VERSION = re.compile(r"extract-v(\d+)$")
 LANE_ACTIVE_S = 1200     # a lane log written to within this long counts as running
 RECENT_RUNS = 12
 
@@ -82,11 +86,14 @@ def _best_records(path: Path) -> dict[tuple[str, str], dict]:
             m, t = r.get("model"), r.get("test_id")
             if not m or not t or r.get("score") is None:
                 continue
-            rank = (CLASS_RANK.get(str(r.get("run_class") or ""), 0), str(r.get("run_at") or ""))
+            version = EXTRACT_VERSION.search(str((r.get("runtime") or {}).get("config_id") or ""))
+            rank = (CLASS_RANK.get(str(r.get("run_class") or ""), 0), int(version.group(1)) if version else 0,
+                    str(r.get("run_at") or ""))
             have = best.get((m, t))
             if have is None or rank > have["_rank"]:
                 best[(m, t)] = {"score": float(r["score"]), "run_class": r.get("run_class"),
-                                "n": r.get("sample_count"), "at": str(r.get("run_at") or "")[:10], "_rank": rank}
+                                "n": r.get("sample_count"), "at": str(r.get("run_at") or "")[:10], "_rank": rank,
+                                "unreadable": (r.get("extractor_failure_count") or 0) if version and int(version.group(1)) >= 5 else None}
     _records_cache.update(key=key, best=best)
     return best
 

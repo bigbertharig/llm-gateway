@@ -42,8 +42,14 @@ def _bench(tmp_path):
                  "schedule": {"placement": "single_gpu", "tier": 1}, "profiles": {"default": {}, "thinking": {}}},
         "old:7b": {"status": "archived", "profiles": {"default": {}}}}}))
     (root / "model_roles.json").write_text(json.dumps({"roles": {"single_1060": {"model": "m:9b"}}}))
-    recs = [{"model": "m:9b", "test_id": "bbh", "score": 0.80, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"},
-            {"model": "m:9b", "test_id": "bbh", "score": 0.85, "run_class": "validated", "run_at": "2026-10-18T01:00:00Z"},
+    v4 = {"config_id": "lm-eval-0.4.11-reasoning-extract-v4"}
+    v5 = {"config_id": "lm-eval-0.4.11-reasoning-extract-v5"}
+    recs = [{"model": "m:9b", "test_id": "bbh_flexible", "score": 0.80, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"},
+            {"model": "m:9b", "test_id": "bbh_flexible", "score": 0.85, "run_class": "validated", "run_at": "2026-10-18T01:00:00Z"},
+            # same run re-scored by the newer extractor: earlier run_at, but it wins
+            {"model": "m:9b", "test_id": "drop_flexible", "score": 0.2, "run_class": "smoke", "run_at": "2026-10-19T01:00:09Z", "runtime": v4},
+            {"model": "m:9b", "test_id": "drop_flexible", "score": 0.6, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z",
+             "runtime": v5, "extractor_failure_count": 2, "sample_count": 10},
             {"model": "m:9b", "test_id": "custom_a", "score": 1.0, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"},
             {"model": "m:9b", "test_id": "custom_b", "score": 0.5, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"}]
     (root / "results" / "model_benchmark_records.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
@@ -57,6 +63,8 @@ def test_models_summary_prefers_limit50_runs_and_reads_roles_and_speed(tmp_path)
     first = out["models"][0]
     assert first["model"] == "m:9b" and first["roles"] == ["single_1060"] and first["profiles"] == ["default", "thinking"]
     assert first["scores"]["bbh"]["score"] == 0.85 and first["scores"]["bbh"]["run_class"] == "validated"
+    assert first["scores"]["bbh"]["unreadable"] is None
+    assert first["scores"]["drop"]["score"] == 0.6 and first["scores"]["drop"]["unreadable"] == 2
     assert first["pipeline"] == 0.75 and first["runtime"]["decode_tps"] == 16.6
     assert out["models"][-1]["model"] == "old:7b"
 

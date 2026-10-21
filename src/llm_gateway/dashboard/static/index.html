@@ -76,6 +76,7 @@ textarea { width: 100%; min-height: 80px; }
 .bracket button { background: none; border: 0; color: var(--claim); font: 600 12px var(--sans); cursor: pointer; padding: 0 2px; }
 .score { font-family: var(--mono); font-size: 13px; }
 .score small { color: var(--muted); font-size: 10px; margin-left: 2px; }
+.score small.unread { color: var(--warn, #c77700); }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); margin: 1px 2px 1px 0; }
 .tag.role { border-color: #3f5f7a; color: var(--cool); }
 a { color: var(--cool); }
@@ -114,7 +115,7 @@ a { color: var(--cool); }
   </section>
 
   <section id="tab-models" hidden>
-    <p class="line">Best run per test: a limit-50 run (V) over a smoke run (S), then the newest. Speed is the latest runtime characterization.</p>
+    <p class="line">Best run per test: a limit-50 run (V) over a smoke run (S), then the newest. Reasoning scores are lenient: a correct answer counts however it is written, and uN marks N answers that could not be read at all. Speed is the latest runtime characterization.</p>
     <div class="scroll" id="models"></div>
   </section>
 
@@ -254,7 +255,7 @@ function renderModels(d) {
     d.models.map((m) => `<tr><td><b>${esc(m.model)}</b>${m.profiles.length > 1 ? "<br>" + m.profiles.map((p) => `<span class="tag">${esc(p)}</span>`).join("") : ""}</td>
       <td>${esc(m.status)}</td><td>${esc(m.placement || "")}</td>
       <td>${m.roles.map((r) => `<span class="tag role">${esc(r)}</span>`).join("")}</td>` +
-      cols.map((c) => { const s = m.scores[c]; return `<td class="score num">${s ? fmt(s.score, 2) + `<small>${s.run_class === "smoke" ? "S" : "V"}</small>` : "-"}</td>`; }).join("") +
+      cols.map((c) => { const s = m.scores[c]; return `<td class="score num">${s ? fmt(s.score, 2) + `<small>${s.run_class === "smoke" ? "S" : "V"}</small>` + (s.unreadable ? `<small class="unread" title="${s.unreadable} of ${s.n} answers unreadable">u${s.unreadable}</small>` : "") : "-"}</td>`; }).join("") +
       `<td class="score num">${m.pipeline == null ? "-" : fmt(m.pipeline, 2)}</td>
       <td class="num">${m.runtime ? fmt(m.runtime.decode_tps, 1) : "-"}</td><td class="num">${m.runtime ? esc(m.runtime.ctx || "") : "-"}</td>
       <td>${m.source_url ? `<a href="${esc(m.source_url)}" rel="noopener" target="_blank">HF</a>` : ""}</td></tr>`).join("") + "</table>";
