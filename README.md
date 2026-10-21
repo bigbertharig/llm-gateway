@@ -46,6 +46,7 @@ which port). Offers may use `active` or `candidate` registry models.
 | `GET /health` | liveness |
 | `/v1/manager/...` | rig manager: `status`, `leases` (acquire, renew, release), `claims`, `profiles/<id>/load\|unload`, `reconcile`. Process and rules: [docs/MANAGER.md](docs/MANAGER.md). CLI: `tools/rigctl.py` |
 | `tools/rig_stress.py` | rig power and thermal stress test through the harness: one model per card, ramp, hold, optional reload spikes (`--spikes`) and factory limits until the next boot (`--uncap`); per-card temperature, fan, power and clock by GPU UUID in `~/rig_stress/<time>/summary.json`, `--compare` against an earlier run. Baseline: `~/rig_stress/20261018_baseline/` on the Pi |
+| `tools/power_cap_sweep.py` | speed and power of one card across a series of power caps: one model loaded through the harness, the cap set through the rig's boot-cleared override, decode and prompt tok/s from llama-server timings, average and peak power, J per token, SM clock and temperature per cap in `~/rig_stress/power_cap_<time>/summary.json`; planned caps restored at the end |
 
 Errors use the OpenAI shape `{"error": {"message", "type", "code"}}`:
 
