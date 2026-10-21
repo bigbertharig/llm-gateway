@@ -80,17 +80,21 @@ FAKE_RIG = textwrap.dedent("""\
     st = json.load(open(path))
     st.setdefault("controller", None); st.setdefault("plan_items", [])
     a = sys.argv[1:]
-    def save(): json.dump(st, open(path, "w"))
+    def save():  # atomic: concurrent fake-rig calls never read a half-written state
+        tmp = f"{path}.{os.getpid()}.tmp"
+        json.dump(st, open(tmp, "w")); os.replace(tmp, path)
     def now_iso(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     def refresh():
+        changed = False
         for p in st["profiles"].values():
             if p["state"] == "loading" and time.time() >= p["ready_at"]:
-                p["state"] = "ready"
+                p["state"] = "ready"; changed = True
         for i in st["plan_items"]:  # the executor: a running load is done once its profile serves
             prof = st["profiles"].get(i["args"]["profile"])
             if i["state"] == "running" and i["kind"] == "load" and prof and prof["state"] in ("ready", "gone"):
-                i["state"] = "done"; i["result"] = "ready"
-    refresh(); save()
+                i["state"] = "done"; i["result"] = "ready"; changed = True
+        return changed
+    if refresh(): save()  # a read that changed nothing writes nothing (no lost updates between calls)
     def fail(kind, msg):
         print(json.dumps({"error": msg, "kind": kind})); sys.exit(1)
     def opts(xs):
