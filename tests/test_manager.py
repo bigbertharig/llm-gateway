@@ -230,8 +230,16 @@ FAKE_RIG = textwrap.dedent("""\
         ctrs = list(st["containers"]) + [{"name": "rig-remote-" + k, "gpus": p["gpus"], "port": p["port"]}
                                          for k, p in st["profiles"].items() if p["state"] != "gone"]
         ports = {str(p["port"]): k + ".gguf" for k, p in st["profiles"].items() if p["state"] == "ready"}
+        profiles = st["profiles"]
+        # FAKE_STALE_READS=N: the first N snapshots after a load is done still show its profile loading
+        # (a rig observe that read the profiles before the plan).
+        stale = int(os.environ.get("FAKE_STALE_READS", "0"))
+        if st.get("stale_reads", 0) < stale and any(i["kind"] == "load" and i["state"] == "done"
+                                                    for i in st["plan_items"]):
+            st["stale_reads"] = st.get("stale_reads", 0) + 1; save()
+            profiles = {k: {**v, "state": "loading"} if v["state"] == "ready" else v for k, v in profiles.items()}
         print(json.dumps({"observed_at": "now", "mode": "remote" if st["profiles"] else "idle",
-                          "gpus": st["gpus"], "containers": ctrs, "ports": ports, "profiles": st["profiles"],
+                          "gpus": st["gpus"], "containers": ctrs, "ports": ports, "profiles": profiles,
                           "jobs": st["jobs"], "last_error": st.get("last_error"),
                           "leases": st["leases"], "claims": st["claims"], "plan": plan_report(),
                           "guard": st.get("guard", {"level": "ok", "mem_available_mb": 20000})})); sys.exit(0)
@@ -324,6 +332,20 @@ def test_failed_rig_job_releases_the_lease_and_reports_the_log(menv, monkeypatch
     monkeypatch.setenv("FAKE_DETACH", "fail")
     r = chat(menv["client"], "gpu-rig/small")
     assert r.status_code == 502 and "out of memory" in r.json()["error"]["message"]
+    assert menv["leases"]() == []
+
+
+def test_done_load_seen_loading_once_is_not_failed(menv, monkeypatch):
+    monkeypatch.setenv("FAKE_STALE_READS", "1")
+    r = chat(menv["client"], "gpu-rig/small")
+    assert r.status_code == 200, r.text
+    assert len(menv["leases"]()) == 1
+
+
+def test_done_load_that_never_serves_fails_and_releases(menv, monkeypatch):
+    monkeypatch.setenv("FAKE_STALE_READS", "99")
+    r = chat(menv["client"], "gpu-rig/small")
+    assert r.status_code == 502 and "not serving" in r.json()["error"]["message"]
     assert menv["leases"]() == []
 
 

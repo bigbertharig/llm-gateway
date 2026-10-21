@@ -41,6 +41,7 @@ INTERACTIVE_TTL_S = 300
 RECONCILE_EVERY_S = 30
 OBSERVE_CACHE_S = 3.0
 LOAD_POLL_S = 3.0
+DONE_NOT_READY_CHECKS = 3  # observations of a done load before it counts as not serving
 # A lease of ours with no rig profile or plan item behind it is released after this long (covers the
 # moment between taking the lease and the rig recording the load).
 ORPHAN_GRACE_S = 60
@@ -412,6 +413,7 @@ class Manager:
     async def _wait_item(self, item_id: str, profile_id: str, until_ready: bool) -> dict:
         """Poll the rig until the plan item finishes (or, for a load, the profile serves)."""
         deadline = time.monotonic() + self.start_timeout_s
+        not_ready = 0
         while True:
             obs = await self.observe(fresh=True)
             item = next((i for i in (obs.get("plan") or {}).get("items", []) if i["id"] == item_id), None)
@@ -423,7 +425,14 @@ class Manager:
             if item["state"] in ("done", "failed", "cancelled") and not (until_ready and item["state"] == "done"):
                 return item
             if until_ready and item["state"] == "done":
-                # Done but not ready: the runtime went away right after loading (rig guard, crash).
+                # Done but not ready: look again before calling it failed (failing releases the lease,
+                # which stops the runtime). A rig whose observe reads the profiles before the plan can
+                # report the item done while the profile still reads loading.
+                not_ready += 1
+                if not_ready < DONE_NOT_READY_CHECKS:
+                    await asyncio.sleep(2)
+                    continue
+                # Still not ready: the runtime went away right after loading (rig guard, crash).
                 return {**item, "state": "failed", "result": f"{profile_id} loaded but is not serving "
                                                               f"(rig guard: {(obs.get('guard') or {}).get('why')})"}
             if time.monotonic() > deadline:
