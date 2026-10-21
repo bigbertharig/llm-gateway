@@ -194,6 +194,19 @@ refused card stops the lane (`LANE_REFUSED`), an unreachable manager runs offlin
   release at LANE_DONE); campaigns the same per lane. Drop `BENCHMARK_DISABLE_AUTO_RESERVE`.
 - Then the job queue: a lane run becomes a set of manager jobs (model + card needs) instead of
   fixed lanes, so cards can join or leave mid-run and one stop cancels everything.
+- Split jobs must reserve their cards while they wait (the half claim), or single jobs take every
+  card as it frees and splits never get a matching set. The mechanism exists: a claim can be placed on
+  a card that is still leased (`hw_state.add_claim` checks only other claims), the holder keeps it
+  until release, and from then on the rig refuses it to any lease that does not name the claim. Still
+  missing: (1) a split job that claims its group, waits for every card to free, then leases under the
+  claim; (2) claim expiry or an owner heartbeat, so a dead run does not strand cards (claims never
+  expire today; lanes unclaim on exit, a killed lane does not); (3) a wait limit after which the split
+  gives up its claim. Reference: orchestration's split reservations (`agents/gpu_split.py` states
+  `waiting_partner` -> `joining` -> `loading` -> `ready`, members in a loading state refuse other
+  work, `expired` on timeout). Phase B must keep that behavior or move it onto manager claims.
+  Today (2026-10-20) `run_campaign.py` retries a refused card (60 s cooldown, 3 refusals per candidate
+  card) and `single` blocks move to the next free card, so a split block in a campaign is not
+  protected from them until (1) exists.
 - Run-note fixes to fold in: `RUN_NOTES.md` sections 1-5 in `logs/benchmarks/worker_lanes_20261017_203028/`.
 
 **D, enforcement.**
