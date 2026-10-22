@@ -224,6 +224,9 @@ the runtime experiments so the harness's placement rules can read them.
 
 ## Sharing capacity: several jobs per card, memory pools (consolidated 2026-10-22)
 
+Status: ideas and planned experiments, not decided design. Nothing here is a rule yet; it changes as
+the experiments report and the rig grows. Only the empty-size placement rule below is built.
+
 The one place for this idea. It was written in four places for different layers:
 llm_orchestration `workspace/future/ai_box_upgrade.md` (2026-03-23, unified-memory boxes),
 `workspace/distributed_work_guide.md` ("Worker Tier Analysis": memory boxes as a fourth worker tier),
