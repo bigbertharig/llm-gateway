@@ -174,7 +174,7 @@ there is more than one rig.
 Known limits: a cut-off CPU worker's heartbeat thread can still refresh the shared heartbeat file of
 its old task after reconnecting (same file name as the new owner's), which can hide a stuck new owner
 for a while; a GPU that runs several models, or a big-memory box running several, turns "worker"
-into a pool of slots. Both later.
+into a pool of slots (see "Sharing capacity" below). Both later.
 
 ## Same shape as orchestration, one level up
 
@@ -221,3 +221,54 @@ Harness decision (operator direction): capacity vs speed is the harness's call p
 from these measurements over time. Many small or unpredictable tasks, or occasional very large
 ones, favour the shared pool; steady small one-shots favour separate servers. Record each result in
 the runtime experiments so the harness's placement rules can read them.
+
+## Sharing capacity: several jobs per card, memory pools (consolidated 2026-10-22)
+
+The one place for this idea. It was written in four places for different layers:
+llm_orchestration `workspace/future/ai_box_upgrade.md` (2026-03-23, unified-memory boxes),
+`workspace/distributed_work_guide.md` ("Worker Tier Analysis": memory boxes as a fourth worker tier),
+llm-harness `docs/research/harness_research_summary_2026-09-30.md` (3.4 rig profiles) and the section
+above (one model, many slots). Those keep their hardware specs, prices and context; the design lives here,
+because placement is the manager's (MANAGER.md).
+
+**Today.** One model per card or per card group, one request at a time per server (`--parallel 1`).
+Placement plans on a card's empty size (its total memory: what a set of cards holds once its current work
+frees, MANAGER.md "Model loads"); an immediate load checks free memory (total minus what is loaded now).
+
+**The idea.** Treat memory, not cards, as the unit, and let more than one job use a card or a box:
+
+| Form | What shares | Where it was written |
+|---|---|---|
+| Several small models on one card | a card's free memory beyond its first model (an embedding model next to a worker, two 3B models on a 1070) | this file, "Known limits" (a worker becomes a pool of slots) |
+| One model, many slots | one copy of the weights serving several requests from one context pool | "One model, many slots" above |
+| Scripts beside models | CPU work on the box that hosts the models; it needs no card, only cores and RAM | ai_box_upgrade.md "CPU Workers on Unified Memory Box" |
+| Unified-memory box | one large pool (DGX Spark 128 GB; Mac Studio up to 512 GB): any mix of models, no split pairs at all | ai_box_upgrade.md, distributed_work_guide.md |
+| Rig profiles | the whole rig switched between layouts: Swarm (one small model per card), Mixed (a split plus small ones), Monolith (every card on one big model) | harness research 3.4 |
+
+**What it needs from the manager.**
+- Active size: per card, the memory its loaded models actually use (the rig already measures this per load:
+  the `fit` record) next to the empty size, so a second job can be placed into what is left. Empty size
+  stays the rule for planning a set of cards (collecting waits); active size is only for adding to a card.
+- A card holding several runtimes: one lease per runtime instead of one per card, ports per runtime rather
+  than per card (today's rule is 11434 + the lowest card), and kill and unload by runtime.
+- Queue-aware choice of layout: whether to stack small jobs, split, or keep a big card free is decided by
+  what is waiting, the way orchestration's brain already decides loads and unloads from its demand window
+  (`agents/brain_resources.py`). Profile switches cost minutes, so they stay rare (harness research).
+- For a memory box: the same vocabulary with one big card. "Fits in the pool" replaces split pairs; the box
+  is one rig with one pool, and splitting one model across rigs stays out (gigabit is too slow: within a rig
+  stack models, across rigs add lanes).
+
+**Cautions already learned.**
+- Benchmarks must not share a card with other work: interleaving benchmark and plan work on one GPU
+  corrupts both (benchmarking `docker/README.md`). Stacking is for production work, not measurement.
+- Load one model at a time: parallel loads clog the bus (benchmarking `docker/README.md`, rule 0; the rig
+  enforces one load at a time).
+- Sustained parallel load hits thermal and power limits before VRAM does (harness research 17; the
+  2026-10-21 stress tests: about 1140 W at the wall with every card busy at its cap).
+- The memory-box figures (prices, model sizes, tok/s) in the March notes are brainstorm estimates, not
+  measurements.
+
+**Order, when this is picked up.** (1) record active size per card from the existing `fit` records;
+(2) the "one model, many slots" test above, since it is the cheapest form; (3) two small models on one card,
+measured for speed and memory against one each; (4) the manager changes above; (5) a memory box, if one is
+bought, as one more rig.
