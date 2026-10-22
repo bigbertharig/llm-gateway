@@ -202,6 +202,16 @@ FAKE_RIG = textwrap.dedent("""\
         for k in ("--purpose", "--model"):
             if o.get(k): claim[k[2:]] = o[k]
         st["claims"].append(claim); save(); print(json.dumps({"claim": claim})); sys.exit(0)
+    if a[:2] == ["claim", "extend"]:
+        o = opts(a[3:]); require(o); gpus = [int(g) for g in o["--gpus"].split(",")]
+        match = [c for c in st["claims"] if c["name"] == a[2]]
+        if not match: fail("not_found", f"no claim {a[2]} (expired or removed)")
+        for c in st["claims"]:
+            if c is not match[0] and set(gpus) & set(c["gpu_ids"]):
+                fail("conflict", f"GPU {gpus} already claimed by {c['name']}")
+        match[0]["gpu_ids"] = sorted(set(match[0]["gpu_ids"]) | set(gpus))
+        st.setdefault("extends", []).append({"name": a[2], "gpus": gpus})
+        save(); print(json.dumps({"claim": match[0]})); sys.exit(0)
     if a[:2] == ["claim", "renew"]:
         o = opts(a[3:]); require(o)
         match = [c for c in st["claims"] if c["name"] == a[2]]

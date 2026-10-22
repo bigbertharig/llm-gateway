@@ -48,6 +48,12 @@ class RigRecord:
         args = ["lease", "release", lease_id, "--owner", owner] + (["--force"] if force else [])
         await self._call(*args, *self._as_me())
 
+    async def extend_claim(self, name: str, gpu_ids: list[int], owner: str = "") -> dict[str, Any]:
+        args = ["claim", "extend", name, "--gpus", ",".join(str(int(g)) for g in gpu_ids)]
+        if owner:
+            args += ["--owner", owner]
+        return (await self._call(*args, *self._as_me()))["claim"]
+
     async def add_claim(self, name: str, gpu_ids: list[int], note: str = "", by: str = "", *, owner: str = "",
                         ttl_s: int | None = None, purpose: str = "", model: str = "") -> dict[str, Any]:
         args = ["claim", "add", name, "--gpus", ",".join(str(int(g)) for g in gpu_ids), "--note", note]

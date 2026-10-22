@@ -142,7 +142,9 @@ def registry(tmp_path, monkeypatch):
     small = dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, name="small.gguf")
     big = dense(tmp_path, n_layer=40, layer_mb=400, name="big.gguf")
     prof = {"runtime": {"batch_size": 64, "parallel": 1}, "extra_args": ["--reasoning", "off"]}
+    mid = dense(tmp_path, n_layer=20, layer_mb=400, output_mb=400, name="mid.gguf")   # needs two 1060s
     (root / "model_registry.json").write_text(json.dumps({"models": {
+        "mid:14b": {"status": "candidate", "gguf": mid, "profiles": {"default": prof}},
         "small:9b": {"status": "candidate", "gguf": small, "profiles": {"default": prof}},
         "big:30b": {"status": "active", "gguf": big, "profiles": {"default": prof}}}}))
     monkeypatch.setenv("BENCHMARKING_ROOT", str(root))
@@ -231,6 +233,79 @@ def test_a_wait_that_runs_out_drops_its_reservation(menv, registry, monkeypatch)
     r = c.post("/v1/manager/models/load", json={"model": "small:9b", "gpu_ids": [1, 2], "wait_s": 0.4})
     assert r.status_code == 504 and "GPU 1 leased by benchmarks/lanes" in r.json()["error"]["message"]
     assert menv["rig"]()["claims"] == [] and not menv["rig"]().get("plan_items")
+
+
+def _wait_for(pred, timeout=10):
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_load_naming_no_cards_collects_cards_as_they_free(menv, registry, monkeypatch):  # noqa: F811
+    import threading
+
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    held = _hold(c, 1)                       # mid:14b needs both 1060s; GPU 1 is busy, GPU 2 and the 3090 free
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
+        "model": "mid:14b", "wait_s": -1})))
+    t.start()
+    assert _wait_for(lambda: menv["rig"]()["claims"])
+    (claim,) = menv["rig"]()["claims"]
+    assert claim["name"].startswith("wait-mid-14b-") and claim["gpu_ids"] == [2]   # the free 1060, not the 3090
+    single = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "solo", "run_id": "s",
+                                                "gpu_ids": [2]})
+    assert single.status_code == 409                                                # held for the waiting load
+    assert c.post(f"/v1/manager/leases/{held}/release", json={"owner": "lanes"}).status_code == 200
+    t.join(timeout=20)
+    assert out["r"].status_code == 200, out["r"].text
+    assert out["r"].json()["gpus"] == [1, 2]
+    assert menv["rig"]()["extends"] == [{"name": claim["name"], "gpus": [1]}]       # grown, never re-made
+    assert menv["rig"]()["claims"] == []                                            # the lease holds them now
+    assert [l["gpu_ids"] for l in menv["leases"]()] == [[1, 2]]
+
+
+def test_removing_the_claim_cancels_a_collecting_wait(menv, registry, monkeypatch):  # noqa: F811
+    import threading
+
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    _hold(c, 1)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
+        "model": "mid:14b", "wait_s": -1})))
+    t.start()
+    assert _wait_for(lambda: menv["rig"]()["claims"])
+    name = menv["rig"]()["claims"][0]["name"]
+    assert c.post(f"/v1/manager/claims/{name}/release").status_code == 200
+    t.join(timeout=20)
+    assert out["r"].status_code == 409 and "cancelled" in out["r"].json()["error"]["message"]
+    assert menv["rig"]()["claims"] == [] and not menv["rig"]().get("plan_items")
+
+
+def test_removing_the_reservation_cancels_an_unlimited_split_wait(menv, registry, monkeypatch):  # noqa: F811
+    import threading
+
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    _hold(c, 1)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
+        "model": "small:9b", "gpu_ids": [1, 2], "wait_s": -1})))
+    t.start()
+    assert _wait_for(lambda: menv["rig"]()["claims"])
+    assert c.post("/v1/manager/claims/wait-small-9b-g1-2/release").status_code == 200
+    t.join(timeout=20)
+    assert out["r"].status_code == 409 and "cancelled" in out["r"].json()["error"]["message"]
+    assert not menv["rig"]().get("plan_items")
 
 
 def test_without_wait_a_busy_card_still_fails_at_once(menv, registry):  # noqa: F811

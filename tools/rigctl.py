@@ -48,7 +48,12 @@ URL = os.getenv("RIGCTL_URL", "http://127.0.0.1:8080").rstrip("/")
 EXIT = {200: 0, 201: 0, 400: 1, 403: 2, 404: 1, 409: 2, 422: 4, 502: 1, 503: 4, 504: 1}
 
 
-def call(method: str, path: str, body: dict | None = None, timeout: float = 1000) -> tuple[int, dict]:
+def _wait_s(value: str) -> float:
+    """--wait: seconds, or 'forever' (-1: no limit)."""
+    return -1.0 if value.strip().lower() in ("forever", "none", "inf") else float(value)
+
+
+def call(method: str, path: str, body: dict | None = None, timeout: float | None = 1000) -> tuple[int, dict]:
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
     if os.getenv("RIGCTL_KEY"):
@@ -171,8 +176,10 @@ def main() -> int:
         s.add_argument("--json", action="store_true")
         if name == "load-model":
             s.add_argument("--args", default="", help='extra llama-server args after the registry ones, e.g. "--reasoning on"')
-            s.add_argument("--wait", type=float, default=0,
-                           help="seconds to wait for busy --gpus, reserving them meanwhile (default: fail at once)")
+            s.add_argument("--wait", type=_wait_s, default=0,
+                           help="seconds to wait for busy cards, or 'forever': with --gpus the cards are reserved "
+                                "meanwhile; with no cards named the manager collects the cards the model needs as "
+                                "they free (default: fail at once). Removing the wait's claim cancels it")
             s.add_argument("--force", action="store_true", help="override: kill what runs on --gpus first")
     sub.add_parser("controller")
     sub.add_parser("takeover")
@@ -203,7 +210,7 @@ def main() -> int:
         if a.cmd == "load-model":
             body["extra_args"] = shlex.split(a.args)
             body["wait_s"], body["force"] = a.wait, a.force
-            timeout += a.wait
+            timeout = None if a.wait < 0 else timeout + a.wait
         code, out = call("POST", "/v1/manager/models/" + ("fit" if a.cmd == "fit" else "load"), body, timeout=timeout)
         if a.json:
             print(json.dumps(out, indent=2))

@@ -189,6 +189,15 @@ Rules (automatic):
    answers 504. A reservation the manager made for the wait is dropped once the load's lease holds the
    cards.
 4. A lane claims its card group with a TTL and renews it while it runs, and loads with `--wait`.
+4a. A load that names no cards, with `wait_s` (`rigctl load-model MODEL --wait forever`), collects its cards
+   (2026-10-22): the plan the harness would make on an idle rig says how many cards of which size the model
+   needs (for mellum2.1, two 1060s), and the manager claims free cards of those sizes one at a time as they
+   free, in one claim it extends (`rig claim extend`), so single work cannot keep taking each card as it
+   frees. It loads once the claim holds the set, and never takes a card of another size (a 1060 model does
+   not collect the 3090). `wait_s` -1 (`--wait forever`) waits with no time limit, for collecting and for
+   named-card waits alike. Removing the wait's claim (`rigctl unclaim wait-...`) cancels it: the load
+   answers 409 "cancelled" and nothing is left behind. A wait whose claim lapses (the manager stopped
+   renewing it) cancels the same way instead of re-taking it.
 5. A campaign block whose card is refused: a split or pinned block reserves its slot and waits (up to
    its wait limit, 2 h by default) instead of failing; a `single` block tries its other cards, which
    cannot include reserved ones.
