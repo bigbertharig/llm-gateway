@@ -140,6 +140,10 @@ HTTP: `POST /v1/manager/models/fit`, `POST /v1/manager/models/load` with
 The lease is the manager's (owner llm-gateway; controller by use: benchmarks, interactive, plans), so
 the reconciler renews it while the rig profile lives and `rigctl unload` releases it.
 
+Card size has two meanings. Placement plans on empty cards (total memory: what a set of cards can hold
+once its current work frees, as the collecting wait uses it); a fit for an immediate load uses free memory
+(total minus what is loaded now). Later: use the active size to stack several small jobs on one card.
+
 Open: calibrating the estimate from the measured `fit` records (the compute buffer is the loosest
 term, within about 10% on the 1060s); a VRAM check for published profiles; context per slot with
 `--parallel`.
