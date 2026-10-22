@@ -181,6 +181,23 @@ def main() -> int:
                                 "meanwhile; with no cards named the manager collects the cards the model needs as "
                                 "they free (default: fail at once). Removing the wait's claim cancels it")
             s.add_argument("--force", action="store_true", help="override: kill what runs on --gpus first")
+            s.add_argument("--owner", default="", help="who the load is for (a run id, a lane): cancel-owner unloads it")
+    s = sub.add_parser("run-start", help="hand the rig a long run (campaign, lane) as a job in its report")
+    s.add_argument("--run", required=True, help="run id (for a campaign: its --run-id, so resume continues it)")
+    s.add_argument("--owner", default="", help="default: the run id")
+    s.add_argument("--cwd")
+    s.add_argument("--env", action="append", default=[], metavar="K=V")
+    s.add_argument("--resume", default="", help="command that resumes from the checkpoint (default: the same command)")
+    s.add_argument("--auto-resume", action="store_true", help="resume on its own after a reboot (default: ask)")
+    s.add_argument("--needs", action="append", default=[], metavar="MIB[xN]",
+                   help="card size the run will want, e.g. 24564 or 6144x2: placement keeps them free for it")
+    s.add_argument("--note", default="")
+    s.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command and its arguments")
+    sub.add_parser("runs")
+    for name in ("recover", "dismiss", "run-stop"):
+        s = sub.add_parser(name); s.add_argument("run"); s.add_argument("--reason", default="")
+    s = sub.add_parser("cancel-owner", help="cancel everything one owner has: runs, items, loads, leases, claims")
+    s.add_argument("owner"); s.add_argument("--reason", default="")
     sub.add_parser("controller")
     sub.add_parser("takeover")
     s = sub.add_parser("plan"); s.add_argument("--json", action="store_true")
@@ -209,7 +226,7 @@ def main() -> int:
         timeout = 1000.0
         if a.cmd == "load-model":
             body["extra_args"] = shlex.split(a.args)
-            body["wait_s"], body["force"] = a.wait, a.force
+            body["wait_s"], body["force"], body["owner"] = a.wait, a.force, a.owner
             timeout = None if a.wait < 0 else timeout + a.wait
         code, out = call("POST", "/v1/manager/models/" + ("fit" if a.cmd == "fit" else "load"), body, timeout=timeout)
         if a.json:
@@ -224,6 +241,41 @@ def main() -> int:
         else:
             err = out.get("error") or {}
             print(err.get("message", json.dumps(out)), file=sys.stderr)
+        return EXIT.get(code, 1)
+
+    if a.cmd == "run-start":
+        argv = a.command[1:] if a.command[:1] == ["--"] else a.command
+        if not argv:
+            print("give the command after --", file=sys.stderr)
+            return 2
+        needs = []
+        for n in a.needs:
+            mb, _, count = n.partition("x")
+            needs.append({"card_mb": int(mb), "count": int(count or 1)})
+        body = {"run": a.run, "argv": argv, "owner": a.owner, "cwd": a.cwd,
+                "env": dict(e.split("=", 1) for e in a.env), "resume_argv": shlex.split(a.resume) if a.resume else None,
+                "auto_resume": a.auto_resume, "needs": needs, "note": a.note}
+        code, out = call("POST", "/v1/manager/runs", body)
+        print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
+    if a.cmd == "runs":
+        code, out = call("GET", "/v1/manager/runs")
+        if code == 200:
+            for r in out.get("runs", []):
+                print(f"{r['run']:<32} {r['state']:<12} attempts {r.get('attempts', 1)}  started {r.get('started_at')}"
+                      + (f"  ended {r['ended_at']}" if r.get("ended_at") else "")
+                      + (f"\n    {r['result']}" if r.get("result") else ""))
+            return 0
+        print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
+    if a.cmd in ("recover", "dismiss", "run-stop"):
+        action = {"recover": "recover", "dismiss": "dismiss", "run-stop": "stop"}[a.cmd]
+        code, out = call("POST", f"/v1/manager/runs/{a.run}/{action}", {"reason": a.reason})
+        print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
+    if a.cmd == "cancel-owner":
+        code, out = call("POST", f"/v1/manager/owners/{a.owner}/cancel", {"reason": a.reason})
+        print(json.dumps(out, indent=2))
         return EXIT.get(code, 1)
 
     if a.cmd == "status":

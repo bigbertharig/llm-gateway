@@ -56,8 +56,13 @@ build) results fall back to local storage when the shared drive is gone and sync
    - rig unreachable: status answers from the copy (`from_copy`, "RIG UNREACHABLE since ...") and the
      controller logs when the rig went away, when it came back and whether it rebooted (`rig.events`).
    - controller crashes: it restarts with its copy and reads the rig's live report.
-   Jobs (benchmark lanes) are not plan items yet, so after a reboot they do not come back; their suites
-   resume from checkpoints when restarted. Making them plan items is the job-queue work below.
+   Runs (2026-10-22): long work (a campaign, a lane) started with `rigctl run-start` is a `job` plan item
+   and a record in the plan's `runs`, so it is in the report and both copies. After a reboot a run that was
+   running is listed as interrupted in the hold, and the controller asks instead of acting: "resume from
+   checkpoint?" (`rigctl recover RUN`, the dashboard's Resume) or dismiss. A run that opted in
+   (`--auto-resume`) is resumed on its own. A lost network is not an interruption: the run's unit keeps
+   going, and the manager's waits keep waiting (see "Runs" below). Work started outside `run-start` (a bare
+   `systemd-run`) is still invisible to the report.
 2. **No lease, no load.** Every runtime starts under a lease naming its GPUs and port. Every launcher
    already goes through `run_runtime.sh` (brain, workers, split workers, `rig.py`, `run_campaign.py`,
    integration lanes, runtime smoke), so that is where Phase D enforces it.
@@ -148,6 +153,32 @@ Open: calibrating the estimate from the measured `fit` records (the compute buff
 term, within about 10% on the 1060s); a VRAM check for published profiles; context per slot with
 `--parallel`.
 
+## Runs, cancel by owner, and demand (2026-10-22)
+
+**Runs.** `rigctl run-start --run ID [--resume "CMD"] [--auto-resume] [--needs MIB[xN]] -- CMD...` hands the rig
+a long run: the rig's plan executor starts it as its own unit (`rig-run-ID`, as bryan) and records it in the
+plan's `runs` (owner, command, resume command, needs, attempts). Its state follows the unit: running, then
+finished (exit 0) or failed; `stopped` and `dismissed` are set by the controller. The reconciler reports each
+run that ends, once. `rigctl runs` lists them; `rigctl recover RUN` starts an interrupted, failed or stopped run
+again with its resume command (for a campaign, the same command with `--run-id`, which continues from
+`campaign_state.json`); `rigctl run-stop RUN` stops it and cleans up; `rigctl dismiss RUN` marks an ended run as
+not to be resumed and cleans up. The dashboard's rig tab lists runs with Resume, Stop and Dismiss.
+
+**Cancel by owner.** `rigctl cancel-owner WHO` (`POST /v1/manager/owners/WHO/cancel`) cleans up everything one
+owner has, with no time limits: stops its running runs, cancels its queued plan items, unloads its models,
+releases its leases and drops its claims (which also cancels its waits), and logs what it did. It matches
+leases by owner, run id or `requested_by` (a load's `--owner`), claims by owner or name (and `campaign-WHO`,
+the campaign runner's reservations), runs by run id or owner, and waits by owner. Stopping or dismissing a run
+calls it for the run's owner.
+
+**Demand.** The manager keeps its waits in progress (collecting and named-card waits, with the card sizes
+each needs) and reads the `needs` of running runs. A load that names no cards takes the smallest cards that
+hold it; when those are busy and it would spill onto a bigger card (a 1060 model onto the 3090), it does so
+only if no other work is waiting for that size. Otherwise it uses other free cards, or answers 409 naming what
+it kept free and for whom. A requester's own waits and runs do not count against it. Not yet: demand from
+orchestration's queue (`agents/brain_resources.py` demand window), or from a campaign's later blocks unless
+the run declares them as `--needs`.
+
 ## Requirements gathered (2026-10-17 benchmark lanes)
 
 - **Job queue:** benchmark lanes become jobs the manager schedules: each job states its model and
@@ -201,7 +232,9 @@ Rules (automatic):
    not collect the 3090). `wait_s` -1 (`--wait forever`) waits with no time limit, for collecting and for
    named-card waits alike. Removing the wait's claim (`rigctl unclaim wait-...`) cancels it: the load
    answers 409 "cancelled" and nothing is left behind. A wait whose claim lapses (the manager stopped
-   renewing it) cancels the same way instead of re-taking it.
+   renewing it) cancels the same way instead of re-taking it. While the rig is unreachable every wait keeps
+   waiting (the rig keeps working; a lost network is not a crash), and a claim that lapsed during the outage
+   (nobody could renew it) is taken again when the rig is back, not read as a cancel.
 5. A campaign block whose card is refused: a split or pinned block reserves its slot and waits (up to
    its wait limit, 2 h by default) instead of failing; a `single` block tries its other cards, which
    cannot include reserved ones.

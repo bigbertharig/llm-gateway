@@ -101,6 +101,7 @@ a { color: var(--cool); }
     <div class="board" id="board"></div>
     <h2>Loaded models</h2><div class="scroll" id="profiles"></div>
     <h2>Rig plan</h2><div class="scroll" id="plan"></div>
+    <h2>Runs</h2><div class="scroll" id="runs"></div>
     <h2>Load a model</h2>
     <form class="inline" id="load-form">
       <label>Model <select name="model" id="load-model"></select></label>
@@ -223,6 +224,18 @@ function renderRig(s) {
       <td class="num">${esc(((i.args || {}).gpus || []).join(","))}</td>
       <td>${["queued", "running"].includes(i.state) ? `<button class="act" data-cancel="${esc(i.id)}">Cancel</button>` : ""}</td></tr>`).join("") + "</table>" : '<div class="line">The plan is empty.</div>';
   $("#plan").querySelectorAll("[data-cancel]").forEach((b) => b.onclick = () => act(`Cancel ${b.dataset.cancel}`, "rig/cancel", {item: b.dataset.cancel}));
+
+  const runs = ((s.plan || {}).runs || []).slice().reverse();
+  $("#runs").innerHTML = runs.length ? `<table><tr><th>Run</th><th>State</th><th>Attempts</th><th>Started</th><th>Result</th><th></th></tr>` +
+    runs.map((r) => `<tr><td class="mono">${esc(r.run)}</td><td>${esc(r.state)}</td><td class="num">${esc(r.attempts || 1)}</td>
+      <td class="mono">${esc(r.started_at || "")}</td><td>${esc(r.result || "")}</td>
+      <td>${["interrupted", "failed", "stopped"].includes(r.state) ? `<button class="act" data-recover="${esc(r.run)}">Resume</button>` : ""}
+          ${r.state === "running" ? `<button class="act" data-stoprun="${esc(r.run)}">Stop</button>` : ""}
+          ${["interrupted", "failed", "stopped", "finished"].includes(r.state) ? `<button class="act" data-dismiss="${esc(r.run)}">Dismiss</button>` : ""}</td></tr>`).join("") +
+    "</table>" : '<div class="line">No runs. Start one with <span class="mono">rigctl run-start</span>.</div>';
+  $("#runs").querySelectorAll("[data-recover]").forEach((b) => b.onclick = () => act(`Resume ${b.dataset.recover}`, "rig/run/recover", {run: b.dataset.recover}));
+  $("#runs").querySelectorAll("[data-dismiss]").forEach((b) => b.onclick = () => act(`Dismiss ${b.dataset.dismiss}`, "rig/run/dismiss", {run: b.dataset.dismiss}, `Dismiss ${b.dataset.dismiss}? It will not be resumed, and what it still holds is cleaned up.`));
+  $("#runs").querySelectorAll("[data-stoprun]").forEach((b) => b.onclick = () => act(`Stop ${b.dataset.stoprun}`, "rig/run/stop", {run: b.dataset.stoprun}, `Stop ${b.dataset.stoprun} and clean up what it holds?`));
 
   const ev = ((s.rig || {}).events || []).slice().reverse();
   $("#events").innerHTML = ev.length ? ev.map((e) => `<div class="line">${esc(e.at)} &middot; ${esc(e.event)}</div>`).join("") : '<div class="line">No events since the gateway started.</div>';

@@ -356,3 +356,125 @@ def test_claims_carry_owner_and_ttl_and_renew(menv):  # noqa: F811
     row = {g["gpu"]: g for g in c.get("/v1/manager/status").json()["gpus"]}[1]
     assert row["claim"] == "lane-4-5" and row["claim_info"]["owner"] == "lane"
     assert c.post("/v1/manager/claims/nope/renew", json={}).status_code == 404
+
+
+# ------------------------------------------------------------------ runs, cancel by owner, outages, demand
+
+def test_a_run_is_a_job_in_the_report_and_cancel_owner_cleans_up_what_it_holds(menv):
+    c = menv["client"]
+    r = c.post("/v1/manager/runs", json={"run": "camp-1", "argv": ["python3", "run_campaign.py", "m.json"],
+                                          "resume_argv": ["python3", "run_campaign.py", "m.json", "--run-id", "camp-1"]})
+    assert r.status_code == 201, r.text
+    (run,) = c.get("/v1/manager/runs").json()["runs"]
+    assert run["run"] == "camp-1" and run["state"] == "running" and run["owner"] == "camp-1"
+    assert c.post("/v1/manager/runs", json={"run": "camp-1", "argv": ["x"]}).status_code == 409   # not twice
+    lease = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "campaign-gpu_1", "run_id": "camp-1",
+                                                "gpu_ids": [1]}).json()["lease"]["lease_id"]
+    assert c.post("/v1/manager/claims", json={"name": "campaign-camp-1-gpu_2", "gpu_ids": [2],
+                                              "owner": "campaign-camp-1"}).status_code == 201
+    out = c.post("/v1/manager/owners/camp-1/cancel", json={"reason": "test"}).json()
+    assert out["runs_stopped"] == ["camp-1"] and out["leases_released"] == [lease]
+    assert out["claims_dropped"] == ["campaign-camp-1-gpu_2"] and not out["errors"]
+    st = menv["rig"]()
+    assert st["leases"] == [] and st["claims"] == [] and st["runs"][0]["state"] == "stopped"
+    events = c.get("/v1/manager/status").json()["rig"]["events"]
+    assert any(e["event"].startswith("cancel camp-1 (test)") for e in events)
+
+
+def test_an_interrupted_run_is_offered_then_resumed_from_its_checkpoint(menv):
+    c = menv["client"]
+    resume = ["python3", "run_campaign.py", "m.json", "--run-id", "camp-2"]
+    c.post("/v1/manager/runs", json={"run": "camp-2", "argv": ["python3", "run_campaign.py", "m.json"],
+                                     "resume_argv": resume})
+    st = menv["rig"]()
+    st["runs"][0].update(state="interrupted", ended_at="2026-10-22T20:00:00Z", result="interrupted: the rig restarted")
+    menv["write"](st)
+    assert c.post("/v1/manager/reconcile").status_code == 200
+    events = c.get("/v1/manager/status").json()["rig"]["events"]
+    assert any("rigctl recover camp-2" in e["event"] for e in events)
+    assert menv["rig"]()["runs"][0]["state"] == "interrupted"            # offered, not restarted on its own
+    r = c.post("/v1/manager/runs/camp-2/recover")
+    assert r.status_code == 200, r.text
+    (run,) = menv["rig"]()["runs"]
+    assert run["state"] == "running" and run["argv"] == resume and run["attempts"] == 2
+    assert c.post("/v1/manager/runs/camp-2/recover").status_code == 409  # running: nothing to resume
+
+
+def test_a_run_that_opted_in_resumes_on_its_own(menv):
+    c = menv["client"]
+    c.post("/v1/manager/runs", json={"run": "night", "argv": ["a"], "resume_argv": ["a", "--resume"], "auto_resume": True})
+    st = menv["rig"]()
+    st["runs"][0].update(state="interrupted", ended_at="2026-10-22T20:00:00Z")
+    menv["write"](st)
+    c.post("/v1/manager/reconcile")
+    (run,) = menv["rig"]()["runs"]
+    assert run["state"] == "running" and run["argv"] == ["a", "--resume"]
+
+
+def test_dismissing_an_ended_run_cleans_up_and_a_running_one_is_refused(menv):
+    c = menv["client"]
+    c.post("/v1/manager/runs", json={"run": "lane-x", "argv": ["a"]})
+    assert c.post("/v1/manager/runs/lane-x/dismiss").status_code == 409
+    st = menv["rig"]()
+    st["runs"][0]["state"] = "failed"
+    menv["write"](st)
+    out = c.post("/v1/manager/runs/lane-x/dismiss").json()
+    assert out["run"]["state"] == "dismissed" and out["cleanup"]["owner"] == "lane-x"
+
+
+def test_a_small_model_does_not_take_a_card_a_run_is_waiting_for(menv, registry):  # noqa: F811
+    c = menv["client"]
+    _hold(c, 1)
+    _hold(c, 2)                              # both 1060s busy: small:9b would spill onto the 3090
+    c.post("/v1/manager/runs", json={"run": "brain-q", "argv": ["a"], "needs": [{"card_mb": 24564, "count": 1}]})
+    r = c.post("/v1/manager/models/load", json={"model": "small:9b"})
+    assert r.status_code == 409 and "kept free" in r.json()["error"]["message"]
+    r = c.post("/v1/manager/models/load", json={"model": "small:9b", "owner": "brain-q"})   # its own need
+    assert r.status_code == 200, r.text
+    assert r.json()["gpus"] == [0]
+
+
+def test_a_collecting_wait_rides_out_an_unreachable_rig(menv, registry, monkeypatch):  # noqa: F811
+    import os
+    import threading
+
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    held = _hold(c, 1)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
+        "model": "mid:14b", "wait_s": -1, "owner": "lane-z"})))
+    t.start()
+    assert _wait_for(lambda: menv["rig"]()["claims"])
+    down = menv["state"] + ".down"
+    open(down, "w").close()                  # the rig drops off the network
+    import time
+    time.sleep(0.6)
+    os.remove(down)                          # and comes back
+    assert c.post(f"/v1/manager/leases/{held}/release", json={"owner": "lanes"}).status_code == 200
+    t.join(timeout=20)
+    assert out["r"].status_code == 200, out["r"].text
+    events = [e["event"] for e in c.get("/v1/manager/status").json()["rig"]["events"]]
+    assert any("rig unreachable; still waiting" in e for e in events)
+    assert any("rig back after" in e for e in events)
+    (lease,) = [l for l in menv["leases"]() if l["gpu_ids"] == [1, 2]]
+    assert lease["metadata"]["requested_by"] == "lane-z"
+
+
+def test_cancel_owner_stops_its_collecting_wait(menv, registry, monkeypatch):  # noqa: F811
+    import threading
+
+    from llm_gateway.manager import core
+    monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
+    c = menv["client"]
+    _hold(c, 1)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
+        "model": "mid:14b", "wait_s": -1, "owner": "lane-q"})))
+    t.start()
+    assert _wait_for(lambda: menv["rig"]()["claims"])
+    cleanup = c.post("/v1/manager/owners/lane-q/cancel").json()
+    assert cleanup["claims_dropped"] and not cleanup["errors"]
+    t.join(timeout=20)
+    assert out["r"].status_code == 409 and "cancelled" in out["r"].json()["error"]["message"]

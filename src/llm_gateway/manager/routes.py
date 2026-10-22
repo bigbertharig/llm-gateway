@@ -135,7 +135,44 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
         b = await _body(request)
         req = _model_request(b)
         return await manager.load_model(b["model"], extra_args=[str(a) for a in b.get("extra_args") or []],
-                                        wait_s=float(b.get("wait_s") or 0), force=bool(b.get("force")), **req)
+                                        wait_s=float(b.get("wait_s") or 0), force=bool(b.get("force")),
+                                        owner=str(b.get("owner") or ""), **req)
+
+    @r.get("/runs")
+    async def runs():
+        return {"runs": await manager.runs()}
+
+    @r.post("/runs", status_code=201)
+    async def start_run(request: Request):
+        """Hand the rig a long run (campaign, lane) as a job in the shared report: {run, argv, owner?, cwd?,
+        env?, resume_argv?, auto_resume?, needs? [{card_mb, count}], note?}."""
+        b = await _body(request)
+        _require(b, "run", "argv")
+        return await manager.start_run(str(b["run"]), [str(a) for a in b["argv"]], owner=str(b.get("owner") or ""),
+                                       cwd=b.get("cwd"), env=b.get("env") or {},
+                                       resume_argv=[str(a) for a in b["resume_argv"]] if b.get("resume_argv") else None,
+                                       auto_resume=bool(b.get("auto_resume")), needs=b.get("needs") or [],
+                                       note=str(b.get("note") or ""))
+
+    @r.post("/runs/{run}/recover")
+    async def recover_run(run: str):
+        return await manager.recover_run(run)
+
+    @r.post("/runs/{run}/stop")
+    async def stop_run(run: str, request: Request):
+        b = await _body(request)
+        return await manager.stop_run(run, str(b.get("reason") or ""))
+
+    @r.post("/runs/{run}/dismiss")
+    async def dismiss_run(run: str, request: Request):
+        b = await _body(request)
+        return await manager.dismiss_run(run, str(b.get("reason") or ""))
+
+    @r.post("/owners/{who}/cancel")
+    async def cancel_owner(who: str, request: Request):
+        """Cancel everything one owner has on the rig: runs, queued items, loads, leases, claims, waits."""
+        b = await _body(request)
+        return await manager.cancel_owner(who, str(b.get("reason") or ""))
 
     @r.post("/reconcile")
     async def reconcile():

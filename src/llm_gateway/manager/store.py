@@ -102,5 +102,11 @@ class RigRecord:
     async def plan_restore(self, doc: dict[str, Any]) -> dict[str, Any]:
         return (await self._call("plan", "restore", "--doc", json.dumps(doc), *self._as_me()))["plan"]
 
+    async def run_stop(self, run: str, reason: str = "") -> dict[str, Any]:
+        return (await self._call("run", "stop", run, "--reason", reason, *self._as_me()))["run"]
+
+    async def run_dismiss(self, run: str, reason: str = "") -> dict[str, Any]:
+        return (await self._call("run", "dismiss", run, "--reason", reason, *self._as_me()))["run"]
+
     async def plan_cancel(self, item_id: str) -> dict[str, Any]:
         return (await self._call("plan", "cancel", item_id, *self._as_me()))["item"]

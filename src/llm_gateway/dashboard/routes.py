@@ -89,6 +89,21 @@ def router(manager: Manager) -> APIRouter:
             raise ManagerError(400, "give a claim name")
         return {"released": await manager.remove_claim(str(b["name"]))}
 
+    @r.post("/api/rig/run/{action}")
+    async def run_action(action: str, request: Request):
+        """Recover (resume from its checkpoint), dismiss or stop a run from the rig's report."""
+        b = await _body(request)
+        if not b.get("run"):
+            raise ManagerError(400, "give a run id")
+        run = str(b["run"])
+        if action == "recover":
+            return await manager.recover_run(run)
+        if action == "dismiss":
+            return await manager.dismiss_run(run, "dashboard")
+        if action == "stop":
+            return await manager.stop_run(run, "dashboard")
+        raise ManagerError(404, f"no run action {action}")
+
     @r.post("/api/rig/cancel")
     async def cancel(request: Request):
         b = await _body(request)

@@ -77,8 +77,10 @@ def test_status_verdicts():
 FAKE_RIG = textwrap.dedent("""\
     import json, os, sys, time
     path = os.environ["FAKE_RIG_STATE"]
+    if os.path.exists(path + ".down"):  # FAKE: the rig is unreachable (ssh exits 255)
+        print("ssh: connect to host rig port 22: No route to host", file=sys.stderr); sys.exit(255)
     st = json.load(open(path))
-    st.setdefault("controller", None); st.setdefault("plan_items", [])
+    st.setdefault("controller", None); st.setdefault("plan_items", []); st.setdefault("runs", [])
     a = sys.argv[1:]
     def save():  # atomic: concurrent fake-rig calls never read a half-written state
         tmp = f"{path}.{os.getpid()}.tmp"
@@ -90,7 +92,7 @@ FAKE_RIG = textwrap.dedent("""\
             if p["state"] == "loading" and time.time() >= p["ready_at"]:
                 p["state"] = "ready"; changed = True
         for i in st["plan_items"]:  # the executor: a running load is done once its profile serves
-            prof = st["profiles"].get(i["args"]["profile"])
+            prof = st["profiles"].get(i["args"].get("profile"))
             if i["state"] == "running" and i["kind"] == "load" and prof and prof["state"] in ("ready", "gone"):
                 i["state"] = "done"; i["result"] = "ready"; changed = True
         return changed
@@ -110,7 +112,7 @@ FAKE_RIG = textwrap.dedent("""\
     def plan_report():
         return {"controller": st["controller"], "items": st["plan_items"], "version": st.get("plan_version", 1),
                 "hold": st.get("plan_hold"), "boot_id": st.get("boot_id", "boot-1"),
-                "next": [i for i in st["plan_items"] if i["state"] in ("queued", "running")]}
+                "next": [i for i in st["plan_items"] if i["state"] in ("queued", "running")], "runs": st["runs"]}
     if a[:2] == ["plan", "resume"]:
         o = opts(a[2:]); require(o)
         st["plan_hold"] = None; st["plan_version"] = st.get("plan_version", 1) + 1
@@ -143,6 +145,14 @@ FAKE_RIG = textwrap.dedent("""\
         item = {"id": f"{kind}-{len(st['plan_items'])}", "kind": kind, "args": args, "state": "running",
                 "added_by": o["--controller"], "result": None}
         mode = os.environ.get("FAKE_DETACH", "ok")
+        if kind == "job":  # the executor starts the run at once
+            old = [r for r in st["runs"] if r["run"] == args["run"]]
+            st["runs"] = [r for r in st["runs"] if r["run"] != args["run"]]
+            st["runs"].append({**args, "unit": "rig-run-" + args["run"], "state": "running", "result": "",
+                               "started_at": now_iso(), "ended_at": None,
+                               "attempts": (old[0].get("attempts", 1) + 1) if old else 1})
+            item.update(state="done", result="started")
+            st["plan_items"].append(item); save(); print(json.dumps({"item": item})); sys.exit(0)
         pid = args["profile"]
         if kind == "load":
             st.setdefault("starts", []).append({"profile": pid, "gpus": ",".join(str(g) for g in args["gpus"]),
@@ -202,6 +212,13 @@ FAKE_RIG = textwrap.dedent("""\
         for k in ("--purpose", "--model"):
             if o.get(k): claim[k[2:]] = o[k]
         st["claims"].append(claim); save(); print(json.dumps({"claim": claim})); sys.exit(0)
+    if a[:2] in (["run", "stop"], ["run", "dismiss"]):
+        o = opts(a[3:]); require(o)
+        match = [r for r in st["runs"] if r["run"] == a[2]]
+        if not match: fail("not_found", f"no run {a[2]}")
+        match[0].update(state="stopped" if a[1] == "stop" else "dismissed", ended_at=now_iso(),
+                        result=f"{a[1]} {o.get('--reason', '')}")
+        save(); print(json.dumps({"run": match[0]})); sys.exit(0)
     if a[:2] == ["claim", "extend"]:
         o = opts(a[3:]); require(o); gpus = [int(g) for g in o["--gpus"].split(",")]
         match = [c for c in st["claims"] if c["name"] == a[2]]
@@ -299,7 +316,7 @@ def menv(tmp_path, monkeypatch):
         return rig_state()["leases"]
 
     with TestClient(app) as c:
-        yield {"client": c, "rig": rig_state, "write": write_state, "leases": leases, "app": app,
+        yield {"client": c, "rig": rig_state, "write": write_state, "leases": leases, "app": app, "state": str(state),
                "copy": tmp_path / "copy" / "rig_report.json", "rig_py": tmp_path / "rig.py"}
 
 
