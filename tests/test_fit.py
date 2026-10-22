@@ -252,6 +252,9 @@ def test_load_naming_no_cards_collects_cards_as_they_free(menv, registry, monkey
     monkeypatch.setattr(core, "WAIT_POLL_S", 0.1)
     c = menv["client"]
     held = _hold(c, 1)                       # mid:14b needs both 1060s; GPU 1 is busy, GPU 2 and the 3090 free
+    st = menv["rig"]()
+    st["gpus"][1]["used_mb"] = 5000          # the busy card shows its model's memory, as on the rig
+    menv["write"](st)
     out = {}
     t = threading.Thread(target=lambda: out.update(r=c.post("/v1/manager/models/load", json={
         "model": "mid:14b", "wait_s": -1})))
@@ -263,6 +266,9 @@ def test_load_naming_no_cards_collects_cards_as_they_free(menv, registry, monkey
                                                 "gpu_ids": [2]})
     assert single.status_code == 409                                                # held for the waiting load
     assert c.post(f"/v1/manager/leases/{held}/release", json={"owner": "lanes"}).status_code == 200
+    st = menv["rig"]()
+    st["gpus"][1]["used_mb"] = 4             # its model unloaded with the lease
+    menv["write"](st)
     t.join(timeout=20)
     assert out["r"].status_code == 200, out["r"].text
     assert out["r"].json()["gpus"] == [1, 2]

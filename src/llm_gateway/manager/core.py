@@ -583,7 +583,9 @@ class Manager:
                                          fit_kw.get("ctx_min", fit.CTX_MIN_DEFAULT),
                                          fit_kw.get("margin_mb", fit.MARGIN_MB_DEFAULT))
         obs = await self.observe(fresh=True)
-        target = fit.choose(shape, obs.get("gpus", []), **kw)
+        # Planned on empty cards: a busy card reports the memory its current model uses, which would make
+        # the set look bigger than the model needs once those cards free.
+        target = fit.choose(shape, [{**g, "used_mb": 0} for g in obs.get("gpus", [])], **kw)
         if target is None:
             raise ManagerError(422, f"{model} won't fit on this rig even with every card free")
         size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}
