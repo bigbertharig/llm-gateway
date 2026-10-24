@@ -1,9 +1,10 @@
 # Rig manager: the process everything follows
 
-Status 2026-10-17: Phase A built (leases, claims, placement, observed status, detached rig loads,
+Status 2026-10-24: Phase A built (leases, claims, placement, observed status, detached rig loads,
 gateway cold loads through the manager); lease record moved onto the rig; rig guard built (gates
-every load, frees RAM at critical); cache policy per use; Phase C started (lanes lease their GPU).
-Next: campaign leases, then B, then D (see "Pick up here").
+every load, frees RAM at critical); cache policy per use; Phase C built (lanes and campaigns load through
+the manager); isolated rig modes (one mode at a time: a benchmark load runs in `bench`, chat and worker
+loads in `remote`). Next: B, then D (see "Pick up here").
 
 Design knowledge the manager has to balance (host RAM budget, cache policy per use, layouts, more
 than one rig): [DESIGN_NOTES.md](DESIGN_NOTES.md).
@@ -178,9 +179,8 @@ calls it for the run's owner.
 each needs) and reads the `needs` of running runs. A load that names no cards takes the smallest cards that
 hold it; when those are busy and it would spill onto a bigger card (a 1060 model onto the 3090), it does so
 only if no other work is waiting for that size. Otherwise it uses other free cards, or answers 409 naming what
-it kept free and for whom. A requester's own waits and runs do not count against it. Not yet: demand from
-orchestration's queue (`agents/brain_resources.py` demand window), or from a campaign's later blocks unless
-the run declares them as `--needs`.
+it kept free and for whom. A requester's own waits and runs do not count against it. Demand across callers
+stops there: the rig runs one mode at a time, so nothing in another mode competes for the cards.
 
 ## Requirements gathered (2026-10-17 benchmark lanes)
 
@@ -238,9 +238,9 @@ Rules (automatic):
    renewing it) cancels the same way instead of re-taking it. While the rig is unreachable every wait keeps
    waiting (the rig keeps working; a lost network is not a crash), and a claim that lapsed during the outage
    (nobody could renew it) is taken again when the rig is back, not read as a cancel.
-5. A campaign block whose card is refused: a split or pinned block reserves its slot and waits (up to
-   its wait limit, 2 h by default) instead of failing; a `single` block tries its other cards, which
-   cannot include reserved ones.
+5. A campaign's runtime group loads like any other model load (`rigctl load-model --use benchmark --owner
+   campaign-<run> --wait <s>`): pinned cards wait as in rule 3, a group that names no cards collects them as
+   in 4a. Past its wait limit (2 h by default) the block fails with the manager's answer.
 6. Orchestration's split reservations (`agents/gpu_split.py`: `waiting_partner` -> `joining` ->
    `loading` -> `ready`) also hold a rig claim (`plans-split-<group>`, owner `plans`) for as long as the
    reservation is in a loading state, renewed by the launcher while it waits; and orchestration workers
@@ -264,13 +264,13 @@ Operator overrides (`rigctl`, act immediately, logged in the manager's events):
 | A (built) | Manager: leases, claims, placement, status, reconcile, `rigctl`; rig: `observe`, detached placed loads | Roo path only; everything else is reported (`unleased_busy`), not blocked |
 | Rig guards | Always-on power/thermal guard and VRAM fit on the rig; one stop path for rig jobs; local results fallback | Safety independent of the Pi |
 | B | Orchestration stays a mode for now (likely folded into the manager later); its brain and workers take leases through `rigctl` | Plans visible and protected |
-| C (after the current benches) | Benchmark lanes and campaigns become manager jobs / lease holders | Benchmarks visible and protected |
+| C (built) | Benchmark lanes and campaigns load through the manager and run as manager runs | Benchmarks visible and protected |
 | D | `run_runtime.sh` refuses a load without a valid lease | Nothing loads outside the process |
 
 ## Pick up here (entry points per phase)
 
 **B, orchestration (left as a mode for now; likely folded into the manager later).**
-- `rig start orchestration|bench` (`rig.py` `start_stack`) become manager requests: the manager leases
+- `rig start orchestration` (`rig.py` `start_stack`) becomes a manager request: the manager leases
   the brain's GPU and the worker GPUs (`plans` controller) before starting the stack, releases on stop.
 - Workers already refuse plan claims on leased GPUs (`agents/gpu.py` `_read_gpu_lease`, reading
   `/mnt/shared/gpus/leases.json`, now the rig's mirror). Change the reader to the rig-local record
@@ -280,18 +280,12 @@ Operator overrides (`rigctl`, act immediately, logged in the manager's events):
   stack's lease.
 - Open: does the brain's model-choice logic move into the manager (the user expects so, not decided).
 
-**C, benchmarking.** Started 2026-10-17: lanes (`worker_lane.sh`) hold a `benchmarks` lease per GPU
-through `harness_lease.sh` (rigctl over ssh), pass it to `run_runtime.sh`, release it on exit; a
-refused card stops the lane (`LANE_REFUSED`), an unreachable manager runs offline as `no-lease`.
-`LANE_STOP_AFTER=3` gives a quick check. Still open below: campaigns, the job queue, run-note fixes.
-- Lane scripts: `benchmarking/scripts/integration/run_worker_lanes.sh`, `worker_lane.sh`, `phase4.sh`,
-  `p45.sh`; campaigns: `llm_orchestration/shared/scripts/benchmarks/run_campaign.py`.
-- Each lane takes a `benchmarks` lease for its GPU (`rigctl acquire --gpus N`, renew in its loop,
-  release at LANE_DONE); campaigns the same per lane. Drop `BENCHMARK_DISABLE_AUTO_RESERVE`.
-- Then the job queue: a lane run becomes a set of manager jobs (model + card needs) instead of
-  fixed lanes, so cards can join or leave mid-run and one stop cancels everything.
-- Split jobs reserve their cards while they wait: see "Reservations" above.
-- Run-note fixes to fold in: `RUN_NOTES.md` sections 1-5 in `logs/benchmarks/worker_lanes_20261017_203028/`.
+**C, benchmarking (built).** Lanes (`benchmarking/scripts/integration/worker_lane.sh`) claim their card
+group and load with `rigctl load-model --use benchmark`; campaigns (`llm_orchestration/shared/scripts/
+benchmarks/run_campaign.py`) load each runtime group the same way with `--owner campaign-<run>` and cancel
+that owner when they end. Both start as runs (`rigctl run-start`). Open: drop
+`BENCHMARK_DISABLE_AUTO_RESERVE`; the run-note fixes in `RUN_NOTES.md` sections 1-5
+(`logs/benchmarks/worker_lanes_20261017_203028/`).
 
 **D, enforcement.**
 - `run_runtime.sh` gains `--lease <id>` and checks it against the rig record (`rig lease list`): the
