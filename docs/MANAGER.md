@@ -117,14 +117,17 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
    state, the compute buffer (grows with context x micro-batch x heads) and a 512 MiB margin per card.
-   It plans the largest context that fits (capped at the trained context or the request, floor 4096),
+   It plans the largest context that fits (capped at the trained context or the request, floor 4096; a
+   benchmark load plans exactly its registry profile's context unless the request names one),
    balances a contiguous layer split across the cards, and gives exact llama.cpp arguments:
    `--ctx-size`, `--tensor-split` as layer counts, `--n-gpu-layers all`. If it will not fit it answers
    422 "won't fit" with the numbers and the free cards that would hold it; nothing is leased or sent.
 2. **The rig loads and confirms** (`rig start remote <id> --spec JSON`, via a plan `load` item). It runs
    the spec through `run_runtime.sh` on the leased cards, then reads llama.cpp's own startup log
    (`scripts/rig/hw_loadlog.py`): the fit projection per card, layers offloaded, the context allocated
-   and the buffers per card. A load that is not fully on the GPUs is refused and unloaded. A ready load
+   and the buffers per card. A load that is not fully on the GPUs is refused and unloaded. The spec's use
+   picks the rig mode: `benchmark` runs in `bench`, anything else in `remote`, and the rig refuses a load
+   for another mode while one is active (isolated modes, 2026-10-23, `rig.py` `load_mode`). A ready load
    records `fit` (measured per card) and the real `ctx_size` in its rig profile, and the manager returns
    both next to its estimate.
 

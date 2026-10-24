@@ -772,6 +772,11 @@ class Manager:
         except fit.FitError as exc:
             raise ManagerError(404, str(exc)) from exc
         rt = r.get("runtime", {})
+        # Context per mode (isolated modes, 2026-10-23): a benchmark load plans exactly the registry profile's
+        # context unless the request names one, so a model loads the same way on any cards and runs compare;
+        # chat and worker loads plan the largest context that fits.
+        if ctx is None and use == "benchmark" and rt.get("ctx_size"):
+            ctx = int(rt["ctx_size"])
         kw = {"ctx": ctx, "ctx_min": ctx_min, "ubatch": min(int(rt.get("batch_size", 64)), 512),
               "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb}
         return r, shape, kw

@@ -163,6 +163,22 @@ def test_fit_endpoint_answers_without_loading(menv, registry):  # noqa: F811
     assert r.status_code == 200 and r.json()["gpus"] == [0] and r.json()["chosen_by"].startswith("harness")
 
 
+def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, registry, tmp_path):  # noqa: F811
+    path = tmp_path / "bench" / "model_registry.json"
+    reg = json.loads(path.read_text())
+    reg["models"]["small:9b"]["profiles"]["default"]["runtime"]["ctx_size"] = 8192
+    path.write_text(json.dumps(reg))
+    c = menv["client"]
+    bench = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark"})
+    assert bench.status_code == 200, bench.text
+    assert bench.json()["ctx"] == 8192
+    chat = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "chat"})
+    assert chat.status_code == 200, chat.text
+    assert chat.json()["ctx"] > 8192
+    named = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark", "ctx": 16384})
+    assert named.json()["ctx"] == 16384  # a request that names a context keeps it
+
+
 def test_load_model_leases_queues_the_spec_and_reports_ready(menv, registry):  # noqa: F811
     c = menv["client"]
     r = c.post("/v1/manager/models/load", json={"model": "small:9b", "gpu_ids": [1, 2],
