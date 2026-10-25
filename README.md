@@ -140,6 +140,9 @@ load continues on the rig; the next request finds it ready.
 | `tools/rig_stress.py` | power and thermal stress test: one model per card, ramp, hold, optional reload spikes (`--spikes`), factory limits until the next boot (`--uncap`); per-card temperature, fan, power, clock by GPU UUID, `--compare` against an earlier run |
 | `tools/power_cap_sweep.py` | speed and power of one card across a series of power caps (decode and prompt tok/s, J per token) |
 | `tools/split_sweep.py`, `tools/pcie_split_test.py` | split-load speed across cards and PCIe link settings |
+
+What these tools have found, where their results are kept and which question each answers: benchmarking `RIG_PERFORMANCE.md`; the measurements: benchmarking `results/RUNTIME_REFERENCE.md`.
+
 | `tools/multi_rig_tests.py`, `tools/dual_rig_bench.sh` | the tests in `docs/multi_rig_tests.md` |
 
 ## Repo layout
