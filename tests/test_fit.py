@@ -250,8 +250,11 @@ def test_failed_loads_cap_the_largest_plan_until_one_succeeds(tmp_path):
     observations.record("load_failed", source=s.source, ubatch=64, planned_ctx=free, oom=True, card_sizes=[6144, 6144])
     capped = fit.plan(s, [card(1), card(2)])
     assert capped["ctx"] < free and capped["failed_ceiling"] == free
-    assert fit.plan(s, [card(1)])["ctx"] > 0  # another card set is not capped by it
-    fit.record_observation(s.source, "m", 64, [1, 2], measured(free, 100, (1, 2)))  # it loaded after all
+    assert "failed_ceiling" not in fit.plan(s, [card(1)])  # another card set is not capped by it
+    fit.record_observation(s.source, "m", 64, [1], measured(free * 2, 100, (1,)), hw=[{"index": 1, "total_mb": 6144}])
+    assert fit.plan(s, [card(1), card(2)])["failed_ceiling"] == free  # a success on other cards does not lift it
+    fit.record_observation(s.source, "m", 64, [1, 2], measured(free, 100, (1, 2)),
+                           hw=[{"index": 1, "total_mb": 6144}, {"index": 2, "total_mb": 6144}])  # loaded after all
     assert "failed_ceiling" not in fit.plan(s, [card(1), card(2)])
 
 

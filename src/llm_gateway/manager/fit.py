@@ -326,7 +326,11 @@ def failed_ceiling(s: Shape, ubatch: int, card_sizes: list[int]) -> int | None:
     if not fails:
         return None
     lowest = min(fails)
-    ok = [c for c, _ in _points().get((s.source, int(ubatch)), []) if c >= lowest]
+    # Only a success on cards of the same sizes lifts it: a bigger context on five 1060s says nothing of the 3090.
+    ok = [r for r in observations.history("load")
+          if r.get("source") == s.source and int(r.get("ubatch") or 0) == int(ubatch)
+          and int(r.get("n_ctx") or 0) >= lowest
+          and sorted(int(h.get("total_mb") or 0) for h in r.get("hw") or []) == sizes]
     return None if ok else lowest
 
 
