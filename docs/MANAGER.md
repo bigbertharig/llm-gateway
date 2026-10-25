@@ -183,8 +183,13 @@ whether it ran out of memory. Started 2026-10-25 from the loads in the benchmark
 
 The plan says what it used (`compute_basis`, `overhead_mb`, `failed_ceiling`); `rigctl observations [--kind
 load_failed] [--model M]` lists the history. The rig still checks llama.cpp's own projection at load and
-refuses a load that would not fit. Still fixed: the 512 MiB margin per card (next: learn it from peak memory at
-full context) and `SAME_CLASS_MAX_CARDS` in placement (next: measured speed per card set).
+refuses a load that would not fit. Still fixed, and too careful together: the 512 MiB margin per card, while
+memory grows under 20 MiB over a full context (benchmarking `RIG_PERFORMANCE.md`, "Fit calibration": all of it is
+allocated at load); the overhead pad (624 MiB planned on the 3090 against about 420 measured); and one compute
+line per GGUF through single-card and split loads, though split cards allocate more (411 vs 302 MiB at 131K).
+Together they refuse qwen3.6:35b-a3b at 230,144 on the 3090, which loaded with 655 MiB free. Next: margin from
+measured growth, compute per card count, overhead from memory in use once serving rather than probe peaks.
+Also fixed: `SAME_CLASS_MAX_CARDS` in placement (next: measured speed per card set).
 
 Open: a VRAM check for published profiles; context per slot with `--parallel`.
 
