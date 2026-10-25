@@ -26,12 +26,13 @@ projection at load and refuses a load that would not fit, so this check can be c
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import struct
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
+
+from . import observations
 
 MIB = 1 << 20
 KV_BYTES_PER_ELEM = 34 / 32  # q8_0: 32 values in 34 bytes
@@ -241,53 +242,92 @@ def shape_for(path: str, model: str = "") -> Shape:
 
 # ---------------------------------------------------------------- calibration from measured loads
 
-# Every ready load appends what llama.cpp allocated per card (the rig's `fit`, hw_loadlog.py) here, and the
-# compute buffer is planned from those measurements for the same GGUF and micro-batch. The formula below
-# (context x micro-batch x heads) is the ceiling: on qwen3.6:35b-a3b it gave 762 MiB per card at 89K
-# against 280 measured, 2.7x, so five 1060s were refused 131K that they hold (2026-10-25).
-FIT_LOG_PATH = os.environ.get("FIT_LOG_PATH", os.path.expanduser("~/.local/state/llm-gateway/fit_observations.jsonl"))
+# Every ready load is kept in the manager's observation log (observations.py, kind `load`) with what llama.cpp
+# allocated per card (the rig's `fit`, hw_loadlog.py), and the compute buffer is planned from those
+# measurements for the same GGUF and micro-batch. The formula below (context x micro-batch x heads) is the
+# ceiling: on qwen3.6:35b-a3b it gave 762 MiB per card at 89K against 280 measured, 2.7x, so five 1060s were
+# refused 131K that they hold (2026-10-25).
 COMPUTE_PAD_MB = 64       # added to a calibrated compute buffer
 COMPUTE_PAD_FRAC = 0.10   # and this share of it
 _CALIBRATION: dict[str, Any] = {"mtime": None, "points": {}}
 
 
 def record_observation(source: str, model: str, ubatch: int, gpus: list[int], measured: dict[str, Any] | None,
-                       path: str | None = None) -> bool:
-    """Append one measured load (the rig's `fit`: n_ctx and buffers per card). False when there is nothing
-    usable (a load the rig could not read)."""
+                       **extra: Any) -> bool:
+    """Keep one measured load (the rig's `fit`: n_ctx and buffers per card), with any other facts about it
+    (`extra`: use, cards by UUID and link, the estimate, load time). False when there is nothing usable."""
     cards = (measured or {}).get("cards") or []
     n_ctx = (measured or {}).get("n_ctx")
     if not source or not n_ctx or not cards or not all(c.get("compute_mb") is not None for c in cards):
         return False
-    path = path or FIT_LOG_PATH
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    row = {"source": source, "model": model, "ubatch": int(ubatch), "n_ctx": int(n_ctx), "gpus": list(gpus),
-           "cards": [{k: c.get(k) for k in ("gpu", "model_mb", "kv_mb", "compute_mb", "total_mb")} for c in cards]}
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    observations.record("load", source=source, model=model, ubatch=int(ubatch), n_ctx=int(n_ctx),
+                        gpus=list(gpus), cards=[{k: c.get(k) for k in ("gpu", "model_mb", "kv_mb", "compute_mb",
+                                                                       "total_mb")} for c in cards], **extra)
     return True
 
 
-def _points(path: str | None = None) -> dict[tuple[str, int], list[tuple[int, float]]]:
+def _points() -> dict[tuple[str, int], list[tuple[int, float]]]:
     """(GGUF, ubatch) -> [(ctx, largest compute buffer on any card)], re-read when the log changes."""
-    path = path or FIT_LOG_PATH
+    def stamp(p) -> tuple:
+        try:
+            st = os.stat(p)
+            return (str(p), st.st_mtime_ns, st.st_size)  # size too: two appends can share an mtime tick
+        except OSError:
+            return (str(p), None, None)
+
     try:
-        st = os.stat(path)
+        log_path = observations.path()
     except OSError:
-        return {}
-    mtime = (st.st_mtime_ns, st.st_size)  # size too: two appends can share an mtime tick
-    if _CALIBRATION["mtime"] != (path, mtime):
+        log_path = ""
+    rx = observations.results_dir()
+    mtime = (stamp(log_path) if log_path else None, stamp(rx / "runtime_experiments") if rx else None)
+    if _CALIBRATION["mtime"] != mtime:
         points: dict[tuple[str, int], list[tuple[int, float]]] = {}
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    row = json.loads(line)
-                    worst = max(float(c["compute_mb"]) for c in row["cards"])
-                    points.setdefault((row["source"], int(row["ubatch"])), []).append((int(row["n_ctx"]), worst))
-                except (ValueError, KeyError, TypeError):
-                    continue
-        _CALIBRATION.update(mtime=(path, mtime), points=points)
+        overheads: dict[int, float] = {}
+        for row in observations.history("load"):
+            try:
+                worst = max(float(c["compute_mb"]) for c in row["cards"])
+                points.setdefault((row["source"], int(row["ubatch"])), []).append((int(row["n_ctx"]), worst))
+            except (ValueError, KeyError, TypeError):
+                continue
+            # used_mb: nvidia-smi per card once the load served; hw: the card's size (both from the rig).
+            size = {int(h["index"]): h.get("total_mb") for h in row.get("hw") or [] if h.get("index") is not None}
+            used = {int(g): u for g, u in zip(row.get("gpus") or [], row.get("used_mb") or [])}
+            for c in row["cards"]:
+                g = int(c.get("gpu", -1))
+                if size.get(g) and used.get(g) is not None and c.get("total_mb") is not None:
+                    extra = float(used[g]) - float(c["total_mb"])
+                    overheads[int(size[g])] = max(overheads.get(int(size[g]), 0.0), extra)
+        _CALIBRATION.update(mtime=mtime, points=points, overheads=overheads)
     return _CALIBRATION["points"]
+
+
+def overhead_mb(card_mb: int) -> float:
+    """Memory a card loses beyond llama.cpp's own buffers (CUDA context, cuBLAS workspace, CUDA graphs): the
+    most measured on a card of this size (nvidia-smi in use after a load minus llama.cpp's total), padded;
+    CUDA_CONTEXT_MB until a load of that card size has been measured. The 3090 ran out of memory in
+    cudaGraphInstantiate with 150 + 512 MiB planned (qwen3-coder:30b-a3b at 120K, 2026-10-25)."""
+    seen = _overheads().get(int(card_mb))
+    return max(CUDA_CONTEXT_MB, seen * (1 + COMPUTE_PAD_FRAC) + COMPUTE_PAD_MB) if seen is not None else CUDA_CONTEXT_MB
+
+
+def _overheads() -> dict[int, float]:
+    _points()  # refreshes the cache
+    return _CALIBRATION.get("overheads", {})
+
+
+def failed_ceiling(s: Shape, ubatch: int, card_sizes: list[int]) -> int | None:
+    """The smallest context at which this GGUF ran out of memory on cards of these sizes: a plan stays below it
+    until a load at or above it succeeds."""
+    sizes = sorted(int(c) for c in card_sizes)
+    fails = [int(r["planned_ctx"]) for r in observations.rows("load_failed")
+             if r.get("source") == s.source and int(r.get("ubatch") or 0) == int(ubatch) and r.get("oom")
+             and sorted(int(c) for c in r.get("card_sizes") or []) == sizes and r.get("planned_ctx")]
+    if not fails:
+        return None
+    lowest = min(fails)
+    ok = [c for c, _ in _points().get((s.source, int(ubatch)), []) if c >= lowest]
+    return None if ok else lowest
 
 
 def _formula_mb(s: Shape, ctx: int, ubatch: int) -> float:
@@ -365,24 +405,30 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
     cards = sorted(cards, key=lambda c: c["index"])
     gpus = [int(c["index"]) for c in cards]
     free = [float(c["total_mb"]) - float(c.get("used_mb", 0)) for c in cards]
+    over = [overhead_mb(int(c["total_mb"])) for c in cards]
     top = min(ctx_max or s.n_ctx_train or 131072, s.n_ctx_train or 1 << 30)
+    # A context that ran out of memory on cards like these caps the largest-that-fits plan (not an exact request).
+    ceiling = failed_ceiling(s, ubatch, [int(c["total_mb"]) for c in cards])
+    if ceiling and not ctx:
+        top = min(top, ceiling - CTX_STEP)
     want_lo, want_hi = (ctx, ctx) if ctx else (ctx_min, max(ctx_min, top))
     want_lo = max(CTX_STEP, want_lo // CTX_STEP * CTX_STEP)
     want_hi = max(want_lo, want_hi // CTX_STEP * CTX_STEP)
 
     def budgets(c: int, scale: float = 1.0) -> list[float]:
-        return [(f - margin_mb - CUDA_CONTEXT_MB - compute_mb(s, c, ubatch)) * MIB * scale for f in free]
+        return [(f - margin_mb - o - compute_mb(s, c, ubatch)) * MIB * scale for f, o in zip(free, over)]
 
     base = {"model": s.model, "arch": s.arch, "gpus": gpus, "n_ctx_train": s.n_ctx_train,
             "weights_mb": round(s.weights_mb), "host_mb": round(s.host_bytes / MIB), "margin_mb": margin_mb,
-            "parallel": parallel, "notes": s.notes, "compute_basis": compute_basis(s, ubatch)}
+            "parallel": parallel, "notes": s.notes, "compute_basis": compute_basis(s, ubatch),
+            "overhead_mb": [round(o) for o in over], **({"failed_ceiling": ceiling} if ceiling else {})}
     if not cards:
         return {**base, "fits": False, "reason": "no cards given"}
     if _partition(s, want_lo, budgets(want_lo)) is None:
         need = s.weights_mb + sum(s.kv_per_token[i] * (want_lo if s.kv_window[i] is None
                                                        else min(want_lo, s.kv_window[i])) + s.fixed_state[i]
                                   for i in range(s.n_layers)) / MIB
-        have = sum(free) - len(cards) * (margin_mb + CUDA_CONTEXT_MB + compute_mb(s, want_lo, ubatch))
+        have = sum(free) - sum(over) - len(cards) * (margin_mb + compute_mb(s, want_lo, ubatch))
         why = (f"won't fit: {s.model} needs about {need:.0f} MiB on the cards at ctx {want_lo} "
                f"(weights {s.weights_mb:.0f} + KV/state {need - s.weights_mb:.0f}); "
                f"{len(cards)} card(s) {gpus} give {max(have, 0):.0f} MiB after margins")
@@ -410,13 +456,14 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
     split = blocks[:-1] + [blocks[-1] + 1]  # the output layer is the last slot llama.cpp splits
     use = _card_use(s, best, blocks)
     rows = []
-    for c, f, u in zip(cards, free, use):
+    for c, f, u, o in zip(cards, free, use, over):
         comp = compute_mb(s, best, ubatch)
-        total = u["weights_mb"] + u["kv_mb"] + comp + CUDA_CONTEXT_MB
+        total = u["weights_mb"] + u["kv_mb"] + comp + o
         rows.append({"gpu": int(c["index"]), "total_mb": int(c["total_mb"]), "free_mb": round(f),
                      "layers": u["layers"], "weights_mb": round(u["weights_mb"]), "kv_mb": round(u["kv_mb"]),
                      "compute_mb": round(comp), "projected_mb": round(total), "headroom_mb": round(f - total)})
-    capped = "requested" if ctx else ("trained context" if best >= top else "card memory")
+    capped = "requested" if ctx else ("a failed load" if ceiling and best >= top else
+                                      "trained context" if best >= top else "card memory")
     return {**base, "fits": True, "ctx": best, "ctx_limit": capped, "per_slot_ctx": best // max(parallel, 1),
             "tensor_split": ",".join(str(c) for c in split) if len(split) > 1 else None, "cards": rows,
             "reason": f"fits: {s.model} on GPU {gpus} at ctx {best} (limited by {capped})"}

@@ -8,7 +8,7 @@ import textwrap
 
 import pytest
 
-from llm_gateway.manager import fit, models
+from llm_gateway.manager import fit, models, observations
 from test_manager import menv  # noqa: F401  (fixture: the gateway with the manager and a fake rig)
 
 MIB = 1 << 20
@@ -232,6 +232,52 @@ def test_load_model_leases_queues_the_spec_and_reports_ready(menv, registry):  #
     assert item["args"]["cache_ram"] == 0  # benchmark use: no host prompt cache
     assert c.post("/v1/manager/profiles/small-9b-g1-2/unload").status_code == 200
     assert menv["leases"]() == []
+
+
+def test_batch_size_override_reaches_the_fit_and_the_spec(menv, registry):  # noqa: F811
+    c = menv["client"]
+    f = c.post("/v1/manager/models/fit", json={"model": "small:9b", "gpu_ids": [1], "batch_size": 256})
+    assert f.status_code == 200 and f.json()["ubatch"] == 256
+    r = c.post("/v1/manager/models/load", json={"model": "small:9b", "gpu_ids": [1], "batch_size": 256})
+    assert r.status_code == 200, r.text
+    assert menv["rig"]()["plan_items"][-1]["args"]["spec"]["batch_size"] == 256
+
+
+def test_failed_loads_cap_the_largest_plan_until_one_succeeds(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, ctx_train=262144,
+                            **{"llama.attention.head_count_kv": 8}), "m")
+    free = fit.plan(s, [card(1), card(2)])["ctx"]
+    observations.record("load_failed", source=s.source, ubatch=64, planned_ctx=free, oom=True, card_sizes=[6144, 6144])
+    capped = fit.plan(s, [card(1), card(2)])
+    assert capped["ctx"] < free and capped["failed_ceiling"] == free
+    assert fit.plan(s, [card(1)])["ctx"] > 0  # another card set is not capped by it
+    fit.record_observation(s.source, "m", 64, [1, 2], measured(free, 100, (1, 2)))  # it loaded after all
+    assert "failed_ceiling" not in fit.plan(s, [card(1), card(2)])
+
+
+def test_overhead_per_card_size_is_learned_from_memory_in_use(tmp_path):
+    s = fit.shape_for(dense(tmp_path, ctx_train=262144), "m")
+    assert fit.overhead_mb(24564) == fit.CUDA_CONTEXT_MB
+    fit.record_observation(s.source, "m", 64, [0], measured(8192, 100, (0,)), used_mb=[1700],
+                           hw=[{"index": 0, "total_mb": 24564}])  # 1700 in use, llama.cpp counted 1200
+    assert abs(fit.overhead_mb(24564) - (500 * 1.1 + 64)) < 1
+    assert fit.overhead_mb(6144) == fit.CUDA_CONTEXT_MB  # another card size: not measured yet
+
+
+def test_observations_list_the_log_by_kind(menv):  # noqa: F811
+    observations.record("load_failed", model="m:1b", planned_ctx=4096, oom=True)
+    c = menv["client"]
+    got = c.get("/v1/manager/observations", params={"kind": "load_failed"}).json()
+    assert got["count"] == 1 and got["rows"][0]["model"] == "m:1b"
+
+
+def test_cards_from_the_scan_carry_uuid_and_link():
+    obs = {"gpu_scan": {"cards": [{"index": 0, "uuid": "GPU-a", "name": "3090", "total_mb": 24564, "bus": "01:00.0",
+                                   "link_gen": 2, "link_width": 16, "root_port": "00:01.0", "via": []},
+                                  {"index": 3, "uuid": "GPU-b", "link_gen": 1, "link_width": 1, "via": ["04:00.0"]}]}}
+    hw = observations.cards_from(obs, [3, 0, 7])
+    assert [h["uuid"] for h in hw] == ["GPU-b", "GPU-a"] and hw[0]["via"] == ["04:00.0"]
+    assert observations.cards_from({}, [0]) == []
 
 
 def test_load_model_that_wont_fit_never_reaches_the_rig(menv, registry):  # noqa: F811

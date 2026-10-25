@@ -153,16 +153,30 @@ Card size has two meanings. Placement plans on empty cards (total memory: what a
 once its current work frees, as the collecting wait uses it); a fit for an immediate load uses free memory
 (total minus what is loaded now). Later: use the active size to stack several small jobs on one card.
 
-**Calibration from measured loads (2026-10-25).** Every ready load appends what llama.cpp allocated per
-card (the rig's `fit`: context, weights, KV and compute buffer) to `~/.local/state/llm-gateway/fit_observations.jsonl`
-on the Pi (`FIT_LOG_PATH` overrides). The compute buffer of the next fit of that GGUF at that micro-batch is
-planned from those loads (`fit.compute_mb`): the line through the measurements (the largest card each time),
-plus the worst miss, 10% and 64 MiB, never below a measurement at a smaller context and never above the old
-formula (context x micro-batch x heads), which stays for GGUFs with no load yet. The formula was the loosest
-term: 2.7x the measured buffer on qwen3.6:35b-a3b, so five 1060s were refused 131K that they hold. The plan
-says which it used (`compute_basis`). Weights and KV were already close (KV 198 planned vs 185 measured per card).
-The log was seeded from the benchmarking capacity records; the rig still checks llama.cpp's own projection at
-load and refuses a load that would not fit.
+**Learning from loads (2026-10-25).** History lives in benchmarking, so it carries across sessions: the
+manager writes every load it places to `<benchmarking>/results/load_observations.jsonl` (`manager/observations.py`;
+`OBSERVATIONS_PATH` overrides), committed with the other results. A `load` row has the model, GGUF,
+micro-batch, use, the cards by UUID with link and root port (the rig's `gpu_scan`), the estimate per card,
+what llama.cpp allocated per card (the rig's `fit`), memory in use per card once serving, and the load time; a
+`load_failed` row has the same facts, the error and whether it ran out of memory. The fit reads that log plus
+the loads inside the capacity records (`results/runtime_experiments/*_capacity_*.json`) in place, each load
+counted once (`observations.history`), and plans from them:
+
+- compute buffer per card (`fit.compute_mb`): the line through this GGUF's measurements at this micro-batch
+  (the largest card each time), plus the worst miss, 10% and 64 MiB, never below a measurement at a smaller
+  context and never above the old formula (context x micro-batch x heads), which stays for GGUFs with no load
+  yet. The formula was 2.7x the measured buffer on qwen3.6:35b-a3b, so five 1060s were refused 131K they hold.
+- overhead per card (`fit.overhead_mb`): memory in use minus llama.cpp's own total (CUDA context, cuBLAS,
+  CUDA graphs), the most seen on a card of that size, padded; 150 MiB until a card size is measured. The 3090
+  ran out of memory in `cudaGraphInstantiate` at 120K for qwen3-coder:30b-a3b with 150 MiB assumed; measured
+  up to about 509 MiB there, 135 on a 1060.
+- a ceiling (`fit.failed_ceiling`): a largest-that-fits plan stays below a context that ran out of memory for
+  this GGUF on cards of these sizes, until a load at or above it succeeds.
+
+The plan says what it used (`compute_basis`, `overhead_mb`, `failed_ceiling`); `rigctl observations [--kind
+load_failed] [--model M]` lists the history. The rig still checks llama.cpp's own projection at load and
+refuses a load that would not fit. Still fixed: the 512 MiB margin per card (next: learn it from peak memory at
+full context) and `SAME_CLASS_MAX_CARDS` in placement (next: measured speed per card set).
 
 Open: a VRAM check for published profiles; context per slot with `--parallel`.
 

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..rig import Rig, RigUnavailable
-from . import fit, memory, models, placement
+from . import fit, memory, models, observations, placement
 from .errors import ManagerError
 from .status import gpu_rows, is_expired
 from .store import RigRecord
@@ -759,7 +759,7 @@ class Manager:
     # ------------------------------------------------------------------ model loads (any model, any cards)
 
     async def _shape(self, model: str, use: str, profile: str | None, ctx: int | None, ctx_min: int,
-                     margin_mb: int) -> tuple[dict, Any, dict]:
+                     margin_mb: int, batch_size: int | None = None) -> tuple[dict, Any, dict]:
         """(registry entry, GGUF shape, plan options) for a model: what every fit is planned from."""
         if use not in memory.USES:
             raise ManagerError(400, f"use must be one of {memory.USES}")
@@ -777,20 +777,22 @@ class Manager:
         # chat and worker loads plan the largest context that fits.
         if ctx is None and use == "benchmark" and rt.get("ctx_size"):
             ctx = int(rt["ctx_size"])
-        kw = {"ctx": ctx, "ctx_min": ctx_min, "ubatch": min(int(rt.get("batch_size", 64)), 512),
+        # batch_size: a request may override the profile's (a micro-batch sweep); it sets the compute buffer.
+        kw = {"ctx": ctx, "ctx_min": ctx_min, "ubatch": min(int(batch_size or rt.get("batch_size", 64)), 512),
               "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb}
         return r, shape, kw
 
     async def fit_model(self, model: str, *, cards: int | None = None, gpu_ids: list[int] | None = None,
                         ctx: int | None = None, ctx_min: int = fit.CTX_MIN_DEFAULT, use: str = "benchmark",
                         profile: str | None = None, claim: str | None = None,
-                        margin_mb: int = fit.MARGIN_MB_DEFAULT, requester: str = "") -> dict:
+                        margin_mb: int = fit.MARGIN_MB_DEFAULT, requester: str = "",
+                        batch_size: int | None = None) -> dict:
         """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`, or, with neither, on the
         fewest free cards that give `ctx` / at least `ctx_min`)": will it fit, at what context and split.
         Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
         if cards and gpu_ids:
             raise ManagerError(400, "give cards (a count) or gpu_ids, not both")
-        r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb)
+        r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb, batch_size)
         obs = await self.observe(fresh=True)
         try:
             free, why = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), claim)
@@ -817,7 +819,8 @@ class Manager:
                 result = self._keep_for_demand(r["model"], shape, kw, obs, free, result, requester)
         else:
             result = fit.plan(shape, chosen, **kw)
-        result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"])
+        result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"],
+                      ubatch=kw["ubatch"])
         if not result["fits"]:
             alts = fit.suggest(shape, free, **kw)
             msg = result["reason"] + (". Fits on: " + "; ".join(alts) if alts else
@@ -835,7 +838,7 @@ class Manager:
         is taken again (cards someone else took meanwhile are collected again)."""
         r, shape, kw = await self._shape(model, use, fit_kw.get("profile"), fit_kw.get("ctx"),
                                          fit_kw.get("ctx_min", fit.CTX_MIN_DEFAULT),
-                                         fit_kw.get("margin_mb", fit.MARGIN_MB_DEFAULT))
+                                         fit_kw.get("margin_mb", fit.MARGIN_MB_DEFAULT), fit_kw.get("batch_size"))
         deadline = time.monotonic() + wait_s if wait_s >= 0 else float("inf")
         watch: dict = {}
         obs = await self._next_obs(r["model"], watch, deadline)
@@ -975,8 +978,9 @@ class Manager:
         rt = r.get("runtime", {})
         gpus = plan_["gpus"]
         pid = models.profile_id(r["model"], gpus)
+        batch = int(fit_kw.get("batch_size") or rt.get("batch_size", 64))
         spec = {"model": r["model"], "gguf_path": r["gguf_path"], "ctx_size": plan_["ctx"],
-                "batch_size": int(rt.get("batch_size", 64)), "parallel": int(rt.get("parallel", 1)),
+                "batch_size": batch, "parallel": int(rt.get("parallel", 1)),
                 "n_gpu_layers": "all", "extra_args": [*r.get("extra_args", []), *(extra_args or [])],
                 "image": r.get("image"), "use": use, "registry_profile": r["profile"],
                 **({"tensor_split": plan_["tensor_split"]} if plan_.get("tensor_split") else {})}
@@ -989,6 +993,14 @@ class Manager:
                                    model=r["model"], purpose=f"model load {pid} ({use}, ctx {plan_['ctx']})")
         lease_id = lease["lease_id"]
         self._in_flight.add(lease_id)
+        started = time.monotonic()
+        # Facts every observation of this load carries: what was asked, on which physical cards, and the estimate.
+        facts = {"model": r["model"], "source": os.path.basename(r["gguf_path"]), "ubatch": min(batch, 512),
+                 "use": use, "gpus": gpus, "planned_ctx": plan_["ctx"], "tensor_split": plan_.get("tensor_split"),
+                 "hw": observations.cards_from(self._obs, gpus), "owner": owner,
+                 "card_sizes": [int(g["total_mb"]) for g in (self._obs or {}).get("gpus", []) if g.get("index") in gpus],
+                 "estimate": [{k: c.get(k) for k in ("gpu", "weights_mb", "kv_mb", "compute_mb", "projected_mb")}
+                              for c in plan_.get("cards") or []], "compute_basis": plan_.get("compute_basis")}
         try:
             try:
                 item = await self.record.plan_add("load", {
@@ -1005,14 +1017,26 @@ class Manager:
                 if pid in obs.get("profiles", {}):
                     await self.rig.stop_profile(pid)
                 await self.release(lease_id, OWNER, force=True)
-                raise RigUnavailable(502, f"rig did not load {pid} ({done['state']}): "
-                                          f"{str(done.get('result') or '')[-1500:]}")
+                why = str(done.get("result") or "")[-1500:]
+                try:  # the other side of the fit boundary
+                    observations.record("load_failed", **facts, state=done["state"], error=why,
+                                        oom="out of memory" in why.lower(),
+                                        seconds=round(time.monotonic() - started, 1))
+                except OSError as exc:
+                    log.warning("failed-load observation for %s not recorded: %s", pid, exc)
+                raise RigUnavailable(502, f"rig did not load {pid} ({done['state']}): {why}")
         finally:
             self._in_flight.discard(lease_id)
         loaded = obs.get("profiles", {}).get(pid, {})
         try:  # what llama.cpp allocated: the next fit of this GGUF plans its compute buffer from it
-            fit.record_observation(os.path.basename(r["gguf_path"]), r["model"],
-                                   min(int(rt.get("batch_size", 64)), 512), gpus, loaded.get("fit"))
+            if not fit.record_observation(facts["source"], r["model"], facts["ubatch"], gpus, loaded.get("fit"),
+                                          **{k: v for k, v in facts.items()
+                                             if k not in ("source", "model", "ubatch", "gpus")},
+                                          seconds=round(time.monotonic() - started, 1),
+                                          # nvidia-smi once serving: minus llama.cpp's total is the card overhead
+                                          used_mb=[next((g.get("used_mb") for g in obs.get("gpus", [])
+                                                         if g.get("index") == i), None) for i in gpus]):
+                log.info("load %s: the rig reported no measured fit; nothing to calibrate from", pid)
         except OSError as exc:
             log.warning("fit observation for %s not recorded: %s", pid, exc)
         return {"profile": pid, "model": r["model"], "state": "ready", "port": lease["metadata"]["port"],

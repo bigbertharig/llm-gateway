@@ -173,6 +173,7 @@ def main() -> int:
         s.add_argument("--use", default="benchmark", choices=("benchmark", "chat", "worker"))
         s.add_argument("--profile", help="registry profile (default: by use)")
         s.add_argument("--claim"); s.add_argument("--margin-mb", type=int)
+        s.add_argument("--batch-size", type=int, help="override the profile's batch (sets the micro-batch, up to 512)")
         s.add_argument("--json", action="store_true")
         if name == "load-model":
             s.add_argument("--args", default="", help='extra llama-server args after the registry ones, e.g. "--reasoning on"')
@@ -202,7 +203,24 @@ def main() -> int:
     sub.add_parser("takeover")
     s = sub.add_parser("plan"); s.add_argument("--json", action="store_true")
     s = sub.add_parser("cancel"); s.add_argument("item")
+    s = sub.add_parser("observations", help="every load the manager knows of (its log and the capacity records)")
+    s.add_argument("--kind", choices=("load", "load_failed"), default="load")
+    s.add_argument("--model"); s.add_argument("--limit", type=int, default=50); s.add_argument("--json", action="store_true")
     a = ap.parse_args()
+
+    if a.cmd == "observations":
+        q = "&".join(f"{k}={v}" for k, v in (("kind", a.kind), ("model", a.model), ("limit", a.limit)) if v is not None)
+        code, out = call("GET", "/v1/manager/observations?" + q)
+        if code == 200 and not a.json:
+            print(f"{out['count']} matching in {out['path']}; last {len(out['rows'])}:")
+            for row in out["rows"]:
+                keep = {k: row.get(k) for k in ("kind", "at", "from_record", "model", "gpus", "n_ctx", "planned_ctx",
+                                                  "ubatch", "seconds", "used_mb", "oom") if row.get(k) is not None}
+                keep["compute_mb"] = [c.get("compute_mb") for c in row.get("cards") or []] or None
+                print("  " + json.dumps(keep)[:300])
+            return 0
+        print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
 
     if a.cmd == "controller":
         code, out = call("GET", "/v1/manager/controller")
@@ -221,7 +239,7 @@ def main() -> int:
 
     if a.cmd in ("fit", "load-model"):
         body = {"model": a.model, "cards": a.cards, "ctx": a.ctx, "ctx_min": a.ctx_min, "use": a.use,
-                "profile": a.profile, "claim": a.claim, "margin_mb": a.margin_mb,
+                "profile": a.profile, "claim": a.claim, "margin_mb": a.margin_mb, "batch_size": a.batch_size,
                 "gpu_ids": [int(g) for g in a.gpus.split(",")] if a.gpus else None}
         timeout = 1000.0
         if a.cmd == "load-model":

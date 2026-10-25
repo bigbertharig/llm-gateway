@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 
-from . import fit
+from . import fit, observations
 from .core import Manager
 from .errors import ManagerError
 
@@ -118,7 +118,8 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
                 "ctx": None if ctx in (None, "", "auto") else int(ctx),
                 "ctx_min": int(b.get("ctx_min") or fit.CTX_MIN_DEFAULT), "use": b.get("use", "benchmark"),
                 "profile": b.get("profile"), "claim": b.get("claim"),
-                "margin_mb": int(b.get("margin_mb") or fit.MARGIN_MB_DEFAULT)}
+                "margin_mb": int(b.get("margin_mb") or fit.MARGIN_MB_DEFAULT),
+                "batch_size": int(b["batch_size"]) if b.get("batch_size") else None}
 
     @r.post("/models/fit")
     async def fit_model(request: Request):
@@ -137,6 +138,13 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
         return await manager.load_model(b["model"], extra_args=[str(a) for a in b.get("extra_args") or []],
                                         wait_s=float(b.get("wait_s") or 0), force=bool(b.get("force")),
                                         owner=str(b.get("owner") or ""), **req)
+
+    @r.get("/observations")
+    async def list_observations(kind: str = "load", model: str | None = None, limit: int = 200):
+        """Every load the manager knows of (observations.py): its log in benchmarking plus, for `load`, the
+        loads in the capacity records, newest last; `limit` 0 for all."""
+        got = [r for r in observations.history(kind) if model is None or r.get("model") == model]
+        return {"path": observations.path(), "count": len(got), "rows": got[-limit:] if limit else got}
 
     @r.get("/runs")
     async def runs():
