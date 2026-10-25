@@ -101,7 +101,8 @@ def capacity_loads() -> Iterator[dict]:
         sizes = {int(c["gpu"]): c.get("total_mb") for c in (rec.get("plan") or {}).get("cards") or []}
         yield {"kind": "load", "from_record": f.name, "model": rec["model"],
                "source": os.path.basename(r["gguf_path"]),
-               "ubatch": min(int((r.get("runtime") or {}).get("batch_size", 64)), 512),
+               # the record's own (a sweep overrides it), else the profile's at the time
+               "ubatch": int(rec.get("ubatch") or min(int((r.get("runtime") or {}).get("batch_size", 64)), 512)),
                "n_ctx": int(measured["n_ctx"]), "gpus": gpus, "cards": measured["cards"],
                "hw": [{"index": g, "total_mb": sizes.get(g)} for g in gpus],
                "used_mb": [peak.get(g) for g in gpus]}
