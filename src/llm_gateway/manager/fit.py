@@ -275,12 +275,7 @@ def _points() -> dict[tuple[str, int], list[tuple[int, float]]]:
         except OSError:
             return (str(p), None, None)
 
-    try:
-        log_path = observations.path()
-    except OSError:
-        log_path = ""
-    rx = observations.results_dir()
-    mtime = (stamp(log_path) if log_path else None, stamp(rx / "runtime_experiments") if rx else None)
+    mtime = stamp(observations.path())
     if _CALIBRATION["mtime"] != mtime:
         points: dict[tuple[str, int], list[tuple[int, float]]] = {}
         overheads: dict[int, float] = {}

@@ -108,7 +108,7 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
 
 "Load X on Y cards" is two checks, one per layer:
 
-1. **The harness decides** (`manager/fit.py`, `manager/models.py`). The request names a registry model,
+1. **The manager decides** (`manager/fit.py`, `manager/models.py`). The request names a catalog model,
    optionally a card count (smallest free cards first) or explicit GPUs, a context, and a use (benchmark,
    chat, worker) that picks the registry profile and the prompt cache. With no cards named the harness
    chooses: the smallest card class that holds the model on up to two of its cards (one card first), then
@@ -153,14 +153,22 @@ Card size has two meanings. Placement plans on empty cards (total memory: what a
 once its current work frees, as the collecting wait uses it); a fit for an immediate load uses free memory
 (total minus what is loaded now). Later: use the active size to stack several small jobs on one card.
 
-**Learning from loads (2026-10-25).** History lives in benchmarking, so it carries across sessions: the
-manager writes every load it places to `<benchmarking>/results/load_observations.jsonl` (`manager/observations.py`;
-`OBSERVATIONS_PATH` overrides), committed with the other results. A `load` row has the model, GGUF,
-micro-batch, use, the cards by UUID with link and root port (the rig's `gpu_scan`), the estimate per card,
-what llama.cpp allocated per card (the rig's `fit`), memory in use per card once serving, and the load time; a
-`load_failed` row has the same facts, the error and whether it ran out of memory. The fit reads that log plus
-the loads inside the capacity records (`results/runtime_experiments/*_capacity_*.json`) in place, each load
-counted once (`observations.history`), and plans from them:
+**Models come from the gateway's own catalog (2026-10-25).** The manager never reads benchmarking at
+runtime. `tools/generate_profiles.py` imports the benchmarking model library into `model_catalog.json`
+(every model, its resolved profiles, the roles, the runtime image, the dashboard's model summary) and
+`remote_profiles.json` (the offer); `manager/models.py` resolves from the catalog. Re-run the importer to take
+in what benchmarking has learned. A published profile names no cards: `load_profile` plans it like any model
+load (the largest context that fits, at least the profile's `ctx_size`) under the profile's own id;
+`gpus_needed` on a profile is an optional operator pin.
+
+**Learning from loads (2026-10-25).** The manager keeps its own history in this repo,
+`lessons/load_observations.jsonl` (`manager/observations.py`; `OBSERVATIONS_PATH` overrides), committed, so
+it carries across sessions and machines; it is also the gateway's lessons file for benchmarking to read
+(`lessons/README.md`). A `load` row has the model, GGUF, micro-batch, use, the cards by UUID with link and
+root port (the rig's `gpu_scan`), the estimate per card, what llama.cpp allocated per card (the rig's `fit`),
+memory in use per card once serving, and the load time; a `load_failed` row has the same facts, the error and
+whether it ran out of memory. Started 2026-10-25 from the loads in the benchmarking capacity records (marked
+`from_record`). The fit plans from it, each load counted once (`observations.history`):
 
 - compute buffer per card (`fit.compute_mb`): the line through this GGUF's measurements at this micro-batch
   (the largest card each time), plus the worst miss, 10% and 64 MiB, never below a measurement at a smaller

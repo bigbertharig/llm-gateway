@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Generate remote_profiles.json: the models this gateway offers, resolved from the model library.
+"""Import the benchmarking model library into the gateway's own files: the only place the gateway reads it.
 
-The model registry (benchmarking repo, model_registry.json) is the one source of truth for how a
-model loads: GGUF, context, batch, extra args, per named profile. This script owns only the offer:
-which models the gateway publishes, under which registry profile, and on which GPU shape. It pulls
-just those models from the registry and writes remote_profiles.json, which the gateway and the rig
-mode selector (`rig start remote <id>`) read. Re-run it after the registry learns something new.
+The model registry (benchmarking repo, model_registry.json) is where benchmarking keeps what it has learned
+about how each model loads: GGUF, context, batch, extra args, per named profile. This importer copies that
+into files the gateway owns, so the gateway runs with no benchmarking checkout:
+
+- model_catalog.json: every registry model and its resolved profiles, the roles, the runtime image, and the
+  dashboard's model summary (scores, runtime). The manager plans and loads from it (manager/models.py).
+- remote_profiles.json: the offer, the models the gateway publishes on /v1/models under which registry
+  profile. The offer names no cards: the manager's fit places a published profile and sizes its context.
+
+Re-run it after benchmarking learns something new.
 
 Usage (on the Pi, where the benchmarking repo is on the shared drive):
-  tools/generate_profiles.py            rewrite remote_profiles.json
-  tools/generate_profiles.py --check    exit 1 if the offer is invalid or the file is stale
+  tools/generate_profiles.py            rewrite both files
+  tools/generate_profiles.py --check    exit 1 if the offer is invalid or either file is stale
   BENCHMARKING_ROOT=<path> ...          a different benchmarking checkout
 """
 
@@ -19,6 +24,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -26,45 +32,39 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = REPO / "remote_profiles.json"
+CATALOG_PATH = REPO / "model_catalog.json"
 BENCHMARKING_ROOTS = (
     Path("/media/bryan/shared/plans/shoulders/benchmarking"),          # Pi
     Path.home() / "llm_orchestration/shared/plans/shoulders/benchmarking",  # rig
 )
 # Registry statuses the gateway may offer. Candidates are allowed so they can be tried remotely.
 OFFERABLE_STATUSES = {"active", "candidate"}
-# max_vram_mb keeps 1060 profiles off the 3090 (rig place_profile honors it).
-ONE_1060 = {"min_vram_mb": 5800, "max_vram_mb": 8192}
-ONE_3090 = {"min_vram_mb": 20000}
 USES = ("chat", "worker", "benchmark")  # manager/memory.py USES
 
-# The offer. Model settings come from the registry profile named here, never from this list.
-# gpus_needed is one entry per card; tensor_split (optional) has one weight per entry, in order.
-# use (chat | worker | benchmark, default chat) lets the manager size the host prompt cache at load
-# time (src/llm_gateway/manager/memory.py).
+# The offer: what the gateway publishes, under which registry profile. Model settings come from that profile,
+# never from this list, and so do card choice and context: the manager's fit places each published profile
+# on the cards it fits best and plans the largest context that fits, at least the profile's ctx_size.
+# gpus_needed ({"min_vram_mb", "max_vram_mb"} per card) is an optional pin, for an operator who wants a fixed
+# shape. use (chat | worker | benchmark, default chat) sizes the host prompt cache (manager/memory.py).
 OFFER: list[dict[str, Any]] = [
     {"id": "chat-27b", "model": "qwen3.6:27b", "profile": "interactive", "default": True,
-     "gpus_needed": [ONE_3090, ONE_1060],
-     "description": "Strong general/coding model for interactive agents (Roo). 65k ctx on the 3090 + any free 1060."},
+     "description": "Strong general/coding model for interactive agents (Roo)."},
     {"id": "coder-7b", "model": "qwen2.5-coder:7b", "profile": "interactive", "default": True,
-     "gpus_needed": [ONE_1060],
-     "description": "Fast small coder for scoped/bulk tasks. 16k ctx on any free 1060. No native tool calls."},
+     "description": "Fast small coder for scoped/bulk tasks. No native tool calls."},
     {"id": "coder-30b", "model": "qwen3-coder:30b-a3b", "profile": "interactive", "default": False,
-     "gpus_needed": [ONE_3090],
-     "description": "Coding MoE (30B, 3B active). Roo candidate. 32k ctx on the 3090."},
+     "description": "Coding MoE (30B, 3B active). Roo candidate."},
     {"id": "devstral-24b", "model": "devstral-small:24b", "profile": "interactive", "default": False,
-     "gpus_needed": [ONE_3090],
-     "description": "Agentic coding model (built for tool-using agents). Roo candidate. 32k ctx on the 3090."},
+     "description": "Agentic coding model (built for tool-using agents). Roo candidate."},
     {"id": "gpt-oss-20b", "model": "gpt-oss:20b", "profile": "interactive", "default": False,
-     "gpus_needed": [ONE_3090],
-     "description": "MoE (21B, 3.6B active), strong tool calling, fast. Roo candidate. 65k ctx on the 3090."},
+     "description": "MoE (21B, 3.6B active), strong tool calling, fast. Roo candidate."},
     {"id": "nex-split", "model": "nex-n2.5:mini", "profile": "interactive", "default": False,
-     "gpus_needed": [ONE_1060] * 5, "tensor_split": "0.75,1,1,1,1",
-     "description": "Nex N2.5 mini (35B MoE, 3B active) split across five 1060s, 3090 left free. "
-                    "64k ctx, about 22 tok/s."},
+     "description": "Nex N2.5 mini (35B MoE, 3B active)."},
 ]
 
 GENERATED_NOTE = ("Generated by tools/generate_profiles.py from the model registry. Do not edit; "
                   "change OFFER in the script or the registry profile, then re-run it.")
+CATALOG_NOTE = ("Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; "
+                "the gateway reads models only from here. Re-run the importer to take in new lessons.")
 
 
 def benchmarking_root() -> Path:
@@ -103,13 +103,12 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             continue
         runtime = r.get("runtime", {})
         gpus = item.get("gpus_needed") or []
-        split = item.get("tensor_split") or r.get("tensor_split")
+        # A split only means something with a pinned shape; without one the manager's fit computes it.
+        split = (item.get("tensor_split") or r.get("tensor_split")) if gpus else None
         if r["status"] not in OFFERABLE_STATUSES:
             problems.append(f"{pid}: {r['model']} is {r['status']}; offer only {sorted(OFFERABLE_STATUSES)} models")
         if "ctx_size" not in runtime or "batch_size" not in runtime:
             problems.append(f"{pid}: registry profile {r['profile']} lacks runtime ctx_size/batch_size")
-        if not gpus:
-            problems.append(f"{pid}: gpus_needed is required")
         if any(int(g.get("max_vram_mb", g["min_vram_mb"])) < int(g["min_vram_mb"]) for g in gpus):
             problems.append(f"{pid}: a gpus_needed entry has max_vram_mb below min_vram_mb")
         if split and len(str(split).split(",")) != len(gpus):
@@ -126,8 +125,8 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             "description": item.get("description", ""),
             "default": bool(item.get("default", False)),
             "use": item.get("use", "chat"),
-            "gpus_needed": gpus,
-            **({"tensor_split": str(split)} if split else {}),
+            **({"gpus_needed": gpus} if gpus else {}),
+            **({"tensor_split": str(split)} if split and gpus else {}),
             "gguf_path": r["gguf_path"],
             "ctx_size": runtime["ctx_size"],
             "batch_size": runtime["batch_size"],
@@ -139,8 +138,40 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
     return doc, problems
 
 
+def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] | None,
+                  summary: dict[str, Any] | None) -> dict[str, Any]:
+    """The gateway's copy of the model library: every model with its resolved profiles, the roles, the image,
+    and the dashboard's model summary."""
+    models = {}
+    for mid, entry in registry["models"].items():
+        if not isinstance(entry, dict):
+            continue
+        profiles, gguf = {}, None
+        for name in entry.get("profiles") or {}:
+            try:
+                r = library.resolve(mid, name, registry)
+            except KeyError:
+                continue
+            gguf = gguf or r.get("gguf_path")
+            profiles[name] = {k: v for k, v in r.items() if k not in ("model", "profile", "status", "gguf_path")}
+        models[mid] = {"status": entry.get("status"), "aliases": entry.get("aliases", []), "gguf_path": gguf,
+                       "profiles": profiles}
+    role_rows = {name: {k: spec.get(k) for k in ("model", "profile", "lane", "why")}
+                 for name, spec in ((roles or {}).get("roles") or {}).items() if isinstance(spec, dict)}
+    return {"_comment": CATALOG_NOTE, "registry_updated": registry.get("updated"),
+            "roles_updated": (roles or {}).get("updated"), "image": library.runtime_image(registry),
+            "models": models, "roles": role_rows, "summary": summary}
+
+
 def render(doc: dict[str, Any]) -> str:
     return json.dumps(doc, indent=2, ensure_ascii=True) + "\n"
+
+
+def _summary(root: Path) -> dict[str, Any] | None:
+    """The dashboard's model summary, built here from the benchmarking results (the dashboard reads the copy)."""
+    sys.path.insert(0, str(REPO / "src"))
+    from llm_gateway.dashboard.sources import build_models_summary  # noqa: E402
+    return build_models_summary(root)
 
 
 def main() -> int:
@@ -150,22 +181,31 @@ def main() -> int:
 
     root = benchmarking_root()
     library = load_library(root)
-    doc, problems = build(OFFER, library, library.load_registry(root / "model_registry.json"))
+    registry = library.load_registry(root / "model_registry.json")
+    doc, problems = build(OFFER, library, registry)
+    roles = json.loads((root / "model_roles.json").read_text(encoding="utf-8")) \
+        if (root / "model_roles.json").is_file() else None
+    catalog = build_catalog(library, registry, roles, _summary(root))
     for p in problems:
         print(f"problem: {p}")
-    text = render(doc)
+    outputs = {OUTPUT_PATH: render(doc), CATALOG_PATH: render(catalog)}
     if args.check:
-        current = OUTPUT_PATH.read_text(encoding="utf-8") if OUTPUT_PATH.is_file() else ""
-        if current != text:
-            problems.append("stale")
-            print(f"problem: {OUTPUT_PATH.name} differs from the registry; run tools/generate_profiles.py")
+        for path, text in outputs.items():
+            current = path.read_text(encoding="utf-8") if path.is_file() else ""
+            # the summary carries its build time; compare without it
+            strip = (lambda t: re.sub(r'"generated_at": "[^"]*"', "", t)) if path == CATALOG_PATH else (lambda t: t)
+            if strip(current) != strip(text):
+                problems.append(f"{path.name} stale")
+                print(f"problem: {path.name} differs from the model library; run tools/generate_profiles.py")
         print("ok" if not problems else f"{len(problems)} problem(s)")
         return 1 if problems else 0
     if problems:
         print(f"not written: {len(problems)} problem(s)", file=sys.stderr)
         return 1
-    OUTPUT_PATH.write_text(text, encoding="utf-8", newline="\n")
+    for path, text in outputs.items():
+        path.write_text(text, encoding="utf-8", newline="\n")
     print(f"wrote {OUTPUT_PATH.name}: {', '.join(p['id'] for p in doc['remote_profiles'])}")
+    print(f"wrote {CATALOG_PATH.name}: {len(catalog['models'])} models, {len(catalog['roles'])} roles")
     return 0
 
 

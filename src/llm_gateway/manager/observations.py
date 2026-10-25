@@ -1,15 +1,15 @@
-"""What the manager has seen the rig do, kept in benchmarking so it is learned from across sessions.
+"""What the manager has seen the rig do: the gateway's own history, and its lessons file for benchmarking.
 
-Benchmarking holds the rig's history (registry, scores, capacity and runtime records); the manager reads it to
-plan and writes back here what only it sees: every load it places, as one row in
-`<benchmarking>/results/load_observations.jsonl`, committed with the other results. Kinds:
+Every load the manager places is one row in `lessons/load_observations.jsonl` in this repo, committed like any
+other file, so the history carries across sessions and machines. The manager learns from it (`fit.compute_mb`,
+`fit.overhead_mb`, `fit.failed_ceiling`); benchmarking reads it when it wants to learn from real loads (the
+other direction is the importer, tools/generate_profiles.py). Nothing here reads another repo. Kinds:
 
 - `load`: a ready load. Model, GGUF, micro-batch, use, the cards by UUID with their link and root port (the
   rig's scan), the manager's estimate per card, what llama.cpp allocated per card (the rig's `fit`), memory in
-  use per card once serving (nvidia-smi), and the load time. `fit.compute_mb` and `fit.overhead_mb` plan from
-  these and from the capacity records.
+  use per card once serving (nvidia-smi), and the load time.
 - `load_failed`: a load the rig refused or that never served, with the same facts, the error and whether it ran
-  out of memory: the other side of the fit boundary (`fit.failed_ceiling`).
+  out of memory: the other side of the fit boundary.
 
 Rows without `kind` are loads. Runtime coordination (the manager's requests, the orchestration's handling) is
 not kept here, only what a later session should know.
@@ -23,30 +23,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import models
-
-PATH: str | None = None  # override (tests); else OBSERVATIONS_PATH, else the benchmarking results folder
-FILE = "load_observations.jsonl"
+REPO = Path(__file__).resolve().parents[3]
+PATH: str | None = None  # override (tests); else OBSERVATIONS_PATH, else lessons/ in this repo
 KINDS = ("load", "load_failed")
 CARD_KEYS = ("index", "uuid", "name", "total_mb", "bus", "link_gen", "link_width", "root_port", "via")
 
 
-def results_dir() -> Path | None:
-    try:
-        return models.benchmarking_root() / "results"
-    except FileNotFoundError:
-        return None
-
-
 def path() -> str:
-    if PATH:
-        return PATH
-    if os.getenv("OBSERVATIONS_PATH"):
-        return os.environ["OBSERVATIONS_PATH"]
-    d = results_dir()
-    if d is None:
-        raise OSError("benchmarking results folder not found; set BENCHMARKING_ROOT or OBSERVATIONS_PATH")
-    return str(d / FILE)
+    return PATH or os.getenv("OBSERVATIONS_PATH") or str(REPO / "lessons" / "load_observations.jsonl")
 
 
 def record(kind: str, **fields: Any) -> dict:
@@ -76,43 +60,12 @@ def rows(kind: str | None = None, model: str | None = None) -> Iterator[dict]:
                 yield row
 
 
-def capacity_loads() -> Iterator[dict]:
-    """The loads inside benchmarking's capacity records (`results/runtime_experiments/*_capacity_*.json`), as
-    load rows: read where they live, so history from before this log, and from tools that load by themselves,
-    counts too. used_mb is the peak memory a probe saw per card (nvidia-smi), so overhead from these is an upper
-    bound. Records whose model is no longer in the registry are skipped."""
-    d = results_dir()
-    if d is None:
-        return
-    for f in sorted((d / "runtime_experiments").glob("*_capacity_*.json")):
-        try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
-            measured = (rec.get("load") or {}).get("measured") or {}
-            if not measured.get("cards") or not measured.get("n_ctx"):
-                continue
-            r = models.resolve(rec["model"], "chat", "default")
-        except (OSError, ValueError, KeyError, FileNotFoundError):
-            continue
-        gpus = [int(g) for g in rec.get("cards") or []]
-        peak: dict[int, float] = {}
-        for p in [rec.get("short_probe") or {}, *(rec.get("depth_probes") or [])]:
-            for e in p.get("gpu_envelope") or []:
-                peak[int(e["gpu"])] = max(peak.get(int(e["gpu"]), 0.0), float(e.get("peak_memory_mb") or 0))
-        sizes = {int(c["gpu"]): c.get("total_mb") for c in (rec.get("plan") or {}).get("cards") or []}
-        yield {"kind": "load", "from_record": f.name, "model": rec["model"],
-               "source": os.path.basename(r["gguf_path"]),
-               # the record's own (a sweep overrides it), else the profile's at the time
-               "ubatch": int(rec.get("ubatch") or min(int((r.get("runtime") or {}).get("batch_size", 64)), 512)),
-               "n_ctx": int(measured["n_ctx"]), "gpus": gpus, "cards": measured["cards"],
-               "hw": [{"index": g, "total_mb": sizes.get(g)} for g in gpus],
-               "used_mb": [peak.get(g) for g in gpus]}
-
-
 def history(kind: str = "load") -> Iterator[dict]:
-    """Every known load: this log, then the capacity records, the same load counted once."""
+    """Every recorded row of a kind, the same load counted once."""
     seen = set()
-    for row in [*rows(kind), *(capacity_loads() if kind == "load" else [])]:
-        key = (row.get("source"), row.get("ubatch"), row.get("n_ctx"), tuple(row.get("gpus") or []))
+    for row in rows(kind):
+        key = (row.get("source"), row.get("ubatch"), row.get("n_ctx") or row.get("planned_ctx"),
+               tuple(row.get("gpus") or []), row.get("at") if kind != "load" else None)
         if key in seen:
             continue
         seen.add(key)

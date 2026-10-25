@@ -1,8 +1,9 @@
 """What the dashboard shows beyond the rig manager's own status (docs/DASHBOARD.md).
 
-- models: the benchmarking repo's registry and roles, the best result per model and key test from
-  `results/model_benchmark_records.jsonl` (limit-50 runs over smoke runs), the latest runtime
-  characterization per model;
+- models: the summary in the gateway's `model_catalog.json`, which the importer (tools/generate_profiles.py)
+  builds from the benchmarking registry and roles, the best result per model and key test from
+  `results/model_benchmark_records.jsonl` (limit-50 runs over smoke runs), and the latest runtime
+  characterization per model (`build_models_summary`); the dashboard itself never reads benchmarking;
 - benchmarks: lane runs (`logs/benchmarks/worker_lanes_*`) and campaign runs (`campaigns/history`) on the
   shared drive;
 - orchestration: llm_orchestration's own dashboard package (`scripts/dashboard`: `summarize`, `Controls`),
@@ -113,8 +114,16 @@ def _runtime(results: Path, model: str) -> dict | None:
             "file": files[-1].name, "at": files[-1].stem.rsplit("_", 1)[-1]}
 
 
-def models_summary(bench_root: Path | None = None) -> dict:
-    root = bench_root or registry_models.benchmarking_root()
+def models_summary() -> dict:
+    """The model summary the importer copied into model_catalog.json (tools/generate_profiles.py)."""
+    try:
+        return registry_models.catalog().get("summary") or {"models": [], "roles": {}, "key_tests": []}
+    except (OSError, ValueError):
+        return {"models": [], "roles": {}, "key_tests": [], "error": "model_catalog.json missing: run the importer"}
+
+
+def build_models_summary(root: Path) -> dict:
+    """Import time only (tools/generate_profiles.py): the summary from a benchmarking checkout."""
     registry = (_json(root / "model_registry.json") or {}).get("models", {})
     roles = (_json(root / "model_roles.json") or {}).get("roles", {})
     best = _best_records(root / "results" / "model_benchmark_records.jsonl")

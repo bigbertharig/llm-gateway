@@ -6,20 +6,38 @@ into rig mode-selector calls and then proxies bytes.
 ## Ownership
 
 The gateway owns:
-- the offer: which models are published remotely and on which GPU shape (`OFFER` in
-  `tools/generate_profiles.py`), resolved against the model registry into `remote_profiles.json`
+- the offer: which models are published remotely, under which registry profile (`OFFER` in
+  `tools/generate_profiles.py`), written to `remote_profiles.json`. It names no cards: the manager places each
+  published profile with its fit
+- its copy of the model library, `model_catalog.json` (how each model loads, the roles, the dashboard's model
+  summary), which the manager and dashboard read
+- its history and lessons, `lessons/` (every load the manager placed; see `lessons/README.md`)
 - the OpenAI-compatible endpoint and model list (from `remote_profiles.json`)
 - mapping `gpu-rig/<id>` to a profile, rejecting anything unpublished
-- turning a request for an unloaded profile into one `rig start remote <id>` (single-flight)
+- turning a request for an unloaded profile into one load through the manager (single-flight)
 - translating rig exit codes into HTTP errors
 
-The model registry (benchmarking repo `model_registry.json`) owns how each model loads (GGUF,
-context, batch, extra args per named profile). Benchmarking lessons land there, and re-running
-the generator carries them into the offer.
+## Boundaries with the other repos
+
+Each of the four repos (llm-gateway, llm_orchestration, benchmarking, llm-harness) runs on its own. This one
+never reads another repo at runtime:
+
+- **From benchmarking:** the model registry (benchmarking repo `model_registry.json`) is where benchmarking
+  keeps what it learns about how each model loads. `tools/generate_profiles.py` is the gateway's importer: it
+  reads the library and writes `model_catalog.json` and `remote_profiles.json`, both committed here. Re-run it
+  to take in new lessons; without a benchmarking checkout the gateway keeps running on its last import.
+- **To benchmarking:** `lessons/` is the gateway's lessons file. Benchmarking reads it when it wants to learn from
+  real loads; the gateway never writes into benchmarking.
+- **With the rig:** only through `rig` commands over ssh (the rig contract below) and `rig observe`.
+
+Still crossing a line (to fix): the dashboard imports llm_orchestration's `scripts/dashboard` package and reads
+its config and the benchmark campaign logs on the shared drive (`dashboard/sources.py`), and `rig.py`'s own
+published-profile path (`rig start remote <id>` without a spec) reads `remote_profiles.json` from this repo; the
+manager no longer uses that path.
 
 The rig mode selector (`llm_orchestration/shared/scripts/rig/rig.py`) owns:
 - modes (idle / orchestration / bench / remote) and the busy/--force rules
-- GPU placement from each profile's `gpus_needed`, port assignment, container lifecycle
+- port assignment, container lifecycle; the cards come from the manager's plan
 - state (`/mnt/shared/brain/rig_mode.json`)
 
 ## Rig contract

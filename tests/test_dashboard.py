@@ -58,8 +58,17 @@ def _bench(tmp_path):
     return root
 
 
+def test_models_summary_is_read_from_the_catalog_not_benchmarking(tmp_path, monkeypatch):
+    path = tmp_path / "model_catalog.json"
+    path.write_text(json.dumps({"models": {}, "summary": {"models": [{"model": "m:9b"}], "roles": {}, "key_tests": []}}))
+    monkeypatch.setenv("MODEL_CATALOG", str(path))
+    assert sources.models_summary()["models"] == [{"model": "m:9b"}]
+    monkeypatch.setenv("MODEL_CATALOG", str(tmp_path / "missing.json"))
+    assert "error" in sources.models_summary()
+
+
 def test_models_summary_prefers_limit50_runs_and_reads_roles_and_speed(tmp_path):
-    out = sources.models_summary(_bench(tmp_path))
+    out = sources.build_models_summary(_bench(tmp_path))
     first = out["models"][0]
     assert first["model"] == "m:9b" and first["roles"] == ["single_1060"] and first["profiles"] == ["default", "thinking"]
     assert first["scores"]["bbh"]["score"] == 0.85 and first["scores"]["bbh"]["run_class"] == "validated"

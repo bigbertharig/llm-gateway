@@ -74,12 +74,13 @@ def test_bad_offers_are_reported_and_left_out():
     doc, problems = build([
         {"id": "u", "model": "nope:1b", "gpus_needed": [GPU]},
         {"id": "m", "model": "small:7b", "profile": "missing", "gpus_needed": [GPU]},
-        {"id": "g", "model": "small:7b"},
+        {"id": "g", "model": "small:7b"},  # no cards: the manager places it
         {"id": "ok", "model": "small:7b", "gpus_needed": [GPU]},
         {"id": "ok", "model": "small:7b", "gpus_needed": [GPU]},
     ])
-    assert [p["id"] for p in doc["remote_profiles"]] == ["ok"]
-    assert len(problems) == 4, problems
+    assert [p["id"] for p in doc["remote_profiles"]] == ["g", "ok"]
+    assert "gpus_needed" not in doc["remote_profiles"][0]
+    assert len(problems) == 3, problems
 
 
 def test_gateway_reads_the_generated_file(tmp_path):
@@ -92,10 +93,8 @@ def test_gateway_reads_the_generated_file(tmp_path):
 def test_the_offer_in_the_script_is_well_formed():
     ids = [o["id"] for o in gen.OFFER]
     assert len(ids) == len(set(ids))
-    for o in gen.OFFER:
-        assert o["gpus_needed"], o["id"]
-        if o.get("tensor_split"):
-            assert len(o["tensor_split"].split(",")) == len(o["gpus_needed"]), o["id"]
+    for o in gen.OFFER:  # the offer names no cards: the fit places each published profile
+        assert "gpus_needed" not in o and "tensor_split" not in o, o["id"]
 
 
 def test_committed_file_matches_the_offer_ids():
@@ -109,12 +108,34 @@ def test_gpu_range_must_be_ordered():
     assert any("max_vram_mb below min_vram_mb" in p for p in problems), problems
 
 
-def test_1060_slot_excludes_the_3090():
-    assert gen.ONE_1060["max_vram_mb"] < gen.ONE_3090["min_vram_mb"]
-
-
 def test_use_is_carried_and_checked():
     doc, problems = build([{"id": "w", "model": "small:7b", "gpus_needed": [GPU], "use": "worker"}])
     assert problems == [] and doc["remote_profiles"][0]["use"] == "worker"
     _, problems = build([{"id": "x", "model": "small:7b", "gpus_needed": [GPU], "use": "party"}])
     assert any("use must be one of" in p for p in problems), problems
+
+
+def test_the_catalog_copies_every_model_with_resolved_profiles_and_the_roles():
+    reg = {**REGISTRY, "models": {"small:7b": {"status": "active", "gguf": "small/small.gguf", "aliases": ["s7"],
+                                               "profiles": {"default": {}, "interactive": {}}}}}
+    roles = {"updated": "2026-10-15", "roles": {"brain": {"model": "small:7b", "lane": "3090"}}}
+    cat = gen.build_catalog(LIBRARY, reg, roles, None)
+    m = cat["models"]["small:7b"]
+    assert m["gguf_path"] == "/archive/small/small.gguf" and m["aliases"] == ["s7"]
+    assert sorted(m["profiles"]) == ["default", "interactive"]
+    assert m["profiles"]["default"]["runtime"]["ctx_size"] == 16384 and "gguf_path" not in m["profiles"]["default"]
+    assert cat["image"] == "llama-runtime:test"
+    assert cat["roles"]["brain"]["model"] == "small:7b" and cat["roles_updated"] == "2026-10-15"
+
+
+def test_the_manager_resolves_from_the_catalog(tmp_path, monkeypatch):
+    from llm_gateway.manager import models
+    reg = {**REGISTRY, "models": {"small:7b": {"status": "active", "gguf": "small/small.gguf", "aliases": ["s7"],
+                                               "profiles": {"default": {}, "interactive": {}}}}}
+    path = tmp_path / "model_catalog.json"
+    path.write_text(gen.render(gen.build_catalog(LIBRARY, reg, None, None)))
+    monkeypatch.setenv("MODEL_CATALOG", str(path))
+    r = models.resolve("s7", "chat")  # by alias, the chat use's profile
+    assert r["model"] == "small:7b" and r["profile"] == "interactive"
+    assert r["gguf_path"] == "/archive/small/small.gguf" and r["image"] == "llama-runtime:test"
+    assert r["runtime"]["batch_size"] == 64

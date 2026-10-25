@@ -698,10 +698,22 @@ class Manager:
     async def load_profile(self, profile_id: str, profile: dict, claim: str | None = None) -> None:
         """Lease cards for a profile, queue the load in the rig's plan, and wait for it to serve.
 
+        A published profile names no cards: it is planned like any model load (the fit picks the cards from
+        what is free and what the history says, and the largest context that fits, at least the profile's
+        ctx_size), under the profile's own id so the gateway's routing does not change. A profile with
+        `gpus_needed` keeps that fixed shape (an operator pin).
+
         The rig works through its plan by itself; past the start timeout the caller gets a 504 and the
         load keeps going on the rig, with its lease.
         """
         use = profile.get("use", "chat")
+        if not profile.get("gpus_needed"):
+            fit_kw = {"profile": profile.get("registry_profile"), "ctx": None,
+                      "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT)}
+            plan_ = await self.fit_model(profile["model"], claim=claim, use=use, requester=profile_id, **fit_kw)
+            await self._load_planned(profile["model"], plan_, extra_args=None, claim=claim, use=use,
+                                     owner=profile_id, profile_id=profile_id, **fit_kw)
+            return
         guard = (await self.observe(fresh=True)).get("guard") or {}
         cache_mib = memory.cache_ram_mib(use, guard.get("mem_available_mb"))
         lease = await self.acquire(controller="interactive", owner=OWNER, run_id=f"profile-{profile_id}",
@@ -973,11 +985,11 @@ class Manager:
                     pass
 
     async def _load_planned(self, model: str, plan_: dict, *, extra_args: list[str] | None, claim: str | None,
-                            use: str, owner: str = "", **fit_kw) -> dict:
+                            use: str, owner: str = "", profile_id: str | None = None, **fit_kw) -> dict:
         r = models.resolve(model, use, fit_kw.get("profile"))
         rt = r.get("runtime", {})
         gpus = plan_["gpus"]
-        pid = models.profile_id(r["model"], gpus)
+        pid = profile_id or models.profile_id(r["model"], gpus)  # a published profile keeps its own id
         batch = int(fit_kw.get("batch_size") or rt.get("batch_size", 64))
         spec = {"model": r["model"], "gguf_path": r["gguf_path"], "ctx_size": plan_["ctx"],
                 "batch_size": batch, "parallel": int(rt.get("parallel", 1)),

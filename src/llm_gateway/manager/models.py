@@ -1,24 +1,21 @@
-"""Registry models for "load model X on N cards" (MANAGER.md, "Model loads").
+"""Models for "load model X on N cards" (MANAGER.md, "Model loads").
 
-The benchmarking repo's model registry is the one source of truth for how a model loads; this module
-reads it through the registry's own resolver (`scripts/active/model_library.py`) and turns one model
-plus a use into a load spec the rig can run without a published remote profile.
+How each model loads (GGUF, context, batch, extra args per named profile) comes from the gateway's own
+`model_catalog.json`, which `tools/generate_profiles.py` imports from the benchmarking model library. The
+gateway never reads benchmarking at runtime: re-run the importer to take in what benchmarking has learned.
+This module turns one model plus a use into a load spec the rig can run without a published remote profile.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import json
 import os
 import re
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
-# Pi: the drive is local; rig: its own checkout.
-BENCHMARKING_ROOTS = (
-    Path("/media/bryan/shared/plans/shoulders/benchmarking"),
-    Path.home() / "llm_orchestration/shared/plans/shoulders/benchmarking",
-)
+REPO = Path(__file__).resolve().parents[3]
+CATALOG_PATH = Path(os.getenv("MODEL_CATALOG", REPO / "model_catalog.json"))
 # Catalog GGUF paths are written as the rig sees the drive; on the Pi it is mounted elsewhere.
 CATALOG_SHARED = "/mnt/shared"
 LOCAL_SHARED_CANDIDATES = ("/media/bryan/shared", "/mnt/shared")
@@ -27,26 +24,28 @@ PROFILE_BY_USE = {"benchmark": "default", "chat": "interactive", "worker": "orch
 # Lease controller type per use (the rig's lease record groups leases by it).
 CONTROLLER_BY_USE = {"benchmark": "benchmarks", "chat": "interactive", "worker": "plans"}
 
-_library: tuple[Path, ModuleType] | None = None
+_cache: dict[str, Any] = {"key": None, "doc": None}
 
 
-def benchmarking_root() -> Path:
-    env = os.getenv("BENCHMARKING_ROOT")
-    for root in [Path(env)] if env else BENCHMARKING_ROOTS:
-        if (root / "model_registry.json").is_file():
-            return root
-    raise FileNotFoundError("model registry not found; set BENCHMARKING_ROOT")
+def catalog() -> dict[str, Any]:
+    """The imported catalog, re-read when the file changes. FileNotFoundError until the importer has run."""
+    path = Path(os.getenv("MODEL_CATALOG") or CATALOG_PATH)
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if _cache["key"] != key:
+        _cache.update(key=key, doc=json.loads(path.read_text(encoding="utf-8")))
+    return _cache["doc"]
 
 
-def library() -> tuple[Path, ModuleType]:
-    global _library
-    root = benchmarking_root()
-    if _library is None or _library[0] != root:
-        spec = importlib.util.spec_from_file_location("rig_model_library", root / "scripts/active/model_library.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _library = (root, mod)
-    return _library
+def find_model(model: str) -> tuple[str, dict[str, Any]]:
+    """Catalog entry for a model id or one of its aliases. KeyError for an unknown model."""
+    models = catalog()["models"]
+    if model in models:
+        return model, models[model]
+    for mid, entry in models.items():
+        if model in entry.get("aliases", []):
+            return mid, entry
+    raise KeyError(f"model {model} is not in {CATALOG_PATH.name}; re-run tools/generate_profiles.py if it is new")
 
 
 def local_path(catalog_path: str) -> str:
@@ -66,15 +65,13 @@ def profile_id(model: str, gpus: list[int]) -> str:
 
 
 def resolve(model: str, use: str, profile: str | None = None) -> dict[str, Any]:
-    """Merged registry settings for the model and use: {model, profile, status, gguf_path, runtime,
-    extra_args, image}. KeyError for an unknown model or profile."""
-    root, lib = library()
-    registry = lib.load_registry(root / "model_registry.json")
-    _, entry = lib.find_model(registry, model)
+    """Merged settings for the model and use: {model, profile, status, gguf_path, runtime, extra_args, image}.
+    KeyError for an unknown model or profile."""
+    mid, entry = find_model(model)
     name = profile or PROFILE_BY_USE.get(use, "default")
     if name not in entry["profiles"]:
         if profile:
             raise KeyError(f"model {model} has no profile {profile}; profiles: {sorted(entry['profiles'])}")
         name = "default"
-    r = lib.resolve(model, name, registry)
-    return {**r, "image": lib.runtime_image(registry)}
+    return {**entry["profiles"][name], "model": mid, "profile": name, "status": entry["status"],
+            "gguf_path": entry["gguf_path"], "image": catalog()["image"]}

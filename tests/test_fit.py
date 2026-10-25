@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import struct
-import textwrap
 
 import pytest
 
@@ -157,35 +156,20 @@ def test_calibration_lets_more_context_fit(tmp_path):
 
 # ------------------------------------------------------------------ end to end (fake rig)
 
-FAKE_LIBRARY = textwrap.dedent("""\
-    import copy, json
-    def load_registry(path): return json.load(open(path))
-    def find_model(registry, mid):
-        if mid not in registry["models"]: raise KeyError(f"unknown model {mid}")
-        return mid, registry["models"][mid]
-    def runtime_image(registry): return "llama-runtime:test"
-    def resolve(mid, profile="default", registry=None):
-        e = registry["models"][mid]; merged = copy.deepcopy(e["profiles"]["default"])
-        merged.setdefault("extra_args", [])
-        return {"model": mid, "profile": profile, "status": e["status"], "gguf_path": e["gguf"], **merged}
-""")
-
-
 @pytest.fixture
 def registry(tmp_path, monkeypatch):
-    root = tmp_path / "bench"
-    (root / "scripts" / "active").mkdir(parents=True)
-    (root / "scripts" / "active" / "model_library.py").write_text(FAKE_LIBRARY)
+    """The gateway's own model catalog (what tools/generate_profiles.py imports), with three synthetic GGUFs."""
     small = dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, name="small.gguf")
     big = dense(tmp_path, n_layer=40, layer_mb=400, name="big.gguf")
     prof = {"runtime": {"batch_size": 64, "parallel": 1}, "extra_args": ["--reasoning", "off"]}
     mid = dense(tmp_path, n_layer=20, layer_mb=400, output_mb=400, name="mid.gguf")   # needs two 1060s
-    (root / "model_registry.json").write_text(json.dumps({"models": {
-        "mid:14b": {"status": "candidate", "gguf": mid, "profiles": {"default": prof}},
-        "small:9b": {"status": "candidate", "gguf": small, "profiles": {"default": prof}},
-        "big:30b": {"status": "active", "gguf": big, "profiles": {"default": prof}}}}))
-    monkeypatch.setenv("BENCHMARKING_ROOT", str(root))
-    monkeypatch.setattr(models, "_library", None)
+    entry = lambda status, gguf: {"status": status, "aliases": [], "gguf_path": gguf,  # noqa: E731
+                                  "profiles": {"default": json.loads(json.dumps(prof))}}
+    path = tmp_path / "model_catalog.json"
+    path.write_text(json.dumps({"image": "llama-runtime:test", "roles": {}, "models": {
+        "mid:14b": entry("candidate", mid), "small:9b": entry("candidate", small), "big:30b": entry("active", big)}}))
+    monkeypatch.setenv("MODEL_CATALOG", str(path))
+    return path
 
 
 def test_fit_endpoint_answers_without_loading(menv, registry):  # noqa: F811
@@ -200,11 +184,10 @@ def test_fit_endpoint_answers_without_loading(menv, registry):  # noqa: F811
     assert r.status_code == 200 and r.json()["gpus"] == [0] and r.json()["chosen_by"].startswith("harness")
 
 
-def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, registry, tmp_path):  # noqa: F811
-    path = tmp_path / "bench" / "model_registry.json"
-    reg = json.loads(path.read_text())
-    reg["models"]["small:9b"]["profiles"]["default"]["runtime"]["ctx_size"] = 8192
-    path.write_text(json.dumps(reg))
+def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, registry):  # noqa: F811
+    cat = json.loads(registry.read_text())
+    cat["models"]["small:9b"]["profiles"]["default"]["runtime"]["ctx_size"] = 8192
+    registry.write_text(json.dumps(cat))
     c = menv["client"]
     bench = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark"})
     assert bench.status_code == 200, bench.text
@@ -214,6 +197,20 @@ def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, reg
     assert chat.json()["ctx"] > 8192
     named = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark", "ctx": 16384})
     assert named.json()["ctx"] == 16384  # a request that names a context keeps it
+
+
+def test_a_published_profile_without_cards_is_placed_by_the_fit_under_its_own_id(menv, registry, tmp_path):  # noqa: F811
+    path = tmp_path / "remote_profiles.json"
+    doc = json.loads(path.read_text())
+    doc["remote_profiles"].append({"id": "chat-small", "model": "small:9b", "registry_profile": "default",
+                                   "ctx_size": 8192, "use": "chat"})
+    path.write_text(json.dumps(doc))
+    r = menv["client"].post("/v1/manager/profiles/chat-small/load")
+    assert r.status_code == 200, r.text
+    item = menv["rig"]()["plan_items"][-1]
+    assert item["args"]["profile"] == "chat-small" and item["args"]["spec"]["ctx_size"] >= 8192
+    (lease,) = menv["leases"]()
+    assert lease["controller"] == "interactive" and lease["gpu_ids"] == item["args"]["gpus"]
 
 
 def test_load_model_leases_queues_the_spec_and_reports_ready(menv, registry):  # noqa: F811
