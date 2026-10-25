@@ -158,8 +158,8 @@ runtime. `tools/generate_profiles.py` imports the benchmarking model library int
 (every model, its resolved profiles, the roles, the runtime image, the dashboard's model summary) and
 `remote_profiles.json` (the offer); `manager/models.py` resolves from the catalog. Re-run the importer to take
 in what benchmarking has learned. A published profile names no cards: `load_profile` plans it like any model
-load (the largest context that fits, at least the profile's `ctx_size`) under the profile's own id;
-`gpus_needed` on a profile is an optional operator pin.
+load (the largest context that fits, at least the profile's `ctx_size`) under the profile's own id. When the
+free cards cannot hold it but an idle rig could, the answer is 503 (busy, retry), not 422 (won't fit).
 
 **Learning from loads (2026-10-25).** The manager keeps its own history in this repo,
 `lessons/load_observations.jsonl` (`manager/observations.py`; `OBSERVATIONS_PATH` overrides), committed, so

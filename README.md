@@ -55,19 +55,24 @@ tools/rigctl.py kill --gpus 1,3                         # operator override: sto
 
 ## Models
 
-The model registry (benchmarking repo, `model_registry.json`) is the one source of truth for how a
-model loads. This repo owns only the offer: `OFFER` in `tools/generate_profiles.py` names each
-published profile, its model, the registry profile to use (usually `interactive`), its GPU shape
-(`gpus_needed`, optional `tensor_split`) and a description. The script resolves just those models
-through the registry and writes `remote_profiles.json` (generated, committed, do not edit).
+The gateway runs from its own files and never reads the benchmarking repo at runtime (ARCHITECTURE.md,
+"Boundaries"). `tools/generate_profiles.py` is its importer: it reads the benchmarking model library
+(where benchmarking keeps what it learned about how each model loads) and writes, both committed here:
+
+- `model_catalog.json`: every model with its resolved profiles, the roles, the runtime image and the
+  dashboard's model summary; the manager plans and loads from it.
+- `remote_profiles.json`: the offer. `OFFER` in the script names each published profile, its model, the
+  registry profile to use (usually `interactive`) and a description. It names no cards: the manager's fit
+  places each profile and plans the largest context that fits, at least the profile's `ctx_size`.
 
 ```bash
-tools/generate_profiles.py            # after an OFFER edit or a registry change (run on the Pi)
-tools/generate_profiles.py --check    # exit 1 if an offer is invalid or the file is stale
+tools/generate_profiles.py            # after an OFFER edit or a library change (run on the Pi)
+tools/generate_profiles.py --check    # exit 1 if an offer is invalid or either file is stale
 ```
 
 The gateway publishes each profile as `gpu-rig/<id>` with its `context_length`, and re-reads the
-file when it changes, so no restart is needed. Offers may use `active` or `candidate` registry models.
+files when they change, so no restart is needed. Offers may use `active` or `candidate` registry models.
+What the manager learns from loads goes to `lessons/` (see `lessons/README.md`).
 
 ## API
 

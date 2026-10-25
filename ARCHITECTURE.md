@@ -30,10 +30,12 @@ never reads another repo at runtime:
   real loads; the gateway never writes into benchmarking.
 - **With the rig:** only through `rig` commands over ssh (the rig contract below) and `rig observe`.
 
-Still crossing a line (to fix): the dashboard imports llm_orchestration's `scripts/dashboard` package and reads
-its config and the benchmark campaign logs on the shared drive (`dashboard/sources.py`), and `rig.py`'s own
-published-profile path (`rig start remote <id>` without a spec) reads `remote_profiles.json` from this repo; the
-manager no longer uses that path.
+Still crossing a line (to fix, by deleting): the dashboard imports llm_orchestration's `scripts/dashboard`
+package and reads its config and the benchmark campaign logs on the shared drive (`dashboard/sources.py`);
+`rig.py`'s own published-profile path (`rig start remote <id>` without a spec, reading a deployed copy of
+`remote_profiles.json`) and this gateway's no-manager mode (`RIG_MANAGER` off, which uses that path) are no
+longer used by anything that runs: the manager sends every load as a full spec. Both go with the
+llm_orchestration untangling (it touches `hw_plan.py`, `manage_model_hotset.py`, `gpu_worker_watchdog.py`).
 
 The rig mode selector (`llm_orchestration/shared/scripts/rig/rig.py`) owns:
 - modes (idle / orchestration / bench / remote) and the busy/--force rules
