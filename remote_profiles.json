@@ -10,15 +10,7 @@
       "description": "Strong general/coding model for interactive agents (Roo).",
       "default": true,
       "use": "chat",
-      "gguf_path": "/mnt/shared/models/qwen3.6-27b/Qwen3.6-27B-Q4_K_M.gguf",
-      "ctx_size": 65536,
-      "batch_size": 512,
-      "parallel": 1,
-      "extra_args": [
-        "--reasoning",
-        "off"
-      ],
-      "image": "llama-runtime:b11669"
+      "ctx_size": 65536
     },
     {
       "id": "coder-7b",
@@ -28,12 +20,7 @@
       "description": "Fast small coder for scoped/bulk tasks. No native tool calls.",
       "default": true,
       "use": "chat",
-      "gguf_path": "/mnt/shared/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
-      "ctx_size": 16384,
-      "batch_size": 64,
-      "parallel": 1,
-      "extra_args": [],
-      "image": "llama-runtime:b11669"
+      "ctx_size": 16384
     },
     {
       "id": "coder-30b",
@@ -43,12 +30,7 @@
       "description": "Coding MoE (30B, 3B active). Roo candidate.",
       "default": false,
       "use": "chat",
-      "gguf_path": "/mnt/shared/models/qwen3-coder-30b-a3b/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-      "ctx_size": 32768,
-      "batch_size": 64,
-      "parallel": 1,
-      "extra_args": [],
-      "image": "llama-runtime:b11669"
+      "ctx_size": 32768
     },
     {
       "id": "devstral-24b",
@@ -58,12 +40,7 @@
       "description": "Agentic coding model (built for tool-using agents). Roo candidate.",
       "default": false,
       "use": "chat",
-      "gguf_path": "/mnt/shared/models/devstral-small-24b/Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
-      "ctx_size": 32768,
-      "batch_size": 64,
-      "parallel": 1,
-      "extra_args": [],
-      "image": "llama-runtime:b11669"
+      "ctx_size": 32768
     },
     {
       "id": "gpt-oss-20b",
@@ -73,14 +50,7 @@
       "description": "MoE (21B, 3.6B active), strong tool calling, fast. Roo candidate.",
       "default": false,
       "use": "chat",
-      "gguf_path": "/mnt/shared/models/gpt-oss-20b/gpt-oss-20b-mxfp4.gguf",
-      "ctx_size": 65536,
-      "batch_size": 64,
-      "parallel": 1,
-      "extra_args": [
-        "--jinja"
-      ],
-      "image": "llama-runtime:b11669"
+      "ctx_size": 65536
     },
     {
       "id": "nex-split",
@@ -90,17 +60,7 @@
       "description": "Nex N2.5 mini (35B MoE, 3B active).",
       "default": false,
       "use": "chat",
-      "gguf_path": "/mnt/shared/models/nex-n2.5-mini/nex-agi_Nex-N2.5-mini-Q4_K_M.gguf",
-      "ctx_size": 65536,
-      "batch_size": 128,
-      "parallel": 1,
-      "extra_args": [
-        "--chat-template-kwargs",
-        "{\"reasoning_effort\":\"none\"}",
-        "-fit",
-        "off"
-      ],
-      "image": "llama-runtime:b11669"
+      "ctx_size": 65536
     }
   ]
 }

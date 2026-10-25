@@ -696,52 +696,29 @@ class Manager:
     # ------------------------------------------------------------------ interactive profiles
 
     async def load_profile(self, profile_id: str, profile: dict, claim: str | None = None) -> None:
-        """Lease cards for a profile, queue the load in the rig's plan, and wait for it to serve.
-
-        A published profile names no cards: it is planned like any model load (the fit picks the cards from
-        what is free and what the history says, and the largest context that fits, at least the profile's
-        ctx_size), under the profile's own id so the gateway's routing does not change. A profile with
-        `gpus_needed` keeps that fixed shape (an operator pin).
+        """Load a published profile and wait for it to serve. A profile names no cards: it is planned like any
+        model load (the fit picks the cards from what is free and what the history says, and the largest
+        context that fits, at least the profile's ctx_size), under the profile's own id so the gateway's
+        routing does not change.
 
         The rig works through its plan by itself; past the start timeout the caller gets a 504 and the
         load keeps going on the rig, with its lease.
         """
         use = profile.get("use", "chat")
-        if not profile.get("gpus_needed"):
-            fit_kw = {"profile": profile.get("registry_profile"), "ctx": None,
-                      "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT)}
-            plan_ = await self.fit_model(profile["model"], claim=claim, use=use, requester=profile_id, **fit_kw)
-            await self._load_planned(profile["model"], plan_, extra_args=None, claim=claim, use=use,
-                                     owner=profile_id, profile_id=profile_id, **fit_kw)
-            return
-        guard = (await self.observe(fresh=True)).get("guard") or {}
-        cache_mib = memory.cache_ram_mib(use, guard.get("mem_available_mb"))
-        lease = await self.acquire(controller="interactive", owner=OWNER, run_id=f"profile-{profile_id}",
-                                   gpus_needed=profile["gpus_needed"], claim=claim, ttl_s=INTERACTIVE_TTL_S,
-                                   model=profile.get("model", ""),
-                                   purpose=f"gateway profile {profile_id} ({use}, cache {cache_mib} MiB)")
-        lease_id = lease["lease_id"]
-        self._in_flight.add(lease_id)
+        fit_kw = {"profile": profile.get("registry_profile"), "ctx": None,
+                  "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT)}
         try:
-            try:
-                item = await self.record.plan_add("load", {
-                    "profile": profile_id, "gpus": lease["gpu_ids"], "port": lease["metadata"]["port"],
-                    "lease": lease_id, "cache_ram": cache_mib})
-            except (ManagerError, RigUnavailable):
-                await self.release(lease_id, OWNER, force=True)
-                raise
-            log.info("load %s queued in the rig plan as %s (use %s, cache %s MiB)", profile_id, item["id"], use,
-                     cache_mib)
-            done = await self._wait_item(item["id"], profile_id, until_ready=True)
-            if done.get("state") in ("failed", "cancelled"):
-                obs = await self.observe(fresh=True)
-                if profile_id in obs.get("profiles", {}):
-                    await self.rig.stop_profile(profile_id)
-                await self.release(lease_id, OWNER, force=True)
-                raise RigUnavailable(502, f"rig did not load {profile_id} ({done['state']}): "
-                                          f"{str(done.get('result') or '')[-1500:]}")
-        finally:
-            self._in_flight.discard(lease_id)
+            plan_ = await self.fit_model(profile["model"], claim=claim, use=use, requester=profile_id, **fit_kw)
+        except ManagerError as exc:
+            # Busy cards are "not now" (503, the client retries), not "won't fit": it fits on an idle rig.
+            r, shape, kw = await self._shape(profile["model"], use, fit_kw["profile"], None, fit_kw["ctx_min"],
+                                             fit.MARGIN_MB_DEFAULT)
+            idle = [{**g, "used_mb": 0} for g in (self._obs or {}).get("gpus", [])]
+            if exc.status == 422 and fit.choose(shape, idle, **kw) is not None:
+                raise ManagerError(503, f"no capacity for {profile_id} now: {exc}") from exc
+            raise
+        await self._load_planned(profile["model"], plan_, extra_args=None, claim=claim, use=use,
+                                 owner=profile_id, profile_id=profile_id, **fit_kw)
 
     async def unload_profile(self, profile_id: str) -> dict:
         await self._require_control()

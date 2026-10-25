@@ -37,54 +37,39 @@ def resolve(model_id, profile, registry):
 
 
 LIBRARY = SimpleNamespace(resolve=resolve, runtime_image=lambda registry: registry["runtime_image"])
-GPU = {"min_vram_mb": 5800}
-
-
 def build(offer):
     return gen.build(offer, LIBRARY, REGISTRY)
 
 
 def test_only_offered_models_are_resolved_with_registry_settings():
-    doc, problems = build([{"id": "s", "model": "small:7b", "profile": "interactive", "gpus_needed": [GPU]}])
+    doc, problems = build([{"id": "s", "model": "small:7b", "profile": "interactive"}])
     assert problems == []
     (p,) = doc["remote_profiles"]
     assert p["id"] == "s" and p["model"] == "small:7b" and p["registry_profile"] == "interactive"
-    assert p["ctx_size"] == 16384 and p["gguf_path"] == "/archive/small/small.gguf"
-    assert p["extra_args"] == ["--jinja"] and p["image"] == "llama-runtime:test"
-    assert doc["registry_updated"] == "2026-10-17"
+    assert p["ctx_size"] == 16384 and doc["registry_updated"] == "2026-10-17"
+    assert not {"gpus_needed", "tensor_split", "gguf_path", "image", "extra_args"} & set(p)  # the catalog has those
 
 
 def test_candidates_are_offerable_archived_are_not():
-    doc, problems = build([
-        {"id": "c", "model": "split:35b", "gpus_needed": [GPU]},
-        {"id": "a", "model": "old:8b", "gpus_needed": [GPU]},
-    ])
+    doc, problems = build([{"id": "c", "model": "split:35b"}, {"id": "a", "model": "old:8b"}])
     assert [p["id"] for p in doc["remote_profiles"]] == ["c"]
     assert any("a: old:8b is archived" in p for p in problems), problems
 
 
-def test_tensor_split_needs_one_weight_per_gpu():
-    _, problems = build([{"id": "x", "model": "split:35b", "gpus_needed": [GPU] * 5, "tensor_split": "1,1,1,1"}])
-    assert any("one weight per gpus_needed entry (5)" in p for p in problems), problems
-    doc, problems = build([{"id": "x", "model": "split:35b", "gpus_needed": [GPU] * 2, "tensor_split": "0.75,1"}])
-    assert problems == [] and doc["remote_profiles"][0]["tensor_split"] == "0.75,1"
-
-
 def test_bad_offers_are_reported_and_left_out():
     doc, problems = build([
-        {"id": "u", "model": "nope:1b", "gpus_needed": [GPU]},
-        {"id": "m", "model": "small:7b", "profile": "missing", "gpus_needed": [GPU]},
-        {"id": "g", "model": "small:7b"},  # no cards: the manager places it
-        {"id": "ok", "model": "small:7b", "gpus_needed": [GPU]},
-        {"id": "ok", "model": "small:7b", "gpus_needed": [GPU]},
+        {"id": "u", "model": "nope:1b"},
+        {"id": "m", "model": "small:7b", "profile": "missing"},
+        {"id": "g", "model": "small:7b", "gpus_needed": [{"min_vram_mb": 5800}]},  # the offer names no cards
+        {"id": "ok", "model": "small:7b"},
+        {"id": "ok", "model": "small:7b"},
     ])
-    assert [p["id"] for p in doc["remote_profiles"]] == ["g", "ok"]
-    assert "gpus_needed" not in doc["remote_profiles"][0]
-    assert len(problems) == 3, problems
+    assert [p["id"] for p in doc["remote_profiles"]] == ["ok"]
+    assert len(problems) == 4, problems
 
 
 def test_gateway_reads_the_generated_file(tmp_path):
-    doc, _ = build([{"id": "s", "model": "small:7b", "gpus_needed": [GPU]}])
+    doc, _ = build([{"id": "s", "model": "small:7b"}])
     path = tmp_path / "remote_profiles.json"
     path.write_text(gen.render(doc))
     assert Profiles(path).all()["s"]["ctx_size"] == 16384
@@ -102,16 +87,10 @@ def test_committed_file_matches_the_offer_ids():
     assert [p["id"] for p in committed["remote_profiles"]] == [o["id"] for o in gen.OFFER]
 
 
-def test_gpu_range_must_be_ordered():
-    bad = {"min_vram_mb": 8000, "max_vram_mb": 6000}
-    _, problems = build([{"id": "r", "model": "small:7b", "gpus_needed": [bad]}])
-    assert any("max_vram_mb below min_vram_mb" in p for p in problems), problems
-
-
 def test_use_is_carried_and_checked():
-    doc, problems = build([{"id": "w", "model": "small:7b", "gpus_needed": [GPU], "use": "worker"}])
+    doc, problems = build([{"id": "w", "model": "small:7b", "use": "worker"}])
     assert problems == [] and doc["remote_profiles"][0]["use"] == "worker"
-    _, problems = build([{"id": "x", "model": "small:7b", "gpus_needed": [GPU], "use": "party"}])
+    _, problems = build([{"id": "x", "model": "small:7b", "use": "party"}])
     assert any("use must be one of" in p for p in problems), problems
 
 

@@ -44,8 +44,7 @@ USES = ("chat", "worker", "benchmark")  # manager/memory.py USES
 # The offer: what the gateway publishes, under which registry profile. Model settings come from that profile,
 # never from this list, and so do card choice and context: the manager's fit places each published profile
 # on the cards it fits best and plans the largest context that fits, at least the profile's ctx_size.
-# gpus_needed ({"min_vram_mb", "max_vram_mb"} per card) is an optional pin, for an operator who wants a fixed
-# shape. use (chat | worker | benchmark, default chat) sizes the host prompt cache (manager/memory.py).
+# use (chat | worker | benchmark, default chat) sizes the host prompt cache (manager/memory.py).
 OFFER: list[dict[str, Any]] = [
     {"id": "chat-27b", "model": "qwen3.6:27b", "profile": "interactive", "default": True,
      "description": "Strong general/coding model for interactive agents (Roo)."},
@@ -102,17 +101,12 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             problems.append(f"{pid}: {exc.args[0]}")
             continue
         runtime = r.get("runtime", {})
-        gpus = item.get("gpus_needed") or []
-        # A split only means something with a pinned shape; without one the manager's fit computes it.
-        split = (item.get("tensor_split") or r.get("tensor_split")) if gpus else None
         if r["status"] not in OFFERABLE_STATUSES:
             problems.append(f"{pid}: {r['model']} is {r['status']}; offer only {sorted(OFFERABLE_STATUSES)} models")
-        if "ctx_size" not in runtime or "batch_size" not in runtime:
-            problems.append(f"{pid}: registry profile {r['profile']} lacks runtime ctx_size/batch_size")
-        if any(int(g.get("max_vram_mb", g["min_vram_mb"])) < int(g["min_vram_mb"]) for g in gpus):
-            problems.append(f"{pid}: a gpus_needed entry has max_vram_mb below min_vram_mb")
-        if split and len(str(split).split(",")) != len(gpus):
-            problems.append(f"{pid}: tensor_split {split} needs one weight per gpus_needed entry ({len(gpus)})")
+        if "ctx_size" not in runtime:
+            problems.append(f"{pid}: registry profile {r['profile']} lacks runtime ctx_size")
+        if "gpus_needed" in item or "tensor_split" in item:
+            problems.append(f"{pid}: the offer names no cards; the manager's fit places it")
         if item.get("use", "chat") not in USES:
             problems.append(f"{pid}: use must be one of {USES}")
         if len(problems) > before:
@@ -125,14 +119,7 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             "description": item.get("description", ""),
             "default": bool(item.get("default", False)),
             "use": item.get("use", "chat"),
-            **({"gpus_needed": gpus} if gpus else {}),
-            **({"tensor_split": str(split)} if split and gpus else {}),
-            "gguf_path": r["gguf_path"],
-            "ctx_size": runtime["ctx_size"],
-            "batch_size": runtime["batch_size"],
-            "parallel": runtime.get("parallel", 1),
-            "extra_args": r.get("extra_args", []),
-            "image": library.runtime_image(registry),
+            "ctx_size": runtime["ctx_size"],  # the least context the manager plans for it
         })
     doc = {"_comment": GENERATED_NOTE, "registry_updated": registry.get("updated"), "remote_profiles": profiles}
     return doc, problems

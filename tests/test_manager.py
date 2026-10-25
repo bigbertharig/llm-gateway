@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import gguf
 from llm_gateway.app import create_app
 from llm_gateway.manager import core
 from llm_gateway.manager.placement import availability, place, port_conflict, port_for
@@ -289,11 +290,18 @@ def menv(tmp_path, monkeypatch):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"gpus": GPUS, "containers": [], "profiles": {}, "jobs": [],
                                  "leases": [], "claims": []}))
+    # Published profiles name no cards: the manager's fit places them from the GGUF sizes in its catalog
+    # (small and worker fit one 1060; big needs the 3090).
+    gguf.write_catalog(tmp_path / "model_catalog.json", {
+        "s:7b": ("active", gguf.dense(tmp_path, n_layer=10, layer_mb=300, name="s.gguf")),
+        "b:20b": ("active", gguf.dense(tmp_path, n_layer=35, layer_mb=400, ctx_train=131072, name="b.gguf")),
+        "w:7b": ("active", gguf.dense(tmp_path, n_layer=10, layer_mb=300, name="w.gguf"))})
+    monkeypatch.setenv("MODEL_CATALOG", str(tmp_path / "model_catalog.json"))
     profiles = tmp_path / "remote_profiles.json"
     profiles.write_text(json.dumps({"remote_profiles": [
-        {"id": "small", "model": "s:7b", "ctx_size": 16384, "gpus_needed": [SMALL]},
-        {"id": "big", "model": "b:20b", "ctx_size": 65536, "gpus_needed": [BIG]},
-        {"id": "worker", "model": "w:7b", "ctx_size": 8192, "gpus_needed": [SMALL], "use": "worker"},
+        {"id": "small", "model": "s:7b", "registry_profile": "default", "ctx_size": 16384},
+        {"id": "big", "model": "b:20b", "registry_profile": "default", "ctx_size": 65536},
+        {"id": "worker", "model": "w:7b", "registry_profile": "default", "ctx_size": 8192, "use": "worker"},
     ]}))
     monkeypatch.setenv("FAKE_RIG_STATE", str(state))
     monkeypatch.setattr(core, "LOAD_POLL_S", 0.1)
@@ -347,8 +355,8 @@ def test_cards_busy_without_a_lease_are_skipped(menv):
 
 def test_claimed_cards_leave_the_pool(menv):
     c = menv["client"]
-    assert c.post("/v1/manager/claims", json={"name": "bench", "gpu_ids": [1, 2]}).status_code == 201
-    r = chat(c, "gpu-rig/small")
+    assert c.post("/v1/manager/claims", json={"name": "bench", "gpu_ids": [0, 1, 2]}).status_code == 201
+    r = chat(c, "gpu-rig/small")  # every card claimed: fits once they free, so 503, not "won't fit"
     assert r.status_code == 503 and "no capacity" in r.json()["error"]["message"]
     assert c.post("/v1/manager/profiles/small/load", json={"claim": "bench"}).json()["port"] == 11435
     assert c.post("/v1/manager/claims", json={"name": "x", "gpu_ids": [2]}).status_code == 409
@@ -424,7 +432,7 @@ def test_reconcile_renews_backed_and_releases_orphaned_leases(menv, monkeypatch)
     monkeypatch.setattr(core, "ORPHAN_GRACE_S", 0)
     out = c.post("/v1/manager/reconcile").json()
     assert out["released"] == [orphan["lease_id"]] and len(out["renewed"]) == 1
-    assert [l["run_id"] for l in menv["leases"]()] == ["profile-small"]
+    assert [l["run_id"] for l in menv["leases"]()] == ["model-small"]
 
 
 def test_cache_follows_the_use_and_the_rig_free_ram(menv):

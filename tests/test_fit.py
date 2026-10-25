@@ -3,52 +3,15 @@
 from __future__ import annotations
 
 import json
-import struct
 
 import pytest
 
+import gguf
+from gguf import card, dense
 from llm_gateway.manager import fit, models, observations
 from test_manager import menv  # noqa: F401  (fixture: the gateway with the manager and a fake rig)
 
-MIB = 1 << 20
-Q8_0 = 8  # ggml type id: 32 values in 34 bytes
-
-
-def _s(text: str) -> bytes:
-    raw = text.encode()
-    return struct.pack("<Q", len(raw)) + raw
-
-
-def write_gguf(path, meta: dict, tensors: dict[str, int]) -> str:
-    """A GGUF header with u32/str/bool-array metadata and q8_0 tensors of the given element counts."""
-    out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta))
-    for key, value in meta.items():
-        out += _s(key)
-        if isinstance(value, str):
-            out += struct.pack("<I", 8) + _s(value)
-        elif isinstance(value, list):
-            out += struct.pack("<IIQ", 9, 7, len(value)) + bytes(int(v) for v in value)
-        else:
-            out += struct.pack("<II", 4, int(value))
-    for name, n in tensors.items():
-        out += _s(name) + struct.pack("<IQ", 1, n) + struct.pack("<IQ", Q8_0, 0)
-    path.write_bytes(out)
-    return str(path)
-
-
-def dense(tmp_path, n_layer=10, layer_mb=100, output_mb=50, embd_mb=40, ctx_train=32768, name="m.gguf", **extra):
-    per = layer_mb * MIB // 34 * 32  # q8_0 elements for layer_mb MiB
-    tensors = {f"blk.{i}.attn_q.weight": per // 2 for i in range(n_layer)}
-    tensors |= {f"blk.{i}.ffn_up.weight": per - per // 2 for i in range(n_layer)}
-    tensors |= {"output.weight": output_mb * MIB // 34 * 32, "token_embd.weight": embd_mb * MIB // 34 * 32}
-    meta = {"general.architecture": "llama", "llama.block_count": n_layer, "llama.context_length": ctx_train,
-            "llama.attention.head_count": 8, "llama.attention.head_count_kv": 2,
-            "llama.attention.key_length": 128, "llama.attention.value_length": 128, **extra}
-    return write_gguf(tmp_path / name, meta, tensors)
-
-
-def card(i, mb=6144):
-    return {"index": i, "total_mb": mb, "used_mb": 0}
+MIB = gguf.MIB
 
 
 def test_shape_reads_weights_kv_and_puts_the_embedding_on_the_host(tmp_path):
@@ -161,13 +124,10 @@ def registry(tmp_path, monkeypatch):
     """The gateway's own model catalog (what tools/generate_profiles.py imports), with three synthetic GGUFs."""
     small = dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, name="small.gguf")
     big = dense(tmp_path, n_layer=40, layer_mb=400, name="big.gguf")
-    prof = {"runtime": {"batch_size": 64, "parallel": 1}, "extra_args": ["--reasoning", "off"]}
     mid = dense(tmp_path, n_layer=20, layer_mb=400, output_mb=400, name="mid.gguf")   # needs two 1060s
-    entry = lambda status, gguf: {"status": status, "aliases": [], "gguf_path": gguf,  # noqa: E731
-                                  "profiles": {"default": json.loads(json.dumps(prof))}}
     path = tmp_path / "model_catalog.json"
-    path.write_text(json.dumps({"image": "llama-runtime:test", "roles": {}, "models": {
-        "mid:14b": entry("candidate", mid), "small:9b": entry("candidate", small), "big:30b": entry("active", big)}}))
+    gguf.write_catalog(path, {"mid:14b": ("candidate", mid), "small:9b": ("candidate", small), "big:30b": ("active", big)},
+                       {"runtime": {"batch_size": 64, "parallel": 1}, "extra_args": ["--reasoning", "off"]})
     monkeypatch.setenv("MODEL_CATALOG", str(path))
     return path
 
