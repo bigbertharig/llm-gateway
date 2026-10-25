@@ -1010,6 +1010,11 @@ class Manager:
         finally:
             self._in_flight.discard(lease_id)
         loaded = obs.get("profiles", {}).get(pid, {})
+        try:  # what llama.cpp allocated: the next fit of this GGUF plans its compute buffer from it
+            fit.record_observation(os.path.basename(r["gguf_path"]), r["model"],
+                                   min(int(rt.get("batch_size", 64)), 512), gpus, loaded.get("fit"))
+        except OSError as exc:
+            log.warning("fit observation for %s not recorded: %s", pid, exc)
         return {"profile": pid, "model": r["model"], "state": "ready", "port": lease["metadata"]["port"],
                 "gpus": gpus, "lease": lease_id, "ctx": loaded.get("ctx_size", plan_["ctx"]),
                 "tensor_split": plan_.get("tensor_split"), "estimate": plan_, "measured": loaded.get("fit")}

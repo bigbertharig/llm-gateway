@@ -117,7 +117,7 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
    from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
-   state, the compute buffer (grows with context x micro-batch x heads) and a 512 MiB margin per card.
+   state, the compute buffer (from this GGUF's measured loads, below) and a 512 MiB margin per card.
    It plans the largest context that fits (capped at the trained context or the request, floor 4096; a
    benchmark load plans exactly its registry profile's context unless the request names one),
    balances a contiguous layer split across the cards, and gives exact llama.cpp arguments:
@@ -153,9 +153,18 @@ Card size has two meanings. Placement plans on empty cards (total memory: what a
 once its current work frees, as the collecting wait uses it); a fit for an immediate load uses free memory
 (total minus what is loaded now). Later: use the active size to stack several small jobs on one card.
 
-Open: calibrating the estimate from the measured `fit` records (the compute buffer is the loosest
-term, within about 10% on the 1060s); a VRAM check for published profiles; context per slot with
-`--parallel`.
+**Calibration from measured loads (2026-10-25).** Every ready load appends what llama.cpp allocated per
+card (the rig's `fit`: context, weights, KV and compute buffer) to `~/.local/state/llm-gateway/fit_observations.jsonl`
+on the Pi (`FIT_LOG_PATH` overrides). The compute buffer of the next fit of that GGUF at that micro-batch is
+planned from those loads (`fit.compute_mb`): the line through the measurements (the largest card each time),
+plus the worst miss, 10% and 64 MiB, never below a measurement at a smaller context and never above the old
+formula (context x micro-batch x heads), which stays for GGUFs with no load yet. The formula was the loosest
+term: 2.7x the measured buffer on qwen3.6:35b-a3b, so five 1060s were refused 131K that they hold. The plan
+says which it used (`compute_basis`). Weights and KV were already close (KV 198 planned vs 185 measured per card).
+The log was seeded from the benchmarking capacity records; the rig still checks llama.cpp's own projection at
+load and refuses a load that would not fit.
+
+Open: a VRAM check for published profiles; context per slot with `--parallel`.
 
 ## Runs, cancel by owner, and demand (2026-10-22)
 

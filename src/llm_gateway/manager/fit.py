@@ -9,7 +9,8 @@ and builds the memory llama.cpp will allocate per card:
 - KV cache (q8_0, run_runtime.sh `-ctk/-ctv q8_0`): per attention layer, KV heads x (key + value
   length) x context. Hybrid models (`full_attention_interval`) keep KV only on their attention layers,
   recurrent layers hold a small fixed state; sliding-window layers hold at most the window.
-- compute buffer per card: grows with context x micro-batch x heads (measured on the 1060s).
+- compute buffer per card: from this GGUF's measured loads when there are any (`compute_mb`, padded),
+  else context x micro-batch x heads, which is the ceiling (2.7x the measured buffer on qwen3.6:35b-a3b).
 - a margin per card (llama.cpp's `--fit-target` idea) so a card never runs to its last MiB.
 
 Layers are split in order across the cards in CUDA order (lowest GPU first), the output layer counting
@@ -25,6 +26,7 @@ projection at load and refuses a load that would not fit, so this check can be c
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import struct
@@ -130,6 +132,7 @@ class Shape:
     output_bytes: int             # output layer, on the last card
     host_bytes: int               # token embedding, kept in host RAM
     notes: list[str] = field(default_factory=list)
+    source: str = ""              # GGUF file name: the key measured loads are calibrated by
 
     @property
     def n_layers(self) -> int:
@@ -232,7 +235,68 @@ def shape_for(path: str, model: str = "") -> Shape:
     if key not in _SHAPES:
         meta, tensors = read_header(path)
         _SHAPES[key] = shape_from_header(meta, tensors, model)
+        _SHAPES[key].source = os.path.basename(path)
     return _SHAPES[key]
+
+
+# ---------------------------------------------------------------- calibration from measured loads
+
+# Every ready load appends what llama.cpp allocated per card (the rig's `fit`, hw_loadlog.py) here, and the
+# compute buffer is planned from those measurements for the same GGUF and micro-batch. The formula below
+# (context x micro-batch x heads) is the ceiling: on qwen3.6:35b-a3b it gave 762 MiB per card at 89K
+# against 280 measured, 2.7x, so five 1060s were refused 131K that they hold (2026-10-25).
+FIT_LOG_PATH = os.environ.get("FIT_LOG_PATH", os.path.expanduser("~/.local/state/llm-gateway/fit_observations.jsonl"))
+COMPUTE_PAD_MB = 64       # added to a calibrated compute buffer
+COMPUTE_PAD_FRAC = 0.10   # and this share of it
+_CALIBRATION: dict[str, Any] = {"mtime": None, "points": {}}
+
+
+def record_observation(source: str, model: str, ubatch: int, gpus: list[int], measured: dict[str, Any] | None,
+                       path: str | None = None) -> bool:
+    """Append one measured load (the rig's `fit`: n_ctx and buffers per card). False when there is nothing
+    usable (a load the rig could not read)."""
+    cards = (measured or {}).get("cards") or []
+    n_ctx = (measured or {}).get("n_ctx")
+    if not source or not n_ctx or not cards or not all(c.get("compute_mb") is not None for c in cards):
+        return False
+    path = path or FIT_LOG_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    row = {"source": source, "model": model, "ubatch": int(ubatch), "n_ctx": int(n_ctx), "gpus": list(gpus),
+           "cards": [{k: c.get(k) for k in ("gpu", "model_mb", "kv_mb", "compute_mb", "total_mb")} for c in cards]}
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    return True
+
+
+def _points(path: str | None = None) -> dict[tuple[str, int], list[tuple[int, float]]]:
+    """(GGUF, ubatch) -> [(ctx, largest compute buffer on any card)], re-read when the log changes."""
+    path = path or FIT_LOG_PATH
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    mtime = (st.st_mtime_ns, st.st_size)  # size too: two appends can share an mtime tick
+    if _CALIBRATION["mtime"] != (path, mtime):
+        points: dict[tuple[str, int], list[tuple[int, float]]] = {}
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    worst = max(float(c["compute_mb"]) for c in row["cards"])
+                    points.setdefault((row["source"], int(row["ubatch"])), []).append((int(row["n_ctx"]), worst))
+                except (ValueError, KeyError, TypeError):
+                    continue
+        _CALIBRATION.update(mtime=(path, mtime), points=points)
+    return _CALIBRATION["points"]
+
+
+def _formula_mb(s: Shape, ctx: int, ubatch: int) -> float:
+    return COMPUTE_BASE_MB + ctx * ubatch * s.n_head * 4 / MIB
+
+
+def compute_basis(s: Shape, ubatch: int) -> str:
+    n = len(_points().get((s.source, int(ubatch)), []))
+    return f"measured ({n} load{'s' if n != 1 else ''})" if n else "formula (no measured load yet)"
 
 
 # ---------------------------------------------------------------- the plan
@@ -243,7 +307,24 @@ def _layer_bytes(s: Shape, il: int, ctx: int) -> float:
 
 
 def compute_mb(s: Shape, ctx: int, ubatch: int) -> float:
-    return COMPUTE_BASE_MB + ctx * ubatch * s.n_head * 4 / MIB
+    """Compute buffer per card. From measured loads of this GGUF at this micro-batch when there are any:
+    the line through them (one load: its measurement scaled like the formula), never below the largest
+    measurement at or under ctx, padded, and never above the formula. Otherwise the formula."""
+    formula = _formula_mb(s, ctx, ubatch)
+    pts = sorted(_points().get((s.source, int(ubatch)), []))
+    if not pts:
+        return formula
+    if len({c for c, _ in pts}) >= 2:
+        n = len(pts)
+        mx, my = sum(c for c, _ in pts) / n, sum(m for _, m in pts) / n
+        slope = max(0.0, sum((c - mx) * (m - my) for c, m in pts) / sum((c - mx) ** 2 for c, _ in pts))
+        est = my + slope * (ctx - mx) + max(m - (my + slope * (c - mx)) for c, m in pts)  # worst residual
+    else:
+        c0, m0 = pts[0]
+        est = m0 * _formula_mb(s, ctx, ubatch) / _formula_mb(s, c0, ubatch)
+    below = [m for c, m in pts if c <= ctx]
+    est = max(est, max(below) if below else 0.0)
+    return min(formula, est * (1 + COMPUTE_PAD_FRAC) + COMPUTE_PAD_MB)
 
 
 def _partition(s: Shape, ctx: int, budgets: list[float]) -> list[int] | None:
@@ -294,7 +375,7 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
 
     base = {"model": s.model, "arch": s.arch, "gpus": gpus, "n_ctx_train": s.n_ctx_train,
             "weights_mb": round(s.weights_mb), "host_mb": round(s.host_bytes / MIB), "margin_mb": margin_mb,
-            "parallel": parallel, "notes": s.notes}
+            "parallel": parallel, "notes": s.notes, "compute_basis": compute_basis(s, ubatch)}
     if not cards:
         return {**base, "fits": False, "reason": "no cards given"}
     if _partition(s, want_lo, budgets(want_lo)) is None:

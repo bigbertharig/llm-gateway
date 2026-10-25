@@ -118,6 +118,43 @@ def test_harness_prefers_the_big_card_over_many_small_ones(tmp_path):
     assert p["gpus"] == [0]
 
 
+def measured(n_ctx, compute_mb, gpus=(1,)):
+    return {"n_ctx": n_ctx, "cards": [{"gpu": g, "model_mb": 1000, "kv_mb": 100, "compute_mb": compute_mb,
+                                       "total_mb": 1100 + compute_mb} for g in gpus]}
+
+
+def test_compute_buffer_is_planned_from_measured_loads(tmp_path):
+    s = fit.shape_for(dense(tmp_path, ctx_train=262144), "m")
+    formula = fit.compute_mb(s, 131072, 64)
+    assert fit.compute_basis(s, 64).startswith("formula")
+    assert fit.record_observation(s.source, "m", 64, [1, 2], measured(65536, 100, (1, 2)))
+    one = fit.compute_mb(s, 131072, 64)  # one load: its measurement scaled like the formula, padded
+    assert one < formula and fit.compute_basis(s, 64) == "measured (1 load)"
+    fit.record_observation(s.source, "m", 64, [1], measured(131072, 200))
+    two = fit.compute_mb(s, 131072, 64)  # the line through both, padded: 200 * 1.1 + 64
+    assert abs(two - (200 * 1.1 + 64)) < 1
+    assert fit.compute_mb(s, 100000, 64) >= 100 * 1.1 + 64  # never under a measurement at a smaller context
+    assert fit.compute_mb(s, 131072, 512) == fit._formula_mb(s, 131072, 512)  # another ubatch: the formula
+
+
+def test_calibration_never_plans_above_the_formula_and_skips_unreadable_loads(tmp_path):
+    s = fit.shape_for(dense(tmp_path, ctx_train=262144), "m")
+    fit.record_observation(s.source, "m", 64, [1], measured(8192, 5000))  # bigger than the formula says
+    assert fit.compute_mb(s, 8192, 64) == fit._formula_mb(s, 8192, 64)
+    assert not fit.record_observation(s.source, "m", 64, [1], {"n_ctx": 8192, "cards": []})
+    assert not fit.record_observation(s.source, "m", 64, [1], None)
+
+
+def test_calibration_lets_more_context_fit(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, ctx_train=262144,
+                            **{"llama.attention.head_count_kv": 8}), "m")  # KV-heavy: context is memory-bound
+    before = fit.plan(s, [card(1), card(2)])
+    assert before["ctx_limit"] == "card memory"
+    fit.record_observation(s.source, "m", 64, [1, 2], measured(before["ctx"], 40, (1, 2)))
+    after = fit.plan(s, [card(1), card(2)])
+    assert after["ctx"] > before["ctx"] and after["compute_basis"] == "measured (1 load)"
+
+
 # ------------------------------------------------------------------ end to end (fake rig)
 
 FAKE_LIBRARY = textwrap.dedent("""\
