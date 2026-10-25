@@ -512,6 +512,18 @@ def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, A
     return None
 
 
+def choose_chat(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+    """For latency, try the largest single free card first; otherwise use the normal split fit.
+
+    A single 3090 beats a 1060 or a split on this rig. Explicit GPU requests bypass this choice.
+    """
+    for card in sorted(free_cards, key=lambda g: (-int(g["total_mb"]), int(g["index"]))):
+        p = plan(s, [card], **kw)
+        if p["fits"]:
+            return p
+    return choose(s, free_cards, **kw)
+
+
 def suggest(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> list[str]:
     """Alternatives for a request that does not fit: fewest small cards, or one card that holds it."""
     out = []

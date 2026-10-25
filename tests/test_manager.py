@@ -334,12 +334,12 @@ def chat(c, model):
 
 def test_cold_request_takes_a_lease_and_queues_one_load(menv):
     r = chat(menv["client"], "gpu-rig/small")
-    assert r.status_code == 200 and r.json()["port"] == 11435
+    assert r.status_code == 200 and r.json()["port"] == 11434
     (lease,) = menv["leases"]()
-    assert lease["controller"] == "interactive" and lease["gpu_ids"] == [1]
-    assert lease["metadata"]["port"] == 11435 and lease["ports"] == [11435]
+    assert lease["controller"] == "interactive" and lease["gpu_ids"] == [0]
+    assert lease["metadata"]["port"] == 11434 and lease["ports"] == [11434]
     (start,) = menv["rig"]()["starts"]
-    assert start == {"profile": "small", "gpus": "1", "port": "11435", "lease": lease["lease_id"], "cache_ram": "4096"}
+    assert start == {"profile": "small", "gpus": "0", "port": "11434", "lease": lease["lease_id"], "cache_ram": "4096"}
     assert chat(menv["client"], "gpu-rig/small").status_code == 200  # warm: no second job
     assert len(menv["rig"]()["starts"]) == 1
 
@@ -348,9 +348,18 @@ def test_cards_busy_without_a_lease_are_skipped(menv):
     st = menv["rig"]()
     st["containers"] = [{"name": "llama-lane-gpu1", "gpus": [1], "port": 11435}]
     menv["write"](st)
-    assert chat(menv["client"], "gpu-rig/small").json()["port"] == 11436
+    assert chat(menv["client"], "gpu-rig/small").json()["port"] == 11434
     rows = {g["gpu"]: g["verdict"] for g in menv["client"].get("/v1/manager/status").json()["gpus"]}
-    assert rows[1] == "unleased_busy" and rows[2] == "leased"
+    assert rows[1] == "unleased_busy" and rows[0] == "leased"
+
+
+def test_chat_uses_a_1060_when_the_3090_is_busy(menv):
+    st = menv["rig"]()
+    st["containers"] = [{"name": "llama-lane-gpu0", "gpus": [0], "port": 11434}]
+    menv["write"](st)
+    assert chat(menv["client"], "gpu-rig/small").json()["port"] == 11435
+    (lease,) = menv["leases"]()
+    assert lease["gpu_ids"] == [1]
 
 
 def test_claimed_cards_leave_the_pool(menv):
@@ -358,7 +367,7 @@ def test_claimed_cards_leave_the_pool(menv):
     assert c.post("/v1/manager/claims", json={"name": "bench", "gpu_ids": [0, 1, 2]}).status_code == 201
     r = chat(c, "gpu-rig/small")  # every card claimed: fits once they free, so 503, not "won't fit"
     assert r.status_code == 503 and "no capacity" in r.json()["error"]["message"]
-    assert c.post("/v1/manager/profiles/small/load", json={"claim": "bench"}).json()["port"] == 11435
+    assert c.post("/v1/manager/profiles/small/load", json={"claim": "bench"}).json()["port"] == 11434
     assert c.post("/v1/manager/claims", json={"name": "x", "gpu_ids": [2]}).status_code == 409
     assert c.post("/v1/manager/claims/bench/release").status_code == 200
 

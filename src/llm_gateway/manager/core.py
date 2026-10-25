@@ -802,8 +802,10 @@ class Manager:
         else:
             chosen = None
         if chosen is None:
-            result = fit.choose(shape, free, **kw) or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
-            result["chosen_by"] = "harness: fewest free cards that fit"
+            choice = fit.choose_chat(shape, free, **kw) if use == "chat" else fit.choose(shape, free, **kw)
+            result = choice or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
+            result["chosen_by"] = ("harness: fastest single free card for chat" if use == "chat" and
+                                   len(result["gpus"]) == 1 else "harness: fewest free cards that fit")
             if result.get("fits"):
                 result = self._keep_for_demand(r["model"], shape, kw, obs, free, result, requester)
         else:
@@ -833,7 +835,8 @@ class Manager:
         obs = await self._next_obs(r["model"], watch, deadline)
         # Planned on empty cards: a busy card reports the memory its current model uses, which would make
         # the set look bigger than the model needs once those cards free.
-        target = fit.choose(shape, [{**g, "used_mb": 0} for g in obs.get("gpus", [])], **kw)
+        idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
+        target = fit.choose_chat(shape, idle_cards, **kw) if use == "chat" else fit.choose(shape, idle_cards, **kw)
         if target is None:
             raise ManagerError(422, f"{model} won't fit on this rig even with every card free")
         size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}

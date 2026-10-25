@@ -111,9 +111,12 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
 1. **The manager decides** (`manager/fit.py`, `manager/models.py`). The request names a catalog model,
    optionally a card count (smallest free cards first) or explicit GPUs, a context, and a use (benchmark,
    chat, worker) that picks the registry profile and the prompt cache. With no cards named the harness
-   chooses: the smallest card class that holds the model on up to two of its cards (one card first), then
-   the next class, then the fewest cards of any mix (`fit.choose`). So Ornith-9B goes on one 1060 at
-   ctx 26880, or two 1060s when asked for 100k; a 27B goes on the 3090, not three 1060s. The manager reads the model's GGUF header
+   chooses by use: chat first tries the largest single free card (the 3090 on this rig) for lower
+   latency, then falls back to the usual split fit. Benchmark and worker loads use the smallest card
+   class that holds the model on up to two of its cards (one card first), then the next class, then
+   the fewest cards of any mix (`fit.choose`). Explicit GPU requests always keep their named cards.
+   For example, a benchmark Ornith-9B goes on one 1060 at ctx 26880, or two 1060s when asked
+   for 100k; a 27B goes on the 3090 instead of three 1060s. Chat Ornith-9B uses the 3090 when free. The manager reads the model's GGUF header
    from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
@@ -190,6 +193,8 @@ line per GGUF through single-card and split loads, though split cards allocate m
 Together they refuse qwen3.6:35b-a3b at 230,144 on the 3090, which loaded with 655 MiB free. Next: margin from
 measured growth, compute per card count, overhead from memory in use once serving rather than probe peaks.
 Also fixed: `SAME_CLASS_MAX_CARDS` in placement (next: measured speed per card set).
+
+**Prefill tuning (2026-10-25).** Under the standing power caps, matched 131K qwen3.6:35b-a3b runs on the 3090 measured 1.87-2.32x prefill from batch 128 to 512 with unchanged depth decode and 138 MiB more compute buffer. The current qwen3.6:27b brain measured 1.41-1.46x prefill from its orchestration batch 64 to 512 at 16K, with unchanged depth decode and 101 MiB more compute. All recall probes passed. Benchmarking also measured a smaller 1.2-1.3x gain for gemma-4:31b at 32K. The imported catalog now gives these three models batch 512 in the relevant interactive/orchestration profiles; the benchmark defaults remain unchanged. The manager resolves the catalog by use at load time. See benchmarking `RIG_PERFORMANCE.md`, "Micro-batch at working context"; load time is cold-cache dependent and is not improved by this setting.
 
 Open: a VRAM check for published profiles; context per slot with `--parallel`.
 

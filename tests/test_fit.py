@@ -74,6 +74,15 @@ def test_harness_picks_one_card_for_small_context_and_splits_for_big(tmp_path):
     assert huge["gpus"] == [0]
 
 
+def test_chat_prefers_fastest_free_single_card_and_falls_back(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, ctx_train=262144), "m")
+    free = [card(1), card(2), card(0, 24564)]
+    assert fit.choose_chat(s, free, ctx=8192)["gpus"] == [0]
+    assert fit.choose_chat(s, free[:2], ctx=8192)["gpus"] == [1]
+    one = fit.plan(s, [card(1)])["ctx"]
+    assert fit.choose_chat(s, free[:2], ctx=one * 2)["gpus"] == [1, 2]
+
+
 def test_harness_prefers_the_big_card_over_many_small_ones(tmp_path):
     s = fit.shape_for(dense(tmp_path, n_layer=40, layer_mb=400), "big")  # 16 GB: needs 3+ 1060s
     p = fit.choose(s, [card(1), card(2), card(3), card(4), card(0, 24564)])
@@ -142,6 +151,21 @@ def test_fit_endpoint_answers_without_loading(menv, registry):  # noqa: F811
     assert menv["leases"]() == [] and not menv["rig"]().get("plan_items")
     r = c.post("/v1/manager/models/fit", json={"model": "big:30b"})  # no cards: the harness chooses
     assert r.status_code == 200 and r.json()["gpus"] == [0] and r.json()["chosen_by"].startswith("harness")
+
+
+def test_chat_auto_placement_uses_big_card_but_explicit_cards_win(menv, registry):  # noqa: F811
+    c = menv["client"]
+    chat = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "chat", "ctx": 8192})
+    assert chat.status_code == 200, chat.text
+    assert chat.json()["gpus"] == [0]
+    assert chat.json()["chosen_by"] == "harness: fastest single free card for chat"
+    benchmark = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark", "ctx": 8192})
+    assert benchmark.status_code == 200, benchmark.text
+    assert benchmark.json()["gpus"] == [1]
+    pinned = c.post("/v1/manager/models/fit",
+                    json={"model": "small:9b", "use": "chat", "ctx": 8192, "gpu_ids": [1]})
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()["gpus"] == [1]
 
 
 def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, registry):  # noqa: F811
