@@ -167,6 +167,41 @@ orchestration/dashboard path; manager fit does not use them. For example
 1060 was refused, while `context_mode=min` now plans 8K on that card; `max` can project
 the largest fit on a chosen two-card split.
 
+### Context capacity and GPU pools (decision recorded 2026-10-26)
+
+The library's `runtime.ctx_size` is a **working context** for a use or benchmark.
+`context_bounds.min` is currently only a **planning floor** (4K or 8K),
+not the model's compact baseline. `context_bounds.max` is the GGUF trained
+ceiling, not a measured promise that the model fits or recalls correctly at
+that depth. Keep these three facts separate in results and API responses.
+
+The desired compact baseline is **the largest measured context that fits on
+the smallest preferred, homogeneous GPU group**. A worker-pool model starts
+with the fewest GTX 1060s that can hold it; a brain-pool model starts with
+the single RTX 3090 Ti when it fits. Add cards within the same pool to reach
+longer contexts. At the trained ceiling, record the fewest cards that
+actually load and pass depth/recall checks. If no pure pool can hold the
+requested context, a 3090+1060 split is the last capacity option. If all
+six cards still fall short, record the highest validated context and mark
+the trained ceiling unreachable on this rig.
+
+A brain-pool model may have two placements for the **same context, batch,
+GGUF and runtime options**: fast on the 3090, slower on 1060s only. When
+the 3090 is busy, the slower homogeneous placement can be used if it fits;
+it must not silently shrink context. A separately requested lower-context
+run is a different capacity choice. Worker-pool and brain-pool are
+placement preferences, not model identities or saved layer splits.
+
+**Implementation status:** `context_mode=min` currently means the 4K/8K
+planning floor, and `context_mode=max` currently estimates the largest
+fit on the selected cards (all free cards if none are named). The automatic
+planner does not yet enforce the pool ordering or provide the fast/slow
+fallback described above. The benchmarking
+`CONTEXT_PROFILE_AUDIT_2026-10-26.md` is a read-only capacity projection;
+it is not the measured compact-baseline/full-ceiling matrix. Keep working
+contexts stable for benchmark comparability while the placement policy and
+capacity tests are added.
+
 Layers are never left to llama.cpp's `--fit`: given the choice it moves layers to the CPU (on
 Ornith-9B it balanced two 1060s by putting the output layer in host RAM, 33/34 layers on GPU). The
 estimate was checked on Ornith-1.5-9B over two 1060s: weights 4812 MiB and KV 17.0 KiB per token,
