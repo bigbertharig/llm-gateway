@@ -582,6 +582,16 @@ def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, A
     return None
 
 
+def choose_min(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+    """Fewest cards that hold the profile minimum; prefer smaller cards within that count."""
+    for n in range(1, len(free_cards) + 1):
+        for cards in candidate_sets(free_cards, n):
+            p = plan(s, cards, **kw)
+            if p["fits"]:
+                return p
+    return None
+
+
 def choose_chat(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
     """For latency, try the largest single free card first; otherwise use the normal split fit.
 

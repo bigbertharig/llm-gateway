@@ -748,7 +748,8 @@ class Manager:
     # ------------------------------------------------------------------ model loads (any model, any cards)
 
     async def _shape(self, model: str, use: str, profile: str | None, ctx: int | None, ctx_min: int,
-                     margin_mb: int, batch_size: int | None = None) -> tuple[dict, Any, dict]:
+                     margin_mb: int, batch_size: int | None = None,
+                     context_mode: str = "working") -> tuple[dict, Any, dict]:
         """(registry entry, GGUF shape, plan options) for a model: what every fit is planned from."""
         if use not in memory.USES:
             raise ManagerError(400, f"use must be one of {memory.USES}")
@@ -761,15 +762,31 @@ class Manager:
         except fit.FitError as exc:
             raise ManagerError(404, str(exc)) from exc
         rt = r.get("runtime", {})
-        # Use the profile's working context unless the caller requests one. A published profile may
-        # require a higher minimum; an explicit ctx remains exact. This avoids allocating the trained
-        # maximum for an ordinary chat/worker request that needs a much shorter working context.
-        if ctx is None and rt.get("ctx_size"):
-            ctx = int(rt["ctx_size"])
-            if ctx_min > fit.CTX_MIN_DEFAULT:
-                ctx = max(ctx, ctx_min)
+        bounds = r.get("context_bounds") or {}
+        lower = int(bounds.get("min") or fit.CTX_MIN_DEFAULT)
+        upper = min(int(bounds.get("max") or shape.n_ctx_train or 131072), shape.n_ctx_train or 1 << 30)
+        if context_mode not in ("working", "min", "max"):
+            raise ManagerError(400, "context_mode must be working, min, or max")
+        if lower > upper:
+            raise ManagerError(400, f"{model}: profile context bounds {lower}..{upper} are invalid")
+        if ctx is not None:
+            if context_mode != "working":
+                raise ManagerError(400, "ctx is exact; use context_mode only when ctx is omitted")
+            if ctx > upper:
+                raise ManagerError(400, f"{model}: ctx {ctx} exceeds profile/trained maximum {upper}")
+        else:
+            lower = max(lower, ctx_min)
+            if lower > upper:
+                raise ManagerError(400, f"{model}: ctx_min {lower} exceeds profile/trained maximum {upper}")
+            if context_mode == "min":
+                ctx = lower
+            elif context_mode == "working" and rt.get("ctx_size"):
+                ctx = max(int(rt["ctx_size"]), lower)
+                if ctx > upper:
+                    raise ManagerError(400, f"{model}: working ctx {ctx} exceeds profile/trained maximum {upper}")
         # batch_size: a request may override the profile's (a micro-batch sweep); it sets the compute buffer.
-        kw = {"ctx": ctx, "ctx_min": ctx_min, "ubatch": min(int(batch_size or rt.get("batch_size", 64)), 512),
+        kw = {"ctx": ctx, "ctx_min": lower, "ctx_max": upper,
+              "ubatch": min(int(batch_size or rt.get("batch_size", 64)), 512),
               "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb,
               "runtime_image": r.get("image")}
         return r, shape, kw
@@ -778,13 +795,13 @@ class Manager:
                         ctx: int | None = None, ctx_min: int = fit.CTX_MIN_DEFAULT, use: str = "benchmark",
                         profile: str | None = None, claim: str | None = None,
                         margin_mb: int = fit.MARGIN_MB_DEFAULT, requester: str = "",
-                        batch_size: int | None = None) -> dict:
+                        batch_size: int | None = None, context_mode: str = "working") -> dict:
         """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`, or, with neither, on the
         fewest free cards that give `ctx` / at least `ctx_min`)": will it fit, at what context and split.
         Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
         if cards and gpu_ids:
             raise ManagerError(400, "give cards (a count) or gpu_ids, not both")
-        r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb, batch_size)
+        r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb, batch_size, context_mode)
         obs = await self.observe(fresh=True)
         try:
             free, why = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), claim)
@@ -801,13 +818,25 @@ class Manager:
             if cards > len(free):
                 raise ManagerError(503, f"{cards} card(s) asked, {len(free)} free: {[f['index'] for f in free]}",
                                    unavailable=why)
-            chosen = fit.choose_cards(free, int(cards))
+            sets = fit.candidate_sets(free, int(cards))
+            if context_mode == "max":
+                options = [(fit.plan(shape, group, **kw), group) for group in sets]
+                chosen = max(options, key=lambda item: item[0]["ctx"] if item[0]["fits"] else -1)[1]
+            else:
+                if use == "chat" and context_mode == "working" and cards == 1:
+                    sets = sorted(sets, key=lambda group: -group[0]["total_mb"])
+                chosen = next((group for group in sets if fit.plan(shape, group, **kw)["fits"]), sets[0])
         else:
             chosen = None
         if chosen is None:
-            choice = fit.choose_chat(shape, free, **kw) if use == "chat" else fit.choose(shape, free, **kw)
+            choice = (fit.plan(shape, free, **kw) if context_mode == "max" else
+                      fit.choose_min(shape, free, **kw) if context_mode == "min" else
+                      fit.choose_chat(shape, free, **kw) if use == "chat" else
+                      fit.choose(shape, free, **kw))
             result = choice or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
-            result["chosen_by"] = ("harness: measured response speed" if result.get("performance_basis") else
+            result["chosen_by"] = ("harness: largest context across free cards" if context_mode == "max" else
+                                   "harness: fewest free cards at profile minimum" if context_mode == "min" else
+                                   "harness: measured response speed" if result.get("performance_basis") else
                                    "harness: fastest single free card for chat" if use == "chat" and
                                    len(result["gpus"]) == 1 else "harness: fewest free cards that fit")
             if result.get("fits"):
@@ -815,9 +844,16 @@ class Manager:
         else:
             result = fit.plan(shape, chosen, **kw)
         result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"],
-                      ubatch=kw["ubatch"])
+                      ubatch=kw["ubatch"], context_mode=context_mode,
+                      context_bounds={"min": kw["ctx_min"], "working": r.get("runtime", {}).get("ctx_size"),
+                                      "max": kw["ctx_max"], "max_basis": (r.get("context_bounds") or {}).get("max_basis", "gguf_train")})
         if not result["fits"]:
             alts = fit.suggest(shape, free, **kw)
+            if chosen is not None and kw["ctx"] and kw["ctx"] > kw["ctx_min"]:
+                smaller = fit.plan(shape, chosen, **{**kw, "ctx": kw["ctx_min"]})
+                if smaller["fits"]:
+                    alts.insert(0, f"same GPU {smaller['gpus']} at minimum ctx {smaller['ctx']} "
+                                   f"(context_mode=min)")
             msg = result["reason"] + (". Fits on: " + "; ".join(alts) if alts else
                                       ". No combination of the free cards holds it.")
             raise ManagerError(422, msg, fit=result, suggestions=alts)
@@ -833,15 +869,19 @@ class Manager:
         is taken again (cards someone else took meanwhile are collected again)."""
         r, shape, kw = await self._shape(model, use, fit_kw.get("profile"), fit_kw.get("ctx"),
                                          fit_kw.get("ctx_min", fit.CTX_MIN_DEFAULT),
-                                         fit_kw.get("margin_mb", fit.MARGIN_MB_DEFAULT), fit_kw.get("batch_size"))
+                                         fit_kw.get("margin_mb", fit.MARGIN_MB_DEFAULT), fit_kw.get("batch_size"),
+                                         fit_kw.get("context_mode", "working"))
         deadline = time.monotonic() + wait_s if wait_s >= 0 else float("inf")
         watch: dict = {}
         obs = await self._next_obs(r["model"], watch, deadline)
         # Planned on empty cards: a busy card reports the memory its current model uses, which would make
         # the set look bigger than the model needs once those cards free.
         idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
-        target = fit.choose_chat(shape, idle_cards, **kw) if use == "chat" else fit.choose(shape, idle_cards, **kw)
-        if target is None:
+        target = (fit.plan(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "max" else
+                  fit.choose_min(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "min" else
+                  fit.choose_chat(shape, idle_cards, **kw) if use == "chat" else
+                  fit.choose(shape, idle_cards, **kw))
+        if target is None or not target["fits"]:
             raise ManagerError(422, f"{model} won't fit on this rig even with every card free")
         size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}
         need = Counter(size[g] for g in target["gpus"])

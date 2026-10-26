@@ -123,11 +123,15 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
    state, the compute buffer (from this GGUF's measured loads, below) and a margin per card.
-   An unspecified chat or worker context uses the selected profile's working context; an explicit
-   context is exact. Benchmark loads use the profile context unless the request names one. The manager
+   An unspecified context uses the selected profile's working context for every use. A request can
+   instead set `context_mode=min` to use the profile's minimum or `context_mode=max` to find the
+   largest fit up to its maximum. With no cards named, `min` uses the fewest cards that fit and
+   `max` uses all free cards; with a card count, the manager searches available card classes of
+   that size. An explicit `ctx` is exact and is checked against the profile/trained maximum. The manager
    balances a contiguous layer split across the cards, and gives exact llama.cpp arguments:
    `--ctx-size`, `--tensor-split` as layer counts, `--n-gpu-layers all`. If it will not fit it answers
-   422 "won't fit" with the numbers and the free cards that would hold it; nothing is leased or sent.
+   422 "won't fit" with the numbers and the free cards that would hold it; if the same named cards
+   fit at the profile minimum, it suggests `context_mode=min`. Nothing is leased or sent.
 2. **The rig loads and confirms** (`rig start remote <id> --spec JSON`, via a plan `load` item). It runs
    the spec through `run_runtime.sh` on the leased cards, then reads llama.cpp's own startup log
    (`scripts/rig/hw_loadlog.py`): the fit projection per card, layers offloaded, the context allocated
@@ -152,11 +156,16 @@ is calibrated per card count. With two comparable speed observations for the
 same GGUF, runtime image, micro-batch, and nearby context, automatic placement
 chooses the card set with the shortest estimated 1,024-token prompt plus
 256-token response. Other models retain the existing `SAME_CLASS_MAX_CARDS=2`
-placement fallback. Chat and worker calls without `ctx` use the selected
-profile's working context. An explicit `ctx` remains exact. The imported `schedule.placement` labels feed a legacy
+placement fallback. Calls without `ctx` use the selected profile's working context by default.
+The library records `context_bounds.min` and `context_bounds.max` for current models; the maximum
+is the GGUF trained limit, not a guarantee of quality or a tested fit. `min` is a deliberate
+lower-context request, and `max` is an opt-in capacity search. The manager still checks
+measured OOM ceilings, card memory, and real allocation at load. An explicit `ctx` remains exact.
+The imported `schedule.placement` labels feed a legacy
 orchestration/dashboard path; manager fit does not use them. For example
-`ministral-3:8b` is labeled `single_gpu` there, but a 16K fit on one
-1060 was refused and the manager loaded it across two 1060s.
+`ministral-3:8b` is labeled `single_gpu` there. Its default 16K fit on one
+1060 was refused, while `context_mode=min` now plans 8K on that card; `max` can project
+the largest fit on a chosen two-card split.
 
 Layers are never left to llama.cpp's `--fit`: given the choice it moves layers to the CPU (on
 Ornith-9B it balanced two 1060s by putting the output layer in host RAM, 33/34 layers on GPU). The
@@ -165,13 +174,16 @@ the same as llama.cpp measured.
 
 ```text
 rigctl fit ornith-1.5:9b [--ctx 100000]         # answer only; the harness picks the cards
-rigctl fit ornith-1.5:9b --cards 2              # answer only: ctx, split, MiB per card, or won't fit
+rigctl fit ornith-1.5:9b --cards 2              # working context on a fitting two-card set
+rigctl fit ministral-3:8b --gpus 1 --context-mode min   # 8K on one 1060
+rigctl fit ministral-3:8b --gpus 1,2 --context-mode max # largest projected fit on that split
 rigctl load-model ornith-1.5:9b --gpus 1,3 [--ctx N] [--use benchmark] [--args "--reasoning on"]
 rigctl unload ornith-1.5-9b-g1-3                # profile id: model plus its cards
 ```
 
 HTTP: `POST /v1/manager/models/fit`, `POST /v1/manager/models/load` with
-{model, cards | gpu_ids, ctx?, ctx_min?, use?, profile?, claim?, margin_mb?, extra_args?}.
+{model, cards | gpu_ids, ctx?, context_mode? (working|min|max), ctx_min?, use?, profile?,
+claim?, margin_mb?, extra_args?}. `ctx` and a non-working `context_mode` are mutually exclusive.
 The lease is the manager's (owner llm-gateway; controller by use: benchmarks, interactive, plans), so
 the reconciler renews it while the rig profile lives and `rigctl unload` releases it.
 

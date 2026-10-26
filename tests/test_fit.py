@@ -304,7 +304,7 @@ def test_cards_from_the_scan_carry_uuid_and_link():
 
 
 def test_load_model_that_wont_fit_never_reaches_the_rig(menv, registry):  # noqa: F811
-    r = menv["client"].post("/v1/manager/models/load", json={"model": "big:30b", "cards": 2})
+    r = menv["client"].post("/v1/manager/models/load", json={"model": "big:30b", "gpu_ids": [1, 2]})
     assert r.status_code == 422
     assert menv["leases"]() == [] and not menv["rig"]().get("plan_items")
 
@@ -600,3 +600,58 @@ def test_cancel_owner_stops_its_collecting_wait(menv, registry, monkeypatch):  #
     assert cleanup["claims_dropped"] and not cleanup["errors"]
     t.join(timeout=20)
     assert out["r"].status_code == 409 and "cancelled" in out["r"].json()["error"]["message"]
+
+
+def test_profile_context_modes_and_trained_limit(menv, registry):  # noqa: F811
+    cat = json.loads(registry.read_text())
+    p = cat["models"]["small:9b"]["profiles"]["default"]
+    p["runtime"]["ctx_size"] = 16384
+    p["context_bounds"] = {"min": 8192, "max": 32768, "max_basis": "gguf_train"}
+    registry.write_text(json.dumps(cat))
+    c = menv["client"]
+
+    working = c.post("/v1/manager/models/fit",
+                     json={"model": "small:9b", "gpu_ids": [1]})
+    minimum = c.post("/v1/manager/models/fit",
+                     json={"model": "small:9b", "gpu_ids": [1], "context_mode": "min"})
+    maximum = c.post("/v1/manager/models/fit",
+                     json={"model": "small:9b", "gpu_ids": [1, 2], "context_mode": "max"})
+    assert working.status_code == minimum.status_code == maximum.status_code == 200
+    assert working.json()["ctx"] == 16384
+    assert minimum.json()["ctx"] == 8192
+    assert maximum.json()["ctx"] > 16384
+    assert maximum.json()["ctx"] <= 32768
+    assert maximum.json()["context_bounds"]["max_basis"] == "gguf_train"
+
+    auto_max = c.post("/v1/manager/models/fit",
+                      json={"model": "small:9b", "context_mode": "max"})
+    assert auto_max.status_code == 200 and auto_max.json()["gpus"] == [0, 1, 2]
+    above = c.post("/v1/manager/models/fit",
+                   json={"model": "small:9b", "ctx": 65536})
+    assert above.status_code == 400 and "maximum" in above.json()["error"]["message"]
+    ambiguous = c.post("/v1/manager/models/fit",
+                       json={"model": "small:9b", "ctx": 8192, "context_mode": "min"})
+    assert ambiguous.status_code == 400
+
+
+def test_smaller_same_card_context_is_suggested(menv, registry):  # noqa: F811
+    cat = json.loads(registry.read_text())
+    p = cat["models"]["small:9b"]["profiles"]["default"]
+    p["runtime"]["ctx_size"] = 32768
+    p["context_bounds"] = {"min": 8192, "max": 32768}
+    registry.write_text(json.dumps(cat))
+    c = menv["client"]
+    working = c.post("/v1/manager/models/fit",
+                     json={"model": "small:9b", "gpu_ids": [1], "margin_mb": 1400})
+    minimum = c.post("/v1/manager/models/fit",
+                     json={"model": "small:9b", "gpu_ids": [1], "context_mode": "min", "margin_mb": 1400})
+    assert working.status_code == 422 and minimum.status_code == 200
+    assert any("context_mode=min" in x for x in working.json()["error"]["suggestions"])
+
+
+def test_card_count_searches_other_available_card_classes(menv, registry):  # noqa: F811
+    c = menv["client"]
+    p = c.post("/v1/manager/models/fit", json={"model": "big:30b", "cards": 2})
+    assert p.status_code == 200 and p.json()["gpus"] == [0, 1]
+    p = c.post("/v1/manager/models/fit", json={"model": "big:30b", "cards": 1})
+    assert p.status_code == 200 and p.json()["gpus"] == [0]
