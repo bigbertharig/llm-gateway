@@ -135,6 +135,26 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
    records `fit` (measured per card) and the real `ctx_size` in its rig profile, and the manager returns
    both next to its estimate.
 
+**Model requirements versus placement (2026-10-25).** The catalog needs the
+GGUF identity and runtime settings (for example micro-batch, KV type,
+parallelism, reasoning flags, and any supported context limits). It does
+not need a GPU list or a saved layer split for each model. Context is an
+input to the fit: full-attention KV use grows roughly per token, sliding
+windows stop growing past their window, recurrent state can be fixed, and
+weights stay fixed for a chosen partition. Compute buffers, graph
+allocation, per-card overhead, and margins are calibrated from load
+observations because they are not one perfectly linear context formula.
+The manager computes the card set and `tensor_split` for the requested
+context and available memory, then validates the actual allocation. Its
+current `choose` policy still contains `SAME_CLASS_MAX_CARDS=2` and a
+pooled compute estimate across card counts; measured speed and per-card-count
+compute are next improvements. Chat/worker calls with no `ctx` currently
+choose the largest fit, so callers that need a particular working context
+should request it. The imported `schedule.placement` labels feed a legacy
+orchestration/dashboard path; manager fit does not use them. For example
+`ministral-3:8b` is labeled `single_gpu` there, but a 16K fit on one
+1060 was refused and the manager loaded it across two 1060s.
+
 Layers are never left to llama.cpp's `--fit`: given the choice it moves layers to the CPU (on
 Ornith-9B it balanced two 1060s by putting the output layer in host RAM, 33/34 layers on GPU). The
 estimate was checked on Ornith-1.5-9B over two 1060s: weights 4812 MiB and KV 17.0 KiB per token,
