@@ -112,17 +112,19 @@ orphans. `rigctl unload` queues an `unload` item and releases the lease when it 
    optionally a card count (smallest free cards first) or explicit GPUs, a context, and a use (benchmark,
    chat, worker) that picks the registry profile and the prompt cache. With no cards named the harness
    chooses by use: chat first tries the largest single free card (the 3090 on this rig) for lower
-   latency, then falls back to the usual split fit. Benchmark and worker loads use the smallest card
-   class that holds the model on up to two of its cards (one card first), then the next class, then
-   the fewest cards of any mix (`fit.choose`). Explicit GPU requests always keep their named cards.
+   latency, then falls back to the usual split fit. Benchmark and worker loads compare measured response
+   speed across fitting, available card sets when
+   two comparable observations exist; otherwise they use the smallest card class that holds the model
+   on up to two cards, then the next class, then the fewest cards of any mix (`fit.choose`). Explicit GPU
+   requests always keep their named cards.
    For example, a benchmark Ornith-9B goes on one 1060 at ctx 26880, or two 1060s when asked
    for 100k; a 27B goes on the 3090 instead of three 1060s. Chat Ornith-9B uses the 3090 when free. The manager reads the model's GGUF header
    from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
-   state, the compute buffer (from this GGUF's measured loads, below) and a 512 MiB margin per card.
-   It plans the largest context that fits (capped at the trained context or the request, floor 4096; a
-   benchmark load plans exactly its registry profile's context unless the request names one),
+   state, the compute buffer (from this GGUF's measured loads, below) and a margin per card.
+   An unspecified chat or worker context uses the selected profile's working context; an explicit
+   context is exact. Benchmark loads use the profile context unless the request names one. The manager
    balances a contiguous layer split across the cards, and gives exact llama.cpp arguments:
    `--ctx-size`, `--tensor-split` as layer counts, `--n-gpu-layers all`. If it will not fit it answers
    422 "won't fit" with the numbers and the free cards that would hold it; nothing is leased or sent.
@@ -145,12 +147,13 @@ weights stay fixed for a chosen partition. Compute buffers, graph
 allocation, per-card overhead, and margins are calibrated from load
 observations because they are not one perfectly linear context formula.
 The manager computes the card set and `tensor_split` for the requested
-context and available memory, then validates the actual allocation. Its
-current `choose` policy still contains `SAME_CLASS_MAX_CARDS=2` and a
-pooled compute estimate across card counts; measured speed and per-card-count
-compute are next improvements. Chat/worker calls with no `ctx` currently
-choose the largest fit, so callers that need a particular working context
-should request it. The imported `schedule.placement` labels feed a legacy
+context and available memory, then validates the actual allocation. Compute
+is calibrated per card count. With two comparable speed observations for the
+same GGUF, runtime image, micro-batch, and nearby context, automatic placement
+chooses the card set with the shortest estimated 1,024-token prompt plus
+256-token response. Other models retain the existing `SAME_CLASS_MAX_CARDS=2`
+placement fallback. Chat and worker calls without `ctx` use the selected
+profile's working context. An explicit `ctx` remains exact. The imported `schedule.placement` labels feed a legacy
 orchestration/dashboard path; manager fit does not use them. For example
 `ministral-3:8b` is labeled `single_gpu` there, but a 16K fit on one
 1060 was refused and the manager loaded it across two 1060s.
@@ -193,26 +196,28 @@ memory in use per card once serving, and the load time; a `load_failed` row has 
 whether it ran out of memory. Started 2026-10-25 from the loads in the benchmarking capacity records (marked
 `from_record`). The fit plans from it, each load counted once (`observations.history`):
 
-- compute buffer per card (`fit.compute_mb`): the line through this GGUF's measurements at this micro-batch
-  (the largest card each time), plus the worst miss, 10% and 64 MiB, never below a measurement at a smaller
-  context and never above the old formula (context x micro-batch x heads), which stays for GGUFs with no load
-  yet. The formula was 2.7x the measured buffer on qwen3.6:35b-a3b, so five 1060s were refused 131K they hold.
-- overhead per card (`fit.overhead_mb`): memory in use minus llama.cpp's own total (CUDA context, cuBLAS,
-  CUDA graphs), the most seen on a card of that size, padded; 150 MiB until a card size is measured. The 3090
-  ran out of memory in `cudaGraphInstantiate` at 120K for qwen3-coder:30b-a3b with 150 MiB assumed; measured
-  up to about 509 MiB there, 135 on a 1060.
-- a ceiling (`fit.failed_ceiling`): a largest-that-fits plan stays below a context that ran out of memory for
-  this GGUF on cards of these sizes, until a load at or above it succeeds.
+- compute buffer per card (`fit.compute_mb`): measured loads for the same GGUF, micro-batch, and
+  card count, padded by 10% and 64 MiB. A measured buffer is never discarded when it exceeds the
+  formula. Unmeasured combinations use the formula until a matching load is recorded.
+- overhead per card (`fit.overhead_mb`): the highest observed serving memory beyond llama.cpp's
+  reported buffers for a card of that size, plus 64 MiB; 150 MiB until measured.
+- growth margin (`fit.growth_margin_mb`): four times observed full-depth memory growth, with a
+  128 MiB minimum, only for the same GGUF and card-size layout. Other layouts retain 512 MiB.
+  The qwen3.6:35b-a3b full-depth probes grew 18 MiB on the 3090 and 8 MiB per 1060, giving
+  both measured layouts a 128 MiB margin.
+- an OOM ceiling (`fit.failed_ceiling`): a prior OOM blocks explicit and automatically chosen
+  contexts at or above the failure for that GGUF and card-size layout until a higher load succeeds.
+- measured placement (`fit._measured_placement`): compares observed prefill and decode for fitting,
+  free card sets with the same GGUF, micro-batch, runtime image, and nearby context. For
+  `ministral-3:8b` at 16K, GPU0 measured 2,616/121.8 tok/s prefill/decode versus 475/20.2 on
+  two 1060s; the manager selects GPU0 when both choices are free. Explicit GPU requests prevail.
 
-The plan says what it used (`compute_basis`, `overhead_mb`, `failed_ceiling`); `rigctl observations [--kind
-load_failed] [--model M]` lists the history. The rig still checks llama.cpp's own projection at load and
-refuses a load that would not fit. Still fixed, and too careful together: the 512 MiB margin per card, while
-memory grows under 20 MiB over a full context (benchmarking `RIG_PERFORMANCE.md`, "Fit calibration": all of it is
-allocated at load); the overhead pad (624 MiB planned on the 3090 against about 420 measured); and one compute
-line per GGUF through single-card and split loads, though split cards allocate more (411 vs 302 MiB at 131K).
-Together they refuse qwen3.6:35b-a3b at 230,144 on the 3090, which loaded with 655 MiB free. Next: margin from
-measured growth, compute per card count, overhead from memory in use once serving rather than probe peaks.
-Also fixed: `SAME_CLASS_MAX_CARDS` in placement (next: measured speed per card set).
+The plan reports `compute_basis`, `overhead_mb`, `margin_mb`, `failed_ceiling` where present, and
+`performance_basis` when measured placement applies. `rigctl observations [--kind KIND]
+[--model M]` lists the history. The rig still checks llama.cpp's own projection. The corrected
+planner admitted qwen3.6:35b-a3b at 230,144 on GPU0, and a real managed load reached ready in
+84.5 seconds and decoded at 148.34 tok/s. The known qwen3-coder:30b-a3b 120K OOM boundary
+remains blocked.
 
 **Prefill tuning (2026-10-25).** Under the standing power caps, matched 131K qwen3.6:35b-a3b runs on the 3090 measured 1.87-2.32x prefill from batch 128 to 512 with unchanged depth decode and 138 MiB more compute buffer. The current qwen3.6:27b brain measured 1.41-1.46x prefill from its orchestration batch 64 to 512 at 16K, with unchanged depth decode and 101 MiB more compute. All recall probes passed. Benchmarking also measured a smaller 1.2-1.3x gain for gemma-4:31b at 32K. The imported catalog now gives these three models batch 512 in the relevant interactive/orchestration profiles; the benchmark defaults remain unchanged. The manager resolves the catalog by use at load time. See benchmarking `RIG_PERFORMANCE.md`, "Micro-batch at working context"; load time is cold-cache dependent and is not improved by this setting.
 

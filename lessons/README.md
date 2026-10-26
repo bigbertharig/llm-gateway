@@ -14,9 +14,9 @@ each other:
 
 | File | What | Written by |
 |---|---|---|
-| `load_observations.jsonl` | every load the manager placed (`kind: load`) or that failed (`kind: load_failed`): model, GGUF, micro-batch, use, cards by UUID with link and root port, the estimate per card, what llama.cpp allocated, memory in use once serving, load time, error and out-of-memory flag | the manager, on every load (`src/llm_gateway/manager/observations.py`) |
+| `load_observations.jsonl` | manager loads and failures (`load`, `load_failed`), full-depth memory growth (`depth_memory`), and comparable prompt/decode speed (`performance`); each row identifies its model, GGUF, card layout and relevant runtime settings | the manager, on every load (`src/llm_gateway/manager/observations.py`) |
 
-The manager also plans from this file (compute buffer and overhead per card size, failed-load ceilings:
+The manager also plans from this file (compute by card count, overhead and growth by card layout, OOM ceilings and measured placement speed:
 `docs/MANAGER.md`, "Learning from loads"). It started on 2026-10-25 from the loads in the benchmarking
 capacity records up to then; those rows carry `from_record` (the record's file name in benchmarking).
 

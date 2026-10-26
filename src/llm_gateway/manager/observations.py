@@ -2,7 +2,7 @@
 
 Every load the manager places is one row in `lessons/load_observations.jsonl` in this repo, committed like any
 other file, so the history carries across sessions and machines. The manager learns from it (`fit.compute_mb`,
-`fit.overhead_mb`, `fit.failed_ceiling`); benchmarking reads it when it wants to learn from real loads (the
+`fit.overhead_mb`, `fit.growth_margin_mb`, `fit.failed_ceiling`, and measured placement); benchmarking reads it when it wants to learn from real loads (the
 other direction is the importer, tools/generate_profiles.py). Nothing here reads another repo. Kinds:
 
 - `load`: a ready load. Model, GGUF, micro-batch, use, the cards by UUID with their link and root port (the
@@ -10,6 +10,9 @@ other direction is the importer, tools/generate_profiles.py). Nothing here reads
   use per card once serving (nvidia-smi), and the load time.
 - `load_failed`: a load the rig refused or that never served, with the same facts, the error and whether it ran
   out of memory: the other side of the fit boundary.
+
+- `depth_memory`: full-depth memory growth for a GGUF and card-size layout.
+- `performance`: prefill and decode rates for a GGUF, runtime image, context and card set.
 
 Rows without `kind` are loads. Runtime coordination (the manager's requests, the orchestration's handling) is
 not kept here, only what a later session should know.
@@ -25,7 +28,7 @@ from typing import Any, Iterator
 
 REPO = Path(__file__).resolve().parents[3]
 PATH: str | None = None  # override (tests); else OBSERVATIONS_PATH, else lessons/ in this repo
-KINDS = ("load", "load_failed")
+KINDS = ("load", "load_failed", "depth_memory", "performance")
 CARD_KEYS = ("index", "uuid", "name", "total_mb", "bus", "link_gen", "link_width", "root_port", "via")
 
 

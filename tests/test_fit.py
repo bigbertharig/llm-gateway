@@ -83,6 +83,22 @@ def test_chat_prefers_fastest_free_single_card_and_falls_back(tmp_path):
     assert fit.choose_chat(s, free[:2], ctx=one * 2)["gpus"] == [1, 2]
 
 
+def test_measured_response_speed_can_choose_the_3090_for_a_worker(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400), "m")
+    free = [card(1), card(2), card(0, 24564)]
+    assert fit.choose(s, free, ctx=8192, ubatch=64)["gpus"] == [1]  # fallback without two measurements
+    observations.record("performance", source=s.source, ubatch=64, n_ctx=8192, gpus=[1],
+                        prefill_tps=400, decode_tps=20, record="one-1060")
+    assert fit.choose(s, free, ctx=8192, ubatch=64)["gpus"] == [1]  # one sample cannot overrule fallback
+    observations.record("performance", source=s.source, ubatch=64, n_ctx=8192, gpus=[0],
+                        prefill_tps=2000, decode_tps=120, record="one-3090")
+    chosen = fit.choose(s, free, ctx=8192, ubatch=64)
+    assert chosen["gpus"] == [0] and chosen["performance_basis"] == "one-3090"
+    assert fit.choose(s, free[:2], ctx=8192, ubatch=64)["gpus"] == [1]  # unavailable GPU never chosen
+    assert fit.choose(s, free, ctx=8192, ubatch=128)["gpus"] == [1]  # unrelated batch retains fallback
+    assert fit.choose(s, free, ctx=8192, ubatch=64, runtime_image="new-image")["gpus"] == [1]
+
+
 def test_harness_prefers_the_big_card_over_many_small_ones(tmp_path):
     s = fit.shape_for(dense(tmp_path, n_layer=40, layer_mb=400), "big")  # 16 GB: needs 3+ 1060s
     p = fit.choose(s, [card(1), card(2), card(3), card(4), card(0, 24564)])
@@ -94,24 +110,24 @@ def measured(n_ctx, compute_mb, gpus=(1,)):
                                        "total_mb": 1100 + compute_mb} for g in gpus]}
 
 
-def test_compute_buffer_is_planned_from_measured_loads(tmp_path):
+def test_compute_buffer_is_calibrated_per_card_count(tmp_path):
     s = fit.shape_for(dense(tmp_path, ctx_train=262144), "m")
-    formula = fit.compute_mb(s, 131072, 64)
-    assert fit.compute_basis(s, 64).startswith("formula")
+    formula = fit.compute_mb(s, 131072, 64, 2)
+    assert fit.compute_basis(s, 64, 2).startswith("formula")
     assert fit.record_observation(s.source, "m", 64, [1, 2], measured(65536, 100, (1, 2)))
-    one = fit.compute_mb(s, 131072, 64)  # one load: its measurement scaled like the formula, padded
-    assert one < formula and fit.compute_basis(s, 64) == "measured (1 load)"
+    split = fit.compute_mb(s, 131072, 64, 2)
+    assert split < formula and fit.compute_basis(s, 64, 2) == "measured (1 load, 2 cards)"
+    assert fit.compute_mb(s, 131072, 64, 1) == formula  # split evidence never calibrates a solo load
     fit.record_observation(s.source, "m", 64, [1], measured(131072, 200))
-    two = fit.compute_mb(s, 131072, 64)  # the line through both, padded: 200 * 1.1 + 64
-    assert abs(two - (200 * 1.1 + 64)) < 1
-    assert fit.compute_mb(s, 100000, 64) >= 100 * 1.1 + 64  # never under a measurement at a smaller context
-    assert fit.compute_mb(s, 131072, 512) == fit._formula_mb(s, 131072, 512)  # another ubatch: the formula
+    assert abs(fit.compute_mb(s, 131072, 64, 1) - (200 * 1.1 + 64)) < 1
+    assert fit.compute_mb(s, 131072, 64, 2) == split  # solo evidence never changes a split estimate
+    assert fit.compute_mb(s, 131072, 512, 1) == fit._formula_mb(s, 131072, 512)
 
 
-def test_calibration_never_plans_above_the_formula_and_skips_unreadable_loads(tmp_path):
+def test_measured_compute_is_never_discarded_below_the_old_formula(tmp_path):
     s = fit.shape_for(dense(tmp_path, ctx_train=262144), "m")
-    fit.record_observation(s.source, "m", 64, [1], measured(8192, 5000))  # bigger than the formula says
-    assert fit.compute_mb(s, 8192, 64) == fit._formula_mb(s, 8192, 64)
+    fit.record_observation(s.source, "m", 64, [1], measured(8192, 5000))
+    assert fit.compute_mb(s, 8192, 64) >= 5000 + fit.COMPUTE_PAD_MB
     assert not fit.record_observation(s.source, "m", 64, [1], {"n_ctx": 8192, "cards": []})
     assert not fit.record_observation(s.source, "m", 64, [1], None)
 
@@ -123,7 +139,7 @@ def test_calibration_lets_more_context_fit(tmp_path):
     assert before["ctx_limit"] == "card memory"
     fit.record_observation(s.source, "m", 64, [1, 2], measured(before["ctx"], 40, (1, 2)))
     after = fit.plan(s, [card(1), card(2)])
-    assert after["ctx"] > before["ctx"] and after["compute_basis"] == "measured (1 load)"
+    assert after["ctx"] > before["ctx"] and after["compute_basis"] == "measured (1 load, 2 cards)"
 
 
 # ------------------------------------------------------------------ end to end (fake rig)
@@ -168,7 +184,7 @@ def test_chat_auto_placement_uses_big_card_but_explicit_cards_win(menv, registry
     assert pinned.json()["gpus"] == [1]
 
 
-def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, registry):  # noqa: F811
+def test_unspecified_context_uses_the_profile_working_context(menv, registry):  # noqa: F811
     cat = json.loads(registry.read_text())
     cat["models"]["small:9b"]["profiles"]["default"]["runtime"]["ctx_size"] = 8192
     registry.write_text(json.dumps(cat))
@@ -178,7 +194,7 @@ def test_benchmark_loads_plan_the_profile_context_and_chat_the_largest(menv, reg
     assert bench.json()["ctx"] == 8192
     chat = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "chat"})
     assert chat.status_code == 200, chat.text
-    assert chat.json()["ctx"] > 8192
+    assert chat.json()["ctx"] == 8192
     named = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark", "ctx": 16384})
     assert named.json()["ctx"] == 16384  # a request that names a context keeps it
 
@@ -244,8 +260,31 @@ def test_overhead_per_card_size_is_learned_from_memory_in_use(tmp_path):
     assert fit.overhead_mb(24564) == fit.CUDA_CONTEXT_MB
     fit.record_observation(s.source, "m", 64, [0], measured(8192, 100, (0,)), used_mb=[1700],
                            hw=[{"index": 0, "total_mb": 24564}])  # 1700 in use, llama.cpp counted 1200
-    assert abs(fit.overhead_mb(24564) - (500 * 1.1 + 64)) < 1
+    assert abs(fit.overhead_mb(24564) - (500 + 64)) < 1
     assert fit.overhead_mb(6144) == fit.CUDA_CONTEXT_MB  # another card size: not measured yet
+
+
+def test_depth_margin_is_limited_to_the_measured_model_and_layout(tmp_path):
+    s = fit.shape_for(dense(tmp_path), "m")
+    one = [card(0, 24564)]
+    two = [card(1), card(2)]
+    assert fit.growth_margin_mb(s, one) == fit.MARGIN_MB_FALLBACK
+    observations.record("depth_memory", source=s.source, card_sizes=[24564], growth_mb=[18],
+                        n_ctx=195840, model="m")
+    assert fit.growth_margin_mb(s, one) == 128
+    assert fit.growth_margin_mb(s, two) == fit.MARGIN_MB_FALLBACK
+    assert fit.plan(s, one, ctx=8192)["margin_mb"] == 128
+    assert fit.plan(s, one, ctx=8192, margin_mb=256)["margin_mb"] == 256
+
+
+def test_recorded_oom_ceiling_blocks_explicit_context_too(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, ctx_train=262144), "m")
+    observations.record("load_failed", source=s.source, ubatch=64, planned_ctx=120064,
+                        oom=True, card_sizes=[24564])
+    p = fit.plan(s, [card(0, 24564)], ctx=120064)
+    assert not p["fits"] and p["failed_ceiling"] == 120064
+    assert "previously ran out of memory" in p["reason"]
+    assert fit.plan(s, [card(0, 24564)], ctx=119808)["fits"]
 
 
 def test_observations_list_the_log_by_kind(menv):  # noqa: F811

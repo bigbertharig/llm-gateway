@@ -761,14 +761,17 @@ class Manager:
         except fit.FitError as exc:
             raise ManagerError(404, str(exc)) from exc
         rt = r.get("runtime", {})
-        # Context per mode (isolated modes, 2026-10-23): a benchmark load plans exactly the registry profile's
-        # context unless the request names one, so a model loads the same way on any cards and runs compare;
-        # chat and worker loads plan the largest context that fits.
-        if ctx is None and use == "benchmark" and rt.get("ctx_size"):
+        # Use the profile's working context unless the caller requests one. A published profile may
+        # require a higher minimum; an explicit ctx remains exact. This avoids allocating the trained
+        # maximum for an ordinary chat/worker request that needs a much shorter working context.
+        if ctx is None and rt.get("ctx_size"):
             ctx = int(rt["ctx_size"])
+            if ctx_min > fit.CTX_MIN_DEFAULT:
+                ctx = max(ctx, ctx_min)
         # batch_size: a request may override the profile's (a micro-batch sweep); it sets the compute buffer.
         kw = {"ctx": ctx, "ctx_min": ctx_min, "ubatch": min(int(batch_size or rt.get("batch_size", 64)), 512),
-              "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb}
+              "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb,
+              "runtime_image": r.get("image")}
         return r, shape, kw
 
     async def fit_model(self, model: str, *, cards: int | None = None, gpu_ids: list[int] | None = None,
@@ -804,7 +807,8 @@ class Manager:
         if chosen is None:
             choice = fit.choose_chat(shape, free, **kw) if use == "chat" else fit.choose(shape, free, **kw)
             result = choice or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
-            result["chosen_by"] = ("harness: fastest single free card for chat" if use == "chat" and
+            result["chosen_by"] = ("harness: measured response speed" if result.get("performance_basis") else
+                                   "harness: fastest single free card for chat" if use == "chat" and
                                    len(result["gpus"]) == 1 else "harness: fewest free cards that fit")
             if result.get("fits"):
                 result = self._keep_for_demand(r["model"], shape, kw, obs, free, result, requester)

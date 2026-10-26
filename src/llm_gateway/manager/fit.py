@@ -9,9 +9,9 @@ and builds the memory llama.cpp will allocate per card:
 - KV cache (q8_0, run_runtime.sh `-ctk/-ctv q8_0`): per attention layer, KV heads x (key + value
   length) x context. Hybrid models (`full_attention_interval`) keep KV only on their attention layers,
   recurrent layers hold a small fixed state; sliding-window layers hold at most the window.
-- compute buffer per card: from this GGUF's measured loads when there are any (`compute_mb`, padded),
-  else context x micro-batch x heads, which is the ceiling (2.7x the measured buffer on qwen3.6:35b-a3b).
-- a margin per card (llama.cpp's `--fit-target` idea) so a card never runs to its last MiB.
+- compute buffer per card: from this GGUF's measured loads at the same micro-batch and card count
+  when available (`compute_mb`, padded), else context x micro-batch x heads as a fallback (2.7x the measured buffer on qwen3.6:35b-a3b).
+- a depth-calibrated margin for matching model/card layouts, otherwise 512 MiB.
 
 Layers are split in order across the cards in CUDA order (lowest GPU first), the output layer counting
 against the last card. The plan is the largest context that fits (capped at the model's trained
@@ -38,7 +38,9 @@ MIB = 1 << 20
 KV_BYTES_PER_ELEM = 34 / 32  # q8_0: 32 values in 34 bytes
 CTX_STEP = 256               # llama.cpp pads the context to 256
 CTX_MIN_DEFAULT = 4096
-MARGIN_MB_DEFAULT = 512
+MARGIN_MB_DEFAULT = -1       # use depth-calibrated growth where available; 512 MiB otherwise
+MARGIN_MB_FALLBACK = 512
+MARGIN_MB_MIN = 128           # protects against sparse probe sampling and allocator variation
 COMPUTE_BASE_MB = 64         # compute buffer at tiny context (measured 39 MiB on Ornith-9B)
 CUDA_CONTEXT_MB = 150        # per card per process (CUDA context, cuBLAS workspace), not in llama.cpp's sums
 
@@ -277,12 +279,12 @@ def _points() -> dict[tuple[str, int], list[tuple[int, float]]]:
 
     mtime = stamp(observations.path())
     if _CALIBRATION["mtime"] != mtime:
-        points: dict[tuple[str, int], list[tuple[int, float]]] = {}
+        points: dict[tuple[str, int, int], list[tuple[int, float]]] = {}
         overheads: dict[int, float] = {}
         for row in observations.history("load"):
             try:
                 worst = max(float(c["compute_mb"]) for c in row["cards"])
-                points.setdefault((row["source"], int(row["ubatch"])), []).append((int(row["n_ctx"]), worst))
+                points.setdefault((row["source"], int(row["ubatch"]), len(row["cards"])), []).append((int(row["n_ctx"]), worst))
             except (ValueError, KeyError, TypeError):
                 continue
             # used_mb: nvidia-smi per card once the load served; hw: the card's size (both from the rig).
@@ -303,7 +305,7 @@ def overhead_mb(card_mb: int) -> float:
     CUDA_CONTEXT_MB until a load of that card size has been measured. The 3090 ran out of memory in
     cudaGraphInstantiate with 150 + 512 MiB planned (qwen3-coder:30b-a3b at 120K, 2026-10-25)."""
     seen = _overheads().get(int(card_mb))
-    return max(CUDA_CONTEXT_MB, seen * (1 + COMPUTE_PAD_FRAC) + COMPUTE_PAD_MB) if seen is not None else CUDA_CONTEXT_MB
+    return max(CUDA_CONTEXT_MB, seen + COMPUTE_PAD_MB) if seen is not None else CUDA_CONTEXT_MB
 
 
 def _overheads() -> dict[int, float]:
@@ -333,9 +335,24 @@ def _formula_mb(s: Shape, ctx: int, ubatch: int) -> float:
     return COMPUTE_BASE_MB + ctx * ubatch * s.n_head * 4 / MIB
 
 
-def compute_basis(s: Shape, ubatch: int) -> str:
-    n = len(_points().get((s.source, int(ubatch)), []))
-    return f"measured ({n} load{'s' if n != 1 else ''})" if n else "formula (no measured load yet)"
+def compute_basis(s: Shape, ubatch: int, n_cards: int = 1) -> str:
+    n = len(_points().get((s.source, int(ubatch), n_cards), []))
+    return f"measured ({n} load{'s' if n != 1 else ''}, {n_cards} card{'s' if n_cards != 1 else ''})" if n else "formula (no matched card-count load yet)"
+
+
+def growth_margin_mb(s: Shape, cards: list[dict[str, Any]]) -> int:
+    """Use measured full-depth growth only for the same GGUF and card-size layout.
+
+    A sparse sampling envelope gets a fourfold allowance and a 128 MiB floor.
+    Other layouts retain the original 512 MiB margin until depth-tested.
+    """
+    sizes = sorted(int(c["total_mb"]) for c in cards)
+    growth = [max(float(v) for v in row["growth_mb"])
+              for row in observations.rows("depth_memory")
+              if row.get("source") == s.source
+              and sorted(int(v) for v in row.get("card_sizes") or []) == sizes
+              and row.get("growth_mb") and len(row["growth_mb"]) == len(cards)]
+    return max(MARGIN_MB_MIN, int(max(growth) * 4 + 0.999)) if growth else MARGIN_MB_FALLBACK
 
 
 # ---------------------------------------------------------------- the plan
@@ -345,12 +362,12 @@ def _layer_bytes(s: Shape, il: int, ctx: int) -> float:
     return s.weights[il] + s.kv_per_token[il] * tokens + s.fixed_state[il]
 
 
-def compute_mb(s: Shape, ctx: int, ubatch: int) -> float:
+def compute_mb(s: Shape, ctx: int, ubatch: int, n_cards: int = 1) -> float:
     """Compute buffer per card. From measured loads of this GGUF at this micro-batch when there are any:
-    the line through them (one load: its measurement scaled like the formula), never below the largest
-    measurement at or under ctx, padded, and never above the formula. Otherwise the formula."""
+    the line through them (one load: its measurement scaled like the formula), padded and
+    never below a measured buffer at or under ctx. The formula is used for unmeasured card counts. Otherwise the formula."""
     formula = _formula_mb(s, ctx, ubatch)
-    pts = sorted(_points().get((s.source, int(ubatch)), []))
+    pts = sorted(_points().get((s.source, int(ubatch), n_cards), []))
     if not pts:
         return formula
     if len({c for c, _ in pts}) >= 2:
@@ -363,7 +380,9 @@ def compute_mb(s: Shape, ctx: int, ubatch: int) -> float:
         est = m0 * _formula_mb(s, ctx, ubatch) / _formula_mb(s, c0, ubatch)
     below = [m for c, m in pts if c <= ctx]
     est = max(est, max(below) if below else 0.0)
-    return min(formula, est * (1 + COMPUTE_PAD_FRAC) + COMPUTE_PAD_MB)
+    # A measured buffer can exceed the old formula. Never plan below what actually loaded.
+    return max((max(below) + COMPUTE_PAD_MB) if below else 0.0,
+               min(formula, est * (1 + COMPUTE_PAD_FRAC) + COMPUTE_PAD_MB))
 
 
 def _partition(s: Shape, ctx: int, budgets: list[float]) -> list[int] | None:
@@ -395,13 +414,16 @@ def _card_use(s: Shape, ctx: int, counts: list[int]) -> list[dict[str, float]]:
 
 def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_min: int = CTX_MIN_DEFAULT,
          ctx_max: int | None = None, ubatch: int = 64, parallel: int = 1,
-         margin_mb: int = MARGIN_MB_DEFAULT) -> dict[str, Any]:
+         margin_mb: int = MARGIN_MB_DEFAULT, runtime_image: str | None = None) -> dict[str, Any]:
     """Fit `s` on `cards` ([{index, total_mb, used_mb}], any order; CUDA order is by index).
 
     ctx: an exact context that must fit; None: the largest that fits between ctx_min and ctx_max
     (default: the model's trained context). Returns {fits, ctx, tensor_split, cards[], reason, ...}.
     """
     cards = sorted(cards, key=lambda c: c["index"])
+    if margin_mb < 0:
+        margin_mb = growth_margin_mb(s, cards)
+    n_cards = len(cards)
     gpus = [int(c["index"]) for c in cards]
     free = [float(c["total_mb"]) - float(c.get("used_mb", 0)) for c in cards]
     over = [overhead_mb(int(c["total_mb"])) for c in cards]
@@ -413,13 +435,17 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
     want_lo, want_hi = (ctx, ctx) if ctx else (ctx_min, max(ctx_min, top))
     want_lo = max(CTX_STEP, want_lo // CTX_STEP * CTX_STEP)
     want_hi = max(want_lo, want_hi // CTX_STEP * CTX_STEP)
+    if ceiling and ctx and want_lo >= ceiling:
+        return {"model": s.model, "gpus": gpus, "fits": False, "ctx": want_lo,
+                "failed_ceiling": ceiling, "margin_mb": margin_mb,
+                "reason": f"won't fit: {s.model} previously ran out of memory at ctx {ceiling} on these card sizes"}
 
     def budgets(c: int, scale: float = 1.0) -> list[float]:
-        return [(f - margin_mb - o - compute_mb(s, c, ubatch)) * MIB * scale for f, o in zip(free, over)]
+        return [(f - margin_mb - o - compute_mb(s, c, ubatch, n_cards)) * MIB * scale for f, o in zip(free, over)]
 
     base = {"model": s.model, "arch": s.arch, "gpus": gpus, "n_ctx_train": s.n_ctx_train,
             "weights_mb": round(s.weights_mb), "host_mb": round(s.host_bytes / MIB), "margin_mb": margin_mb,
-            "parallel": parallel, "notes": s.notes, "compute_basis": compute_basis(s, ubatch),
+            "parallel": parallel, "notes": s.notes, "compute_basis": compute_basis(s, ubatch, n_cards),
             "overhead_mb": [round(o) for o in over], **({"failed_ceiling": ceiling} if ceiling else {})}
     if not cards:
         return {**base, "fits": False, "reason": "no cards given"}
@@ -427,7 +453,7 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
         need = s.weights_mb + sum(s.kv_per_token[i] * (want_lo if s.kv_window[i] is None
                                                        else min(want_lo, s.kv_window[i])) + s.fixed_state[i]
                                   for i in range(s.n_layers)) / MIB
-        have = sum(free) - sum(over) - len(cards) * (margin_mb + compute_mb(s, want_lo, ubatch))
+        have = sum(free) - sum(over) - len(cards) * (margin_mb + compute_mb(s, want_lo, ubatch, n_cards))
         why = (f"won't fit: {s.model} needs about {need:.0f} MiB on the cards at ctx {want_lo} "
                f"(weights {s.weights_mb:.0f} + KV/state {need - s.weights_mb:.0f}); "
                f"{len(cards)} card(s) {gpus} give {max(have, 0):.0f} MiB after margins")
@@ -456,7 +482,7 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
     use = _card_use(s, best, blocks)
     rows = []
     for c, f, u, o in zip(cards, free, use, over):
-        comp = compute_mb(s, best, ubatch)
+        comp = compute_mb(s, best, ubatch, n_cards)
         total = u["weights_mb"] + u["kv_mb"] + comp + o
         rows.append({"gpu": int(c["index"]), "total_mb": int(c["total_mb"]), "free_mb": round(f),
                      "layers": u["layers"], "weights_mb": round(u["weights_mb"]), "kv_mb": round(u["kv_mb"]),
@@ -486,15 +512,59 @@ def candidate_sets(free_cards: list[dict[str, Any]], n: int) -> list[list[dict[s
     return sets
 
 
-# Splitting across more cards costs speed (3090 + one 1060 2.6-3.1x slower, Nex on 4-5 1060s 6.5x;
-# distributed_work_guide.md), so a model stays on the small cards only while it fits on this many of them.
+# Fallback when comparable measured speeds are not yet available. Splits cost speed on this rig.
 SAME_CLASS_MAX_CARDS = 2
+
+
+def _measured_placement(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+    """Choose the lowest estimated request time only among comparable measured card sets.
+
+    A 1024-token prompt plus 256-token answer represents an interactive request.
+    Require two measured, currently free candidates for the same GGUF and micro-batch.
+    An unknown placement retains the established fallback policy.
+    """
+    ctx, ubatch = kw.get("ctx"), int(kw.get("ubatch", 64))
+    runtime_image = kw.get("runtime_image")
+    if not ctx:
+        return None
+    pool = {int(g["index"]): g for g in free_cards}
+    candidates = []
+    seen = set()
+    for row in observations.rows("performance"):
+        if row.get("source") != s.source or int(row.get("ubatch") or 0) != ubatch:
+            continue
+        if runtime_image and row.get("runtime_image") != runtime_image:
+            continue
+        measured_ctx = int(row.get("n_ctx") or 0)
+        if not measured_ctx or not (0.5 <= ctx / measured_ctx <= 2.0):
+            continue
+        gpus = tuple(sorted(int(g) for g in row.get("gpus") or []))
+        if not gpus or gpus in seen or not all(g in pool for g in gpus):
+            continue
+        prefill, decode = float(row.get("prefill_tps") or 0), float(row.get("decode_tps") or 0)
+        if prefill <= 0 or decode <= 0:
+            continue
+        candidate = plan(s, [pool[g] for g in gpus], **kw)
+        if not candidate["fits"]:
+            continue
+        seen.add(gpus)
+        latency = 1024 / prefill + 256 / decode
+        candidates.append((latency, candidate, row))
+    if len(candidates) < 2:
+        return None
+    latency, result, row = min(candidates, key=lambda x: (x[0], len(x[1]["gpus"])))
+    result["performance_basis"] = row.get("record", "gateway performance observation")
+    result["estimated_response_seconds"] = round(latency, 2)
+    return result
 
 
 def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
     """The plan the harness picks when the request names no cards: the smallest card class that holds it on
     up to SAME_CLASS_MAX_CARDS cards (one card first), so big cards stay free for big models; failing that,
     the fewest cards of any mix. With an exact `ctx` that context must fit, otherwise at least ctx_min."""
+    measured = _measured_placement(s, free_cards, **kw)
+    if measured is not None:
+        return measured
     classes: dict[int, list[dict[str, Any]]] = {}
     for g in free_cards:
         classes.setdefault(int(g["total_mb"]), []).append(g)
