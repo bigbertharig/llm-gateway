@@ -185,6 +185,17 @@ requested context, a 3090+1060 split is the last capacity option. If all
 six cards still fall short, record the highest validated context and mark
 the trained ceiling unreachable on this rig.
 
+The **minimum deployment setting** is the largest measured context on the
+fewest cards that fully load the model; it is not `context_bounds.min` or
+`context_mode=min`. The **maximum deployment setting** is the largest
+validated context on the largest allowed card group, no higher than the
+trained ceiling. If the weights already require every available card, the
+two deployment settings collapse to one: the largest context that fits on
+all cards. This can be far short of the trained ceiling. Verify the minimum
+card count for each quant rather than assuming every roughly 70B model needs
+all six: K2-V2 Q4_K_M has a manager fit on five cards at 8K, pending a real
+load check (2026-10-27).
+
 A brain-pool model may have two placements for the **same context, batch,
 GGUF and runtime options**: fast on the 3090, slower on 1060s only. When
 the 3090 is busy, the slower homogeneous placement can be used if it fits;

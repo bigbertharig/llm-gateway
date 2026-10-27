@@ -1,6 +1,6 @@
 {
   "_comment": "Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; the gateway reads models only from here. Re-run the importer to take in new lessons.",
-  "registry_updated": "2026-10-25",
+  "registry_updated": "2026-10-27",
   "roles_updated": "2026-10-15",
   "image": "llama-runtime:b11669",
   "models": {
@@ -2725,6 +2725,66 @@
         }
       }
     },
+    "k2-v2-instruct:70b": {
+      "status": "candidate",
+      "aliases": [],
+      "gguf_path": "/mnt/shared/models/k2-v2-instruct/k2v2-Q4_K_M.gguf",
+      "profiles": {
+        "default": {
+          "schedule": {
+            "tier": 3,
+            "placement": "split_gpu",
+            "split_groups": [
+              {
+                "id": "all_gpus_capacity",
+                "members": [
+                  "gpu-0",
+                  "gpu-1",
+                  "gpu-2",
+                  "gpu-3",
+                  "gpu-4",
+                  "gpu-5"
+                ],
+                "port": 11445
+              }
+            ],
+            "tags": [
+              "capacity_candidate",
+              "dense",
+              "multi_gpu",
+              "reasoning"
+            ]
+          },
+          "system_prompt": "You are a strict worker assistant. Follow instructions exactly and keep output minimal. When JSON is requested, return raw JSON only with no markdown or extra text.",
+          "inference": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 2048
+          },
+          "runtime": {
+            "ctx_size": 8192,
+            "batch_size": 64,
+            "parallel": 1,
+            "n_gpu_layers": 999
+          },
+          "extra_args": [
+            "--chat-template-kwargs",
+            "{\"reasoning_effort\":\"low\"}"
+          ],
+          "tuning": {
+            "status": "untuned",
+            "last_tuned_at": null,
+            "benchmark_suite": "agent_reliability"
+          },
+          "notes": "K2-V2-Instruct 70B dense Q4_K_M (43,904,518,656 bytes), Apache 2.0. Upstream post-training sequence length 524,288; actual rig context frontier still unmeasured. Default starts at 8K and low reasoning effort to bound smoke-test latency. Source GGUF SHA-256 da1855d1d4ac1f40c344e04b889f9601bae2d3b60e9622dd985c9fcf2c6d4a02.",
+          "context_bounds": {
+            "min": 8192,
+            "max": 524288,
+            "max_basis": "gguf_train"
+          }
+        }
+      }
+    },
     "nemotron-3.5-bolt:74b-a9b": {
       "status": "active",
       "aliases": [],
@@ -2843,7 +2903,7 @@
     }
   },
   "summary": {
-    "generated_at": "2026-10-26T14:12:15",
+    "generated_at": "2026-10-27T14:55:36",
     "key_tests": [
       "bbh",
       "gsm8k",
@@ -4390,6 +4450,22 @@
           "file": "smollm3_3b_runtime_characterization_20261021.json",
           "at": "20261021"
         }
+      },
+      {
+        "model": "k2-v2-instruct:70b",
+        "status": "candidate",
+        "placement": "split_gpu",
+        "tier": 3,
+        "profiles": [
+          "default"
+        ],
+        "roles": [],
+        "source_url": "https://huggingface.co/cturan/K2-V2-Instruct-GGUF/resolve/main/k2v2-Q4_K_M.gguf",
+        "superseded_by": null,
+        "scores": {},
+        "pipeline": null,
+        "pipeline_tests": 0,
+        "runtime": null
       },
       {
         "model": "mellum2.1:12b-a2.5b",
