@@ -275,6 +275,60 @@ def test_status_route_includes_gateway_loading(client):
     assert body["mode"] == "idle" and body["gateway_loading"] == []
 
 
+def test_ready_roster_uses_served_context_and_matching_identity(client, env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"mode": "interactive", "profiles": [
+        {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 8192,
+         "port": UPSTREAM_PORT, "state": "ready"},
+        {"id": "chat-27b", "model": "wrong-model", "ctx_size": 65536,
+         "port": UPSTREAM_PORT, "state": "ready"},
+        {"id": "unpublished", "model": "x", "ctx_size": 4096,
+         "port": UPSTREAM_PORT, "state": "ready"},
+    ]}))
+    body = client.get("/v1/rig/ready-roster").json()
+    assert body == {"object": "ready_roster", "version": 1, "data": [{
+        "id": "gpu-rig/coder-7b", "model": "qwen2.5-coder:7b",
+        "registry_profile": None, "state": "ready", "context_length": 8192,
+        "output_limit": None, "tool_call_format": None, "tokenizer_path": "/tokenize",
+    }]}
+    assert env["starts"]() == []
+
+
+def test_ready_roster_excludes_cold_and_unknown_limits(client, env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"profiles": [
+        {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 0,
+         "port": UPSTREAM_PORT, "state": "ready"},
+        {"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536,
+         "port": UPSTREAM_PORT, "state": "loading"},
+    ]}))
+    assert client.get("/v1/rig/ready-roster").json()["data"] == []
+    assert env["starts"]() == []
+
+
+def test_ready_only_inference_and_tokenize_do_not_cold_load(client, env):
+    headers = {"X-Require-Ready": "true"}
+    assert client.post("/v1/chat/completions", headers=headers,
+                       json={"model": "gpu-rig/coder-7b", "messages": []}).status_code == 409
+    assert client.post("/tokenize", headers=headers,
+                       json={"model": "gpu-rig/coder-7b", "content": "hi"}).status_code == 409
+    assert env["starts"]() == []
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"profiles": [{"id": "coder-7b", "model": "wrong-model",
+                                          "ctx_size": 8192, "state": "ready",
+                                          "port": UPSTREAM_PORT}]}))
+    assert client.post("/v1/chat/completions", headers=headers,
+                       json={"model": "gpu-rig/coder-7b", "messages": []}).status_code == 409
+    state.write_text(json.dumps({"profiles": [{"id": "coder-7b", "model": "qwen2.5-coder:7b",
+                                          "ctx_size": 8192, "state": "ready",
+                                          "port": UPSTREAM_PORT}]}))
+    assert client.post("/v1/chat/completions", headers=headers,
+                       json={"model": "gpu-rig/coder-7b", "messages": []}).status_code == 200
+    assert client.post("/tokenize", headers=headers,
+                       json={"model": "gpu-rig/coder-7b", "content": "hi"}).status_code == 200
+    assert env["starts"]() == []
+
+
 @pytest.fixture
 def keyed_client(env):
     settings = dataclasses.replace(env["settings"], api_keys=("k-one", "k-two"))
@@ -285,6 +339,7 @@ def keyed_client(env):
 
 def test_api_keys_required_when_configured(keyed_client):
     assert keyed_client.get("/v1/models").status_code == 401
+    assert keyed_client.get("/v1/rig/ready-roster").status_code == 401
     r = keyed_client.get("/v1/models", headers={"Authorization": "Bearer wrong"})
     assert r.status_code == 401 and r.json()["error"]["code"] == "invalid_api_key"
     assert keyed_client.get("/v1/models", headers={"Authorization": "Bearer k-two"}).status_code == 200

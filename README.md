@@ -79,12 +79,28 @@ What the manager learns from loads goes to `lessons/` (see `lessons/README.md`).
 | Route | Notes |
 |---|---|
 | `GET /v1/models` | one entry per remote profile |
+| `GET /v1/rig/ready-roster` | read-only, versioned routes that are both offered and already ready; includes actual served context |
 | `POST /v1/chat/completions`, `POST /v1/completions` | streaming and non-streaming. Body forwarded unchanged |
 | `POST /tokenize`, `POST /detokenize` | llama-server tokenizer, routed by `model`. Exact counts for compaction |
 | `GET /v1/rig/status` | rig status plus `gateway_loading`: loads in progress with `since` and `elapsed_s` |
 | `GET /health` | liveness |
 | `/v1/manager/...` | the rig manager: `status`, `leases`, `claims`, `models/fit`, `models/load`, `profiles/<id>/load\|unload`, `runs` (start, `recover`, `stop`, `dismiss`), `owners/<who>/cancel`, `kill`, `plan`, `controller`, `reconcile`. Rules: [docs/MANAGER.md](docs/MANAGER.md) |
 | `/dashboard/` | the dashboard and its `api/` routes |
+
+Harnesses should read `GET /v1/rig/ready-roster` before inference. Its `data` contains only
+published profiles whose rig status is `ready`, whose served model identity matches the published
+model, and whose actual `ctx_size` and port are known. Each entry gives the gateway route `id`,
+underlying `model`, `registry_profile` when available, `context_length` from the running server,
+and `/tokenize` as `tokenizer_path`. `output_limit` and `tool_call_format` are `null` until those
+capabilities have verified sources. An empty `data` array means no currently usable route; this
+read does not start or alter a model. `GET /v1/models` remains the broader published offer and its
+context value may differ from the running server's context.
+
+For a passive harness, send `X-Require-Ready: true` on every completion and tokenizer request.
+The gateway then checks current readiness and returns HTTP 409 `model_not_ready` if the route is
+no longer ready. Without that header, the existing cold-load behavior remains in effect. A ready
+check and inference are separate operations, so a model that stops between them can still produce
+an upstream error, but the ready-only request will not initiate a load.
 
 Errors use the OpenAI shape `{"error": {"message", "type", "code"}}`:
 

@@ -234,12 +234,53 @@ def create_app(
         """`rig status --json`, plus the loads this gateway is waiting on and for how long."""
         return {**await rig.status(), "gateway_loading": rig.loading()}
 
+    def matching_ready(status: dict):
+        """Only published, identity-matched routes with a known served context and port."""
+        offered = profiles.all()
+        for loaded in status.get("profiles", []):
+            if not isinstance(loaded, dict) or loaded.get("state") != "ready":
+                continue
+            pid = loaded.get("id")
+            profile = offered.get(pid) if isinstance(pid, str) else None
+            if not profile or loaded.get("model") != profile.get("model"):
+                continue
+            ctx = loaded.get("ctx_size")
+            port = loaded.get("port")
+            if not isinstance(ctx, int) or ctx <= 0 or not isinstance(port, int) or port <= 0:
+                continue
+            yield pid, profile, loaded
+
+    @app.get("/v1/rig/ready-roster")
+    async def ready_roster():
+        """Read-only routes a harness may use without asking the rig to load a model."""
+        data = []
+        for pid, profile, loaded in matching_ready(await rig.status()):
+            data.append({
+                "id": f"{s.model_prefix}/{pid}",
+                "model": loaded["model"],
+                "registry_profile": profile.get("registry_profile"),
+                "state": "ready",
+                "context_length": loaded["ctx_size"],
+                "output_limit": None,
+                "tool_call_format": None,
+                "tokenizer_path": "/tokenize",
+            })
+        return {"object": "ready_roster", "version": 1, "data": data}
+
+    async def route_port(request: Request, pid: str) -> int:
+        if request.headers.get("X-Require-Ready", "").lower() == "true":
+            for ready_id, _profile, loaded in matching_ready(await rig.status()):
+                if ready_id == pid:
+                    return loaded["port"]
+            raise GatewayError(409, f"model {s.model_prefix}/{pid} is not ready", "model_not_ready")
+        return await rig.ensure_ready(pid, start_for(pid))
+
     @app.post("/v1/chat/completions")
     @app.post("/v1/completions")
     async def completions(request: Request):
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
-        port = await rig.ensure_ready(pid, start_for(pid))
+        port = await route_port(request, pid)
         return await forward(request, request.url.path, raw, port, stream=bool(body.get("stream")), profile=pid)
 
     @app.post("/tokenize")
@@ -248,7 +289,7 @@ def create_app(
         """llama-server tokenizer, routed by `model`. Exact token counts for compaction decisions."""
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
-        port = await rig.ensure_ready(pid, start_for(pid))
+        port = await route_port(request, pid)
         return await forward(request, request.url.path, raw, port, stream=False)
 
     return app
