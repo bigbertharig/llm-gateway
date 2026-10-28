@@ -81,6 +81,7 @@ What the manager learns from loads goes to `lessons/` (see `lessons/README.md`).
 | `GET /v1/models` | one entry per remote profile |
 | `GET /v1/rig/ready-roster` | read-only, versioned routes that are both offered and already ready; includes actual served context |
 | `POST /v1/chat/completions`, `POST /v1/completions` | streaming and non-streaming. Body forwarded unchanged |
+| `POST /v1/responses` | Responses API passthrough for clients such as Codex; requires a loaded llama-server that implements this route |
 | `POST /tokenize`, `POST /detokenize` | llama-server tokenizer, routed by `model`. Exact counts for compaction |
 | `GET /v1/rig/status` | rig status plus `gateway_loading`: loads in progress with `since` and `elapsed_s` |
 | `GET /health` | liveness |
@@ -96,7 +97,7 @@ capabilities have verified sources. An empty `data` array means no currently usa
 read does not start or alter a model. `GET /v1/models` remains the broader published offer and its
 context value may differ from the running server's context.
 
-For a passive harness, send `X-Require-Ready: true` on every completion and tokenizer request.
+For a passive harness, send `X-Require-Ready: true` on every completion, Responses, and tokenizer request.
 The gateway then checks current readiness and returns HTTP 409 `model_not_ready` if the route is
 no longer ready. Without that header, the existing cold-load behavior remains in effect. A ready
 check and inference are separate operations, so a model that stops between them can still produce

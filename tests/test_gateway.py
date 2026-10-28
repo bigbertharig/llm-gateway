@@ -329,6 +329,20 @@ def test_ready_only_inference_and_tokenize_do_not_cold_load(client, env):
     assert env["starts"]() == []
 
 
+def test_ready_only_responses_routes_without_cold_load(client, env):
+    request = {"model": "gpu-rig/coder-7b", "input": "Say ready", "stream": False}
+    headers = {"X-Require-Ready": "true"}
+    cold = client.post("/v1/responses", headers=headers, json=request)
+    assert cold.status_code == 409 and cold.json()["error"]["type"] == "model_not_ready"
+    assert env["starts"]() == []
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"profiles": [{"id": "coder-7b", "model": "qwen2.5-coder:7b",
+                                          "ctx_size": 8192, "state": "ready", "port": UPSTREAM_PORT}]}))
+    warm = client.post("/v1/responses", headers=headers, json=request)
+    assert warm.status_code == 200 and warm.json()["echo_model"] == request["model"]
+    assert env["starts"]() == []
+
+
 @pytest.fixture
 def keyed_client(env):
     settings = dataclasses.replace(env["settings"], api_keys=("k-one", "k-two"))

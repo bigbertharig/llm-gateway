@@ -277,6 +277,7 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     @app.post("/v1/completions")
+    @app.post("/v1/responses")
     async def completions(request: Request):
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
