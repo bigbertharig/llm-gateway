@@ -593,12 +593,22 @@ def choose_min(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[st
 
 
 def choose_chat(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
-    """For latency, try the largest single free card first; otherwise use the normal split fit.
+    """Interactive placement: largest card, then its smallest fitting GPU split.
 
-    A single 3090 beats a 1060 or a split on this rig. Explicit GPU requests bypass this choice.
+    On this rig that means 3090-only, then 3090 + the fewest 1060s. If the
+    3090 is unavailable, try the 1060s alone. Explicit GPU requests bypass
+    this choice. Host-RAM and Strata offload are separate runtime paths.
     """
-    for card in sorted(free_cards, key=lambda g: (-int(g["total_mb"]), int(g["index"]))):
-        p = plan(s, [card], **kw)
+    if not free_cards:
+        return None
+    by_size = sorted(free_cards, key=lambda g: (-int(g["total_mb"]), int(g["index"])))
+    primary = by_size[0]
+    p = plan(s, [primary], **kw)
+    if p["fits"]:
+        return p
+    others = sorted(by_size[1:], key=lambda g: (int(g["index"])))
+    for n in range(1, len(others) + 1):
+        p = plan(s, [primary, *others[:n]], **kw)
         if p["fits"]:
             return p
     return choose(s, free_cards, **kw)

@@ -1,6 +1,6 @@
 {
   "_comment": "Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; the gateway reads models only from here. Re-run the importer to take in new lessons.",
-  "registry_updated": "2026-10-27",
+  "registry_updated": "2026-11-04",
   "roles_updated": "2026-10-15",
   "image": "llama-runtime:b11669",
   "models": {
@@ -158,7 +158,7 @@
             "last_tuned_at": null,
             "benchmark_suite": "agent_reliability"
           },
-          "notes": "Brain-tier candidate. Corrupt archive artifact replaced and SHA-256 verified on 2026-08-12; geo-import smoke completed successfully.",
+          "notes": "Brain-tier candidate. Corrupt archive artifact replaced and SHA-256 verified on 2026-08-12; geo-import smoke completed successfully. 2026-11-04: 16K load and short probe passed on GPU 0; realistic multi-file coding validation is still needed before deciding whether to archive.",
           "context_bounds": {
             "min": 4096,
             "max": 393216,
@@ -320,7 +320,7 @@
             "last_tuned_at": null,
             "benchmark_suite": "agent_reliability"
           },
-          "notes": "Split-load (2x 1060). Gemma 4 12B dense Q4_K_M. Requires -fit off and --tensor-split 1,1 (2 visible GPUs). Do NOT use --n-gpu-layers 999 (auto-fitter aborts). CPU mapped ~924 MiB. VRAM: 3.1+3.8 GB across GPUs. Requires llama-runtime:b8884-candidate. BENCHMARK: use --reasoning-budget 0 (A/B tested: budget=0 scored BBH 0.82, budget=1024 scored 0.24 \u2014 thinking tokens consume generation budget).",
+          "notes": "Split-load (2x 1060). Gemma 4 12B dense Q4_K_M. Requires -fit off and --tensor-split 1,1 (2 visible GPUs). Do NOT use --n-gpu-layers 999 (auto-fitter aborts). CPU mapped ~924 MiB. VRAM: 3.1+3.8 GB across GPUs. Requires llama-runtime:b8884-candidate. BENCHMARK: use --reasoning-budget 0 (A/B tested: budget=0 scored BBH 0.82, budget=1024 scored 0.24 \u2014 thinking tokens consume generation budget). 2026-11-04: 8K load and short probe passed on GTX 1060 GPUs 1 and 3; deep recall pending.",
           "context_bounds": {
             "min": 4096,
             "max": 262144,
@@ -2341,7 +2341,7 @@
       }
     },
     "qwen3.6:35b-a3b": {
-      "status": "active",
+      "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "profiles": {
@@ -2715,7 +2715,7 @@
             "last_tuned_at": null,
             "benchmark_suite": "agent_reliability"
           },
-          "notes": "Qwen3-Next architecture coder: 80B total, about 3B active per token (hybrid linear/full attention MoE). Q4_K_S (45.5 GB) chosen over Q4_K_M (48.5 GB) to leave room for six cards' compute buffers and context in 54 GB. Downloaded 2026-10-21 straight to the rig NVMe hotset.",
+          "notes": "Qwen3-Next architecture coder: 80B total, about 3B active per token (hybrid linear/full attention MoE). Q4_K_S (45.5 GB) chosen over Q4_K_M (48.5 GB) to leave room for six cards' compute buffers and context in 54 GB. Downloaded 2026-10-21 straight to the rig NVMe hotset. 2026-11-04: 32K load and short probe passed on all six cards. Five-card manager fit refused at 32K because layers/output would not divide within per-card memory; deep recall pending.",
           "context_bounds": {
             "min": 8192,
             "max": 262144,
@@ -2836,7 +2836,125 @@
             "last_tuned_at": null,
             "benchmark_suite": "agent_reliability"
           },
-          "notes": "NVIDIA Nemotron 3.5 Bolt: 74B total, about 9B active, Mamba-2/Transformer hybrid MoE (GGUF arch nemotron_h_moe, llama-runtime:b11669), OpenMDW-1.1, used text only (no mmproj). UD-Q3_K_XL (39.0 GB) for headroom in 54 GB. Bench placement: GPUs 0-3 at ctx 16384 (split 57,16,10,6); all six cards hold ctx 226816. Decode 24.1 tok/s (3090 about 142 W, 1060s about 42 W each). The template thinks by default; --reasoning off kept: Phase 4 showed nothing to fix, thinking A/B not run. Known limit: asks for clarification less than peers (pipeline ambiguity and command safety).",
+          "notes": "NVIDIA Nemotron 3.5 Bolt: 74B total, about 9B active, Mamba-2/Transformer hybrid MoE (GGUF arch nemotron_h_moe, llama-runtime:b11669), OpenMDW-1.1, used text only (no mmproj). UD-Q3_K_XL (39.0 GB) for headroom in 54 GB. Bench placement: GPUs 0-3 at ctx 16384 (split 57,16,10,6); all six cards hold ctx 226816. Decode 24.1 tok/s (3090 about 142 W, 1060s about 42 W each). The template thinks by default; --reasoning off kept: Phase 4 showed nothing to fix, thinking A/B not run. Known limit: asks for clarification less than peers (pipeline ambiguity and command safety). 2026-11-04: 32K load and short probe passed on GPUs 0-3; 10%/90% recall at 32K is pending. Matched 32K 89/89 GPU-layer placement decoded 24.63 tok/s versus 6.26 tok/s with 48/89 layers on GPU 0 and the rest in host RAM.",
+          "context_bounds": {
+            "min": 8192,
+            "max": 262144,
+            "max_basis": "gguf_train"
+          }
+        }
+      }
+    },
+    "qwen3.6:35b-a3b-xl": {
+      "status": "active",
+      "aliases": [],
+      "gguf_path": "/mnt/shared/models/qwen3.6-35b-a3b-strata-xl/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "profiles": {
+        "default": {
+          "schedule": {
+            "tier": 3,
+            "placement": "single_gpu",
+            "tags": [
+              "brain_candidate",
+              "moe"
+            ]
+          },
+          "system_prompt": "You are a worker assistant. Never output <think> tags, chain-of-thought, or internal reasoning. Respond with only the final answer in the exact format requested. When JSON is requested, return raw JSON with no markdown or extra text. When a short answer is requested, give only that answer.",
+          "inference": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 512
+          },
+          "runtime": {
+            "ctx_size": 16384,
+            "batch_size": 128,
+            "parallel": 1,
+            "n_gpu_layers": 999
+          },
+          "extra_args": [
+            "--reasoning",
+            "off"
+          ],
+          "tuning": {
+            "status": "untuned",
+            "last_tuned_at": null,
+            "benchmark_suite": "phase4"
+          },
+          "notes": "Strata-compatible UD-Q4_K_XL candidate. Matched quant comparison against qwen3.6:35b-a3b UD-Q4_K_M; same system prompt, inference settings and runtime settings. SHA-256 verified on rig; see STRATA_MEMORY_TEST_PLAN.md. 2026-11-04: 262K final-answer recall passed at 10% and 90% on the 3090 plus one 1060; that is the fewest validated cards for the trained ceiling (see RIG_PERFORMANCE.md).",
+          "context_bounds": {
+            "min": 8192,
+            "max": 262144,
+            "max_basis": "gguf_train"
+          }
+        },
+        "interactive": {
+          "schedule": {
+            "tier": 3,
+            "placement": "single_gpu",
+            "tags": [
+              "brain_candidate",
+              "moe"
+            ]
+          },
+          "system_prompt": "You are a worker assistant. Never output <think> tags, chain-of-thought, or internal reasoning. Respond with only the final answer in the exact format requested. When JSON is requested, return raw JSON with no markdown or extra text. When a short answer is requested, give only that answer.",
+          "inference": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 512
+          },
+          "runtime": {
+            "ctx_size": 16384,
+            "batch_size": 512,
+            "parallel": 1,
+            "n_gpu_layers": 999
+          },
+          "extra_args": [
+            "--reasoning",
+            "off"
+          ],
+          "tuning": {
+            "status": "untuned",
+            "last_tuned_at": null,
+            "benchmark_suite": "phase4"
+          },
+          "notes": "Measured 2026-10-25: faster prefill at the same context and decode speed; benchmark default remains 128.",
+          "context_bounds": {
+            "min": 8192,
+            "max": 262144,
+            "max_basis": "gguf_train"
+          }
+        },
+        "orchestration": {
+          "schedule": {
+            "tier": 3,
+            "placement": "single_gpu",
+            "tags": [
+              "brain_candidate",
+              "moe"
+            ]
+          },
+          "system_prompt": "You are a worker assistant. Never output <think> tags, chain-of-thought, or internal reasoning. Respond with only the final answer in the exact format requested. When JSON is requested, return raw JSON with no markdown or extra text. When a short answer is requested, give only that answer.",
+          "inference": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 512
+          },
+          "runtime": {
+            "ctx_size": 16384,
+            "batch_size": 512,
+            "parallel": 1,
+            "n_gpu_layers": 999
+          },
+          "extra_args": [
+            "--reasoning",
+            "off"
+          ],
+          "tuning": {
+            "status": "untuned",
+            "last_tuned_at": null,
+            "benchmark_suite": "phase4"
+          },
+          "notes": "Measured 2026-10-25: faster prefill at the same context and decode speed; benchmark default remains 128.",
           "context_bounds": {
             "min": 8192,
             "max": 262144,
@@ -2903,7 +3021,7 @@
     }
   },
   "summary": {
-    "generated_at": "2026-10-27T15:14:15",
+    "generated_at": "2026-11-03T18:37:10",
     "key_tests": [
       "bbh",
       "gsm8k",
@@ -4311,7 +4429,7 @@
         }
       },
       {
-        "model": "qwen3.6:35b-a3b",
+        "model": "qwen3.6:35b-a3b-xl",
         "status": "active",
         "placement": "single_gpu",
         "tier": 3,
@@ -4321,62 +4439,69 @@
           "orchestration"
         ],
         "roles": [],
-        "source_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "source_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         "superseded_by": null,
         "scores": {
           "bbh": {
-            "score": 0.9133333333333333,
+            "score": 0.917037037037037,
             "run_class": "validated",
             "n": 1350,
-            "at": "2026-10-18",
-            "unreadable": 9
+            "at": "2026-11-03",
+            "unreadable": 5
           },
           "gsm8k": {
-            "score": 0.94,
+            "score": 0.92,
             "run_class": "validated",
             "n": 50,
-            "at": "2026-10-17",
-            "unreadable": null
-          },
-          "drop": {
-            "score": 0.88,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-18",
+            "at": "2026-11-03",
             "unreadable": 0
           },
-          "ifeval": {
+          "drop": {
             "score": 0.86,
             "run_class": "validated",
             "n": 50,
-            "at": "2026-10-18",
-            "unreadable": null
+            "at": "2026-11-03",
+            "unreadable": 0
+          },
+          "ifeval": {
+            "score": 0.9,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-11-03",
+            "unreadable": 0
           },
           "mmlu-pro": {
-            "score": 0.8285714285714286,
-            "run_class": "smoke",
-            "n": 140,
-            "at": "2026-10-17",
-            "unreadable": 6
+            "score": 0.7785714285714286,
+            "run_class": "validated",
+            "n": 280,
+            "at": "2026-11-03",
+            "unreadable": 19
           },
           "humaneval+": {
-            "score": 0.8963414634146342,
+            "score": 0.8841463414634146,
             "run_class": "full",
             "n": 164,
-            "at": "2026-10-17",
+            "at": "2026-11-03",
             "unreadable": null
           },
           "mbpp+": {
-            "score": 0.7671957671957672,
+            "score": 0.7804232804232805,
             "run_class": "full",
             "n": 378,
-            "at": "2026-10-17",
+            "at": "2026-11-03",
             "unreadable": null
           }
         },
-        "pipeline": 0.742,
+        "pipeline": 0.871,
         "pipeline_tests": 6,
-        "runtime": null
+        "runtime": {
+          "decode_tps": 151.28,
+          "prompt_tps": 839.03,
+          "ctx": "16384",
+          "tensor_split": "-",
+          "file": "qwen3_6_35b-a3b-xl_runtime_characterization_20261103.json",
+          "at": "20261103"
+        }
       },
       {
         "model": "smollm3:3b",
@@ -4462,10 +4587,60 @@
         "roles": [],
         "source_url": "https://huggingface.co/cturan/K2-V2-Instruct-GGUF/resolve/main/k2v2-Q4_K_M.gguf",
         "superseded_by": null,
-        "scores": {},
-        "pipeline": null,
-        "pipeline_tests": 0,
-        "runtime": null
+        "scores": {
+          "bbh": {
+            "score": 0.8407407407407408,
+            "run_class": "smoke",
+            "n": 270,
+            "at": "2026-10-28",
+            "unreadable": 5
+          },
+          "gsm8k": {
+            "score": 0.9,
+            "run_class": "smoke",
+            "n": 10,
+            "at": "2026-10-28",
+            "unreadable": 0
+          },
+          "drop": {
+            "score": 1.0,
+            "run_class": "smoke",
+            "n": 10,
+            "at": "2026-10-28",
+            "unreadable": 0
+          },
+          "ifeval": {
+            "score": 0.2,
+            "run_class": "smoke",
+            "n": 10,
+            "at": "2026-10-28",
+            "unreadable": 0
+          },
+          "mmlu-pro": {
+            "score": 0.6857142857142857,
+            "run_class": "smoke",
+            "n": 140,
+            "at": "2026-10-28",
+            "unreadable": 3
+          },
+          "humaneval+": {
+            "score": 0.72,
+            "run_class": "smoke",
+            "n": 50,
+            "at": "2026-10-28",
+            "unreadable": null
+          }
+        },
+        "pipeline": 0.691,
+        "pipeline_tests": 6,
+        "runtime": {
+          "decode_tps": 4.75,
+          "prompt_tps": 65.07,
+          "ctx": "8192",
+          "tensor_split": "44,10,10,10,7",
+          "file": "k2-v2-instruct_70b_runtime_characterization_20261027.json",
+          "at": "20261027"
+        }
       },
       {
         "model": "mellum2.1:12b-a2.5b",
@@ -5152,6 +5327,74 @@
         },
         "pipeline": null,
         "pipeline_tests": 0,
+        "runtime": null
+      },
+      {
+        "model": "qwen3.6:35b-a3b",
+        "status": "archived",
+        "placement": "single_gpu",
+        "tier": 3,
+        "profiles": [
+          "default",
+          "interactive",
+          "orchestration"
+        ],
+        "roles": [],
+        "source_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "superseded_by": null,
+        "scores": {
+          "bbh": {
+            "score": 0.9133333333333333,
+            "run_class": "validated",
+            "n": 1350,
+            "at": "2026-11-03",
+            "unreadable": 9
+          },
+          "gsm8k": {
+            "score": 0.94,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-11-03",
+            "unreadable": 0
+          },
+          "drop": {
+            "score": 0.88,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-11-03",
+            "unreadable": 0
+          },
+          "ifeval": {
+            "score": 0.86,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-11-03",
+            "unreadable": 0
+          },
+          "mmlu-pro": {
+            "score": 0.7857142857142857,
+            "run_class": "validated",
+            "n": 280,
+            "at": "2026-11-04",
+            "unreadable": 18
+          },
+          "humaneval+": {
+            "score": 0.8902439024390244,
+            "run_class": "full",
+            "n": 164,
+            "at": "2026-11-04",
+            "unreadable": null
+          },
+          "mbpp+": {
+            "score": 0.7671957671957672,
+            "run_class": "full",
+            "n": 378,
+            "at": "2026-11-04",
+            "unreadable": null
+          }
+        },
+        "pipeline": 0.87,
+        "pipeline_tests": 6,
         "runtime": null
       },
       {

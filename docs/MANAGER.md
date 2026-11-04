@@ -104,6 +104,17 @@ reconciler heartbeats, renews leases with a load, runtime or queued item behind 
 orphans. `rigctl unload` queues an `unload` item and releases the lease when it is done.
 `rigctl status` shows the controller (this one, the active one) and the last plan items.
 
+For an already published route that must stay off a busy card, use `rigctl load PROFILE --gpus 1,2,3`.
+The manager fits and leases exactly those cards under the published profile ID, so the gateway ready
+roster remains usable by harnesses. The API equivalent is
+`POST /v1/manager/profiles/PROFILE/load` with `{"gpu_ids":[1,2,3]}`. An empty, duplicate, or
+invalid GPU list is rejected; requesting a different GPU set from a profile that is already ready
+returns 409. Without `--gpus`, the existing automatic placement policy applies. This change was
+motivated by a 2026-11-02 SearXNG trial: a fit preview on GPU 5 did not constrain a later published
+`coder-7b` load, which chose GPU 0. The load was immediately unloaded. The new contract passed
+58 manager/gateway regression tests in `docs/receipts/gpu_pinned_profile_2026-11-02.txt`.
+The code was staged without restarting the live gateway while GPU 0 was kept available for benchmarks.
+
 ## Model loads: any registry model on any cards (2026-10-18)
 
 "Load X on Y cards" is two checks, one per layer:
@@ -153,10 +164,12 @@ observations because they are not one perfectly linear context formula.
 The manager computes the card set and `tensor_split` for the requested
 context and available memory, then validates the actual allocation. Compute
 is calibrated per card count. With two comparable speed observations for the
-same GGUF, runtime image, micro-batch, and nearby context, automatic placement
-chooses the card set with the shortest estimated 1,024-token prompt plus
-256-token response. Other models retain the existing `SAME_CLASS_MAX_CARDS=2`
-placement fallback. Calls without `ctx` use the selected profile's working context by default.
+same GGUF, runtime image, micro-batch, and nearby context, non-chat automatic
+placement can choose the card set with the shortest estimated 1,024-token
+prompt plus 256-token response. Interactive chat now tries the 3090 alone,
+then the smallest fitting 3090 + 1060 split; when the 3090 is occupied,
+it tries the available 1060s. Other non-chat models retain the existing
+`SAME_CLASS_MAX_CARDS=2` placement fallback. Calls without `ctx` use the selected profile's working context by default.
 The library records `context_bounds.min` and `context_bounds.max` for current models; the maximum
 is the GGUF trained limit, not a guarantee of quality or a tested fit. `min` is a deliberate
 lower-context request, and `max` is an opt-in capacity search. The manager still checks
@@ -175,39 +188,49 @@ not the model's compact baseline. `context_bounds.max` is the GGUF trained
 ceiling, not a measured promise that the model fits or recalls correctly at
 that depth. Keep these three facts separate in results and API responses.
 
-The desired compact baseline is **the largest measured context that fits on
-the smallest preferred, homogeneous GPU group**. A worker-pool model starts
-with the fewest GTX 1060s that can hold it; a brain-pool model starts with
-the single RTX 3090 Ti when it fits. Add cards within the same pool to reach
-longer contexts. At the trained ceiling, record the fewest cards that
-actually load and pass depth/recall checks. If no pure pool can hold the
-requested context, a 3090+1060 split is the last capacity option. If all
-six cards still fall short, record the highest validated context and mark
-the trained ceiling unreachable on this rig.
+Plan for the **desired model at the desired context**, using only currently
+available cards. An explicit context remains exact; otherwise use the
+selected profile's working context.
 
-The **minimum deployment setting** is the largest measured context on the
-fewest cards that fully load the model; it is not `context_bounds.min` or
-`context_mode=min`. The **maximum deployment setting** is the largest
-validated context on the largest allowed card group, no higher than the
-trained ceiling. If the weights already require every available card, the
-two deployment settings collapse to one: the largest context that fits on
-all cards. This can be far short of the trained ceiling. Verify the minimum
-card count for each quant rather than assuming every roughly 70B model needs
-all six: K2-V2 Q4_K_M has a manager fit on five cards at 8K, pending a real
-load check (2026-10-27).
+- **3090 available:** try it alone. If that fit fails, add the fewest
+  available 1060s that make a full-GPU split fit. A small model stops at
+  the 3090-only step.
+- **3090 occupied:** try one available 1060, then add only as many 1060s
+  as the requested context requires. A small model may stop at one 1060.
+- **No full-GPU fit:** consider host-RAM offload, then a compatible
+  Strata NVMe-backed placement. These are separate runtime paths; the
+  current GPU-only planner does not select them automatically.
 
-A brain-pool model may have two placements for the **same context, batch,
-GGUF and runtime options**: fast on the 3090, slower on 1060s only. When
-the 3090 is busy, the slower homogeneous placement can be used if it fits;
-it must not silently shrink context. A separately requested lower-context
-run is a different capacity choice. Worker-pool and brain-pool are
-placement preferences, not model identities or saved layer splits.
+Do not silently shrink the requested context. Extra split devices can
+slow decode after the target fits. The ordering is a placement preference,
+not a universal speed guarantee across models, contexts, layer splits,
+and runtime engines. In matched Nemotron 32K runs, 3090 + three 1060s
+decoded at 24.63 tok/s versus 6.26 tok/s for 3090 + host RAM. Qwen3.6
+35B at 262K decoded faster on 3090 + one 1060 than on all six. A
+storage-backed Strata placement needs its own warm/cold speed and recall
+evidence. At the trained ceiling, record the fewest cards or memory
+tiers that load and pass depth/recall checks; if it remains unreachable,
+report the highest validated context separately.
+
+The intended **minimum deployment profile** is the fewest cards that load the model at a chosen minimum-useful context, not the manager's 4K/8K planning floor. Provisional context targets are 8K for small models, 16K for roughly 30B-class models, and 32K for roughly 70B+ models; task needs and measured attention/KV behavior can justify exceptions. Parameter count is a useful workload proxy but does not directly determine KV memory.
+
+The intended **maximum deployment profile** is the fewest allowed cards that load and pass deep-context recall at the model's trained ceiling. Adding cards beyond that point is not a better maximum and has often slowed split decode. If the trained ceiling cannot be reached, leave the maximum profile unavailable and report the highest validated context separately. A Strata-supported placement may later reach the ceiling using host RAM or storage, but it needs its own context, recall, throughput, and memory-tier receipts before promotion. A giant model whose weights need every card at the minimum-useful context can therefore have only a validated minimum profile. The current registry's `context_bounds.min/max` are a planning floor and trained ceiling, not stored placement profiles; the manager computes splits dynamically, and these deployment-profile semantics are not yet encoded as a separate machine-readable contract.
+
+A model may have two placements for the **same context, batch, GGUF
+and runtime options**: on the 3090, or on 1060s when it is occupied.
+A separately requested lower-context run is a different capacity choice.
+No side-worker model class or saved layer split is needed.
 
 **Implementation status:** `context_mode=min` currently means the 4K/8K
 planning floor, and `context_mode=max` currently estimates the largest
-fit on the selected cards (all free cards if none are named). The automatic
-planner does not yet enforce the pool ordering or provide the fast/slow
-fallback described above. The benchmarking
+fit on the selected cards (all free cards if none are named). For ordinary
+interactive chat fits, the manager now enforces the available-3090
+branch (3090 alone, then smallest fitting 3090 + 1060 split) or the
+occupied-3090 branch (one 1060, then smallest fitting 1060 split). There
+is no separate side-worker class. Explicit GPU pinning and current card
+availability cover placements that need a particular card. Host-RAM
+and Strata placement are separate runtime paths and are not automatically
+reached by this GPU-only planner. The benchmarking
 `CONTEXT_PROFILE_AUDIT_2026-10-26.md` is a read-only capacity projection;
 it is not the measured compact-baseline/full-ceiling matrix. Keep working
 contexts stable for benchmark comparability while the placement policy and
@@ -219,7 +242,7 @@ estimate was checked on Ornith-1.5-9B over two 1060s: weights 4812 MiB and KV 17
 the same as llama.cpp measured.
 
 ```text
-rigctl fit ornith-1.5:9b [--ctx 100000]         # answer only; the harness picks the cards
+rigctl fit ornith-1.5:9b [--ctx 100000]         # answer only; manager plans placement
 rigctl fit ornith-1.5:9b --cards 2              # working context on a fitting two-card set
 rigctl fit ministral-3:8b --gpus 1 --context-mode min   # 8K on one 1060
 rigctl fit ministral-3:8b --gpus 1,2 --context-mode max # largest projected fit on that split

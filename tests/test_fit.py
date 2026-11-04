@@ -83,6 +83,26 @@ def test_chat_prefers_fastest_free_single_card_and_falls_back(tmp_path):
     assert fit.choose_chat(s, free[:2], ctx=one * 2)["gpus"] == [1, 2]
 
 
+def test_chat_prefers_3090_overflow_before_1060_only_split(tmp_path):
+    # Too large for the 3090 alone, but fits on it plus one 1060.
+    s = fit.shape_for(dense(tmp_path, n_layer=40, layer_mb=640, output_mb=200), "overflow")
+    free = [card(1), card(2), card(3), card(4), card(5), card(0, 24564)]
+    assert not fit.plan(s, [free[-1]], ctx=8192)["fits"]
+    assert fit.plan(s, [free[-1], free[0]], ctx=8192)["fits"]
+    assert fit.choose_chat(s, free, ctx=8192)["gpus"] == [0, 1]
+    backup = fit.choose_chat(s, free[:-1], ctx=8192)
+    assert backup is not None and backup["fits"] and 0 not in backup["gpus"]
+
+
+def test_chat_placement_changes_when_desired_context_grows(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=1000, output_mb=200,
+                            ctx_train=131072, **{"llama.attention.head_count_kv": 32}), "context")
+    free = [card(0, 24564), card(1), card(2)]
+    assert fit.choose_chat(s, free, ctx=8192)["gpus"] == [0]
+    assert not fit.plan(s, [free[0]], ctx=32768)["fits"]
+    assert fit.choose_chat(s, free, ctx=32768)["gpus"] == [0, 1]
+
+
 def test_measured_response_speed_can_choose_the_3090_for_a_worker(tmp_path):
     s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400), "m")
     free = [card(1), card(2), card(0, 24564)]

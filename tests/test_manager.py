@@ -372,6 +372,16 @@ def test_claimed_cards_leave_the_pool(menv):
     assert c.post("/v1/manager/claims/bench/release").status_code == 200
 
 
+def test_published_profile_load_can_pin_gpus(menv):
+    c = menv["client"]
+    r = c.post("/v1/manager/profiles/small/load", json={"gpu_ids": [1]})
+    assert r.status_code == 200, r.text
+    assert menv["leases"]()[0]["gpu_ids"] == [1]
+    assert menv["rig"]()["starts"][0]["gpus"] == "1"
+    assert c.post("/v1/manager/profiles/small/load", json={"gpu_ids": [0]}).status_code == 409
+    assert c.post("/v1/manager/profiles/small/load", json={"gpu_ids": []}).status_code == 400
+
+
 def test_failed_rig_job_releases_the_lease_and_reports_the_log(menv, monkeypatch):
     monkeypatch.setenv("FAKE_DETACH", "fail")
     r = chat(menv["client"], "gpu-rig/small")
@@ -596,4 +606,3 @@ def test_a_rig_that_lost_its_plan_gets_the_controller_copy_back(menv):
     asyncio.run(manager.reconcile_once())
     st = menv["rig"]()
     assert st.get("restored") and len(st["plan_items"]) == saved and st["plan_hold"] is None
-

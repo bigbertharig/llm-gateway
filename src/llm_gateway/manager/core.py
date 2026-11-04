@@ -695,7 +695,8 @@ class Manager:
 
     # ------------------------------------------------------------------ interactive profiles
 
-    async def load_profile(self, profile_id: str, profile: dict, claim: str | None = None) -> None:
+    async def load_profile(self, profile_id: str, profile: dict, claim: str | None = None,
+                           gpu_ids: list[int] | None = None) -> None:
         """Load a published profile and wait for it to serve. A profile names no cards: it is planned like any
         model load (the fit picks the cards from what is free and what the history says, and the largest
         context that fits, at least the profile's ctx_size), under the profile's own id so the gateway's
@@ -705,7 +706,7 @@ class Manager:
         load keeps going on the rig, with its lease.
         """
         use = profile.get("use", "chat")
-        fit_kw = {"profile": profile.get("registry_profile"), "ctx": None,
+        fit_kw = {"profile": profile.get("registry_profile"), "ctx": None, "gpu_ids": gpu_ids,
                   "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT)}
         try:
             plan_ = await self.fit_model(profile["model"], claim=claim, use=use, requester=profile_id, **fit_kw)
@@ -714,7 +715,7 @@ class Manager:
             r, shape, kw = await self._shape(profile["model"], use, fit_kw["profile"], None, fit_kw["ctx_min"],
                                              fit.MARGIN_MB_DEFAULT)
             idle = [{**g, "used_mb": 0} for g in (self._obs or {}).get("gpus", [])]
-            if exc.status == 422 and fit.choose(shape, idle, **kw) is not None:
+            if gpu_ids is None and exc.status == 422 and fit.choose(shape, idle, **kw) is not None:
                 raise ManagerError(503, f"no capacity for {profile_id} now: {exc}") from exc
             raise
         await self._load_planned(profile["model"], plan_, extra_args=None, claim=claim, use=use,

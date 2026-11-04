@@ -162,6 +162,7 @@ def main() -> int:
     sub.add_parser("claims")
     s = sub.add_parser("kill"); s.add_argument("--gpus", required=True); s.add_argument("--reason", default="")
     s = sub.add_parser("load"); s.add_argument("profile"); s.add_argument("--claim")
+    s.add_argument("--gpus", help="pin a published profile to explicit GPU ids, e.g. 1,2,3")
     s = sub.add_parser("unload"); s.add_argument("profile")
     for name in ("fit", "load-model"):
         s = sub.add_parser(name); s.add_argument("model")
@@ -334,7 +335,9 @@ def main() -> int:
         code, out = call("POST", "/v1/manager/kill", {"gpu_ids": [int(g) for g in a.gpus.split(",")],
                                                       "reason": a.reason})
     elif a.cmd == "load":
-        code, out = call("POST", f"/v1/manager/profiles/{a.profile}/load", {"claim": a.claim})
+        code, out = call("POST", f"/v1/manager/profiles/{a.profile}/load",
+                         {"claim": a.claim,
+                          "gpu_ids": [int(g) for g in a.gpus.split(",")] if a.gpus else None})
     else:
         code, out = call("POST", f"/v1/manager/profiles/{a.profile}/unload")
     print(json.dumps(out, indent=2))

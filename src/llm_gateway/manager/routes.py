@@ -103,8 +103,17 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
         if profile_id not in published:
             raise ManagerError(404, f"unknown profile {profile_id}; published: {sorted(published)}")
         b = await _body(request)
+        gpu_ids = b.get("gpu_ids")
+        if gpu_ids is not None and (not isinstance(gpu_ids, list) or not gpu_ids
+                                    or any(type(g) is not int or g < 0 for g in gpu_ids)
+                                    or len(set(gpu_ids)) != len(gpu_ids)):
+            raise ManagerError(400, "gpu_ids must be a nonempty list of distinct nonnegative GPU indexes")
         port = await manager.rig.ensure_ready(
-            profile_id, start=lambda: manager.load_profile(profile_id, published[profile_id], b.get("claim")))
+            profile_id, start=lambda: manager.load_profile(profile_id, published[profile_id], b.get("claim"), gpu_ids))
+        if gpu_ids is not None:
+            loaded = (await manager.observe(fresh=True)).get("profiles", {}).get(profile_id)
+            if not loaded or sorted(loaded.get("gpus") or []) != sorted(gpu_ids):
+                raise ManagerError(409, f"profile {profile_id} is ready on a different GPU set")
         return {"profile": profile_id, "port": port, "state": "ready"}
 
     @r.post("/profiles/{profile_id}/unload")
