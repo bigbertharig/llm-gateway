@@ -203,8 +203,10 @@ selected profile's working context.
   host RAM, keeps 2 GiB of GPU headroom, and caps the estimated host
   footprint at 18 GiB under the rig's 20g llama container limit. It keeps the requested context and records
   the numeric GPU layer count. Explicit GPU requests and benchmark loads
-  stay GPU-only for reproducibility. A compatible Strata NVMe-backed
-  placement remains a separate runtime path to implement and validate.
+  stay GPU-only for reproducibility. If no GPU or admitted host-RAM plan
+  fits, a registered Strata pack may use the validated GPU 0 storage tier.
+  A Strata-only pack goes directly to that tier. `engine=strata` explicitly
+  selects it for paired tests; `engine=auto` preserves the normal order.
 
 Do not silently shrink the requested context. Extra split devices can
 slow decode after the target fits. The ordering is a placement preference,
@@ -234,14 +236,17 @@ branch (3090 alone, then smallest fitting 3090 + 1060 split) or the
 occupied-3090 branch (one 1060, then smallest fitting 1060 split). There
 is no separate side-worker class. Explicit GPU pinning and current card
 availability cover placements that need a particular card. A bounded
-host-RAM fallback is now selected for unpinned chat loads after all
+host-RAM placement is now selected for unpinned chat loads after all
 available full-GPU options fail. The rig verifies the actual GPU layer
 count, exact context, and at least 4 GiB available host RAM before ready;
 it disables container swap and host prompt cache for this path. A 2026-11-03 Nemotron 32K
 trial at the initial 512 MiB GPU margin failed during CUDA compute-buffer
 allocation; the margin is now 2 GiB and that placement is not admitted
-under the current 18 GiB host budget. Strata is still experimental in
-benchmarking and is not an automatic load backend. The successful Qwen
+under the current 18 GiB host budget. The manager now plans registered
+Strata packs on GPU 0 with their measured context and host-memory bounds;
+the rig owns launch, health checks, unload, and the lease-backed profile.
+The Qwen3.8 Q2_0 pack is Strata-only, while Qwen3.6 XL still uses llama.cpp
+when it fits unless a caller explicitly requests Strata. The successful Qwen
 262K smoke and the failed Nemotron calibration are in
 `receipts/ram_spillover_2026-11-03.md`. The benchmarking
 `CONTEXT_PROFILE_AUDIT_2026-10-26.md` is a read-only capacity projection;
@@ -265,7 +270,11 @@ rigctl unload ornith-1.5-9b-g1-3                # profile id: model plus its car
 
 HTTP: `POST /v1/manager/models/fit`, `POST /v1/manager/models/load` with
 {model, cards | gpu_ids, ctx?, context_mode? (working|min|max), ctx_min?, use?, profile?,
-claim?, margin_mb?, extra_args?}. `ctx` and a non-working `context_mode` are mutually exclusive.
+claim?, margin_mb?, extra_args?, engine? (auto|llama|strata)}. `ctx` and a non-working
+`context_mode` are mutually exclusive. Strata loads use the rig's pinned control and prepared pack;
+the two size fields in the catalog sum to source-pack disk bytes, not resident RAM/VRAM or the
+separately prepared expert pack. A ready managed Strata load appears in `/v1/models` and
+`/v1/rig/ready-roster`; its gateway model id is `gpu-rig/<profile id>`.
 The lease is the manager's (owner llm-gateway; controller by use: benchmarks, interactive, plans), so
 the reconciler renews it while the rig profile lives and `rigctl unload` releases it.
 

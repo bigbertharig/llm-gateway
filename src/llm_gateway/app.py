@@ -156,9 +156,7 @@ def create_app(
         if not isinstance(model, str) or not model.startswith(prefix):
             raise GatewayError(404, f"model must be one of {names}", "model_not_found")
         pid = model[len(prefix):]
-        if pid not in published:
-            raise GatewayError(404, f"unknown model {model!r}; published: {names}", "model_not_found")
-        return pid
+        return pid  # a ready managed Strata load can also be addressed by its profile id
 
     async def read_json(request: Request) -> tuple[bytes, dict]:
         raw = await request.body()
@@ -227,6 +225,15 @@ def create_app(
             }
             for pid, p in profiles.all().items()
         ]
+        try:
+            status = await rig.status()
+        except RigUnavailable:
+            status = {}
+        for loaded in dynamic_strata_ready(status):
+            data.append({"id": f"{s.model_prefix}/{loaded['id']}", "object": "model",
+                         "created": 0, "owned_by": s.model_prefix,
+                         "description": f"managed Strata load: {loaded['model']}",
+                         "context_length": loaded["ctx_size"]})
         return {"object": "list", "data": data}
 
     @app.get("/v1/rig/status")
@@ -250,11 +257,27 @@ def create_app(
                 continue
             yield pid, profile, loaded
 
+    def dynamic_strata_ready(status: dict):
+        offered = profiles.all()
+        for loaded in status.get("profiles", []):
+            if not isinstance(loaded, dict) or loaded.get("backend") != "strata" or loaded.get("state") != "ready":
+                continue
+            if loaded.get("id") in offered or not isinstance(loaded.get("id"), str):
+                continue
+            if not isinstance(loaded.get("model"), str) or not isinstance(loaded.get("upstream_model"), str):
+                continue
+            if not isinstance(loaded.get("ctx_size"), int) or loaded["ctx_size"] <= 0:
+                continue
+            if not isinstance(loaded.get("port"), int) or loaded["port"] <= 0:
+                continue
+            yield loaded
+
     @app.get("/v1/rig/ready-roster")
     async def ready_roster():
         """Read-only routes a harness may use without asking the rig to load a model."""
         data = []
-        for pid, profile, loaded in matching_ready(await rig.status()):
+        status = await rig.status()
+        for pid, profile, loaded in matching_ready(status):
             data.append({
                 "id": f"{s.model_prefix}/{pid}",
                 "model": loaded["model"],
@@ -265,7 +288,20 @@ def create_app(
                 "tool_call_format": None,
                 "tokenizer_path": "/tokenize",
             })
+        for loaded in dynamic_strata_ready(status):
+            data.append({"id": f"{s.model_prefix}/{loaded['id']}", "model": loaded["model"],
+                         "registry_profile": None, "state": "ready",
+                         "context_length": loaded["ctx_size"], "output_limit": None,
+                         "tool_call_format": None, "tokenizer_path": None})
         return {"object": "ready_roster", "version": 1, "data": data}
+
+    async def dynamic_strata_route(pid: str) -> dict:
+        for loaded in dynamic_strata_ready(await rig.status()):
+            if loaded["id"] == pid:
+                return loaded
+        names = sorted(f"{s.model_prefix}/{name}" for name in profiles.all())
+        raise GatewayError(404, f"unknown model {s.model_prefix}/{pid}; published: {names}; "
+                           "managed Strata routes must already be ready", "model_not_found")
 
     async def route_port(request: Request, pid: str) -> int:
         if request.headers.get("X-Require-Ready", "").lower() == "true":
@@ -281,7 +317,12 @@ def create_app(
     async def completions(request: Request):
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
-        port = await route_port(request, pid)
+        if pid in profiles.all():
+            port = await route_port(request, pid)
+        else:
+            loaded = await dynamic_strata_route(pid)
+            port = loaded["port"]
+            raw = json.dumps({**body, "model": loaded["upstream_model"]}).encode()
         return await forward(request, request.url.path, raw, port, stream=bool(body.get("stream")), profile=pid)
 
     @app.post("/tokenize")
@@ -290,6 +331,8 @@ def create_app(
         """llama-server tokenizer, routed by `model`. Exact token counts for compaction decisions."""
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
+        if pid not in profiles.all():
+            raise GatewayError(501, "Strata does not expose the gateway tokenizer endpoint", "unsupported")
         port = await route_port(request, pid)
         return await forward(request, request.url.path, raw, port, stream=False)
 

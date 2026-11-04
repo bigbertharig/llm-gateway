@@ -792,16 +792,76 @@ class Manager:
               "runtime_image": r.get("image")}
         return r, shape, kw
 
+    def _strata_plan(self, r: dict, obs: dict, free: list[dict], *,
+                     ctx: int | None, ctx_min: int, context_mode: str,
+                     cards: int | None, gpu_ids: list[int] | None) -> dict:
+        """Measured one-card Strata tier. The rig remains the authority on launch and readiness."""
+        cfg = r.get("strata") or {}
+        bounds = r.get("context_bounds") or {}
+        maximum = min(int(bounds.get("max") or 0), int(cfg.get("max_context") or 0))
+        minimum = max(int(bounds.get("min") or fit.CTX_MIN_DEFAULT), ctx_min)
+        if context_mode not in ("working", "min", "max"):
+            raise ManagerError(400, "context_mode must be working, min, or max")
+        if ctx is not None and context_mode != "working":
+            raise ManagerError(400, "ctx is exact; use context_mode only when ctx is omitted")
+        wanted = (ctx if ctx is not None else maximum if context_mode == "max" else
+                  minimum if context_mode == "min" else
+                  max(int((r.get("runtime") or {}).get("ctx_size") or minimum), minimum))
+        reason = None
+        if not cfg:
+            reason = f"{r['model']} has no registered Strata pack"
+        elif cards not in (None, 1) or (gpu_ids is not None and sorted(gpu_ids) != [0]):
+            reason = "validated Strata placement uses GPU 0 alone"
+        elif wanted < minimum or wanted > maximum:
+            reason = f"Strata context {wanted} is outside validated range {minimum}..{maximum}"
+        elif not any(g["index"] == 0 for g in free):
+            reason = "GPU 0 is unavailable for Strata"
+        else:
+            available = (obs.get("guard") or {}).get("mem_available_mb")
+            required = int(cfg.get("min_host_available_mb") or 0)
+            if available is None or int(available) < required:
+                reason = f"Strata needs {required} MiB available host RAM; observed {available}"
+        return {"fits": reason is None, "reason": reason or "registered Strata pack and resources available",
+                "placement": "strata", "backend": "strata", "gpus": [0], "ctx": wanted,
+                "tensor_split": None, "cards": [], "strata": cfg,
+                "model_size_bytes": r.get("model_size_bytes"),
+                "ngram_size_bytes": r.get("ngram_size_bytes", 0),
+                "total_size_bytes": r.get("total_size_bytes"),
+                "chosen_by": "gateway: registered Strata storage tier"}
+
     async def fit_model(self, model: str, *, cards: int | None = None, gpu_ids: list[int] | None = None,
                         ctx: int | None = None, ctx_min: int = fit.CTX_MIN_DEFAULT, use: str = "benchmark",
                         profile: str | None = None, claim: str | None = None,
                         margin_mb: int = fit.MARGIN_MB_DEFAULT, requester: str = "",
-                        batch_size: int | None = None, context_mode: str = "working") -> dict:
+                        batch_size: int | None = None, context_mode: str = "working",
+                        engine: str = "auto") -> dict:
         """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`, or, with neither, on the
         fewest free cards that give `ctx` / at least `ctx_min`)": will it fit, at what context and split.
         Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
         if cards and gpu_ids:
             raise ManagerError(400, "give cards (a count) or gpu_ids, not both")
+        if use not in memory.USES:
+            raise ManagerError(400, f"use must be one of {memory.USES}")
+        if engine not in ("auto", "llama", "strata"):
+            raise ManagerError(400, "engine must be auto, llama, or strata")
+        try:
+            selected = models.resolve(model, use, profile)
+        except (KeyError, FileNotFoundError) as exc:
+            raise ManagerError(404, str(exc.args[0] if exc.args else exc)) from exc
+        if engine == "llama" and (selected.get("strata") or {}).get("only"):
+            raise ManagerError(422, f"{model} is registered as a Strata-only pack")
+        if engine == "strata" or (engine == "auto" and (selected.get("strata") or {}).get("only")):
+            obs = await self.observe(fresh=True)
+            try:
+                free, _ = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), claim)
+            except KeyError as exc:
+                raise ManagerError(404, str(exc.args[0])) from exc
+            result = self._strata_plan(selected, obs, free, ctx=ctx, ctx_min=ctx_min,
+                                       context_mode=context_mode, cards=cards, gpu_ids=gpu_ids)
+            if not result["fits"]:
+                raise ManagerError(422, result["reason"], fit=result)
+            return {**result, "registry_profile": selected["profile"], "status": selected["status"],
+                    "use": use, "gguf_path": selected["gguf_path"]}
         r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb, batch_size, context_mode)
         obs = await self.observe(fresh=True)
         try:
@@ -856,6 +916,11 @@ class Manager:
                     if ram["fits"]:
                         result = {**ram, "chosen_by": "gateway: GPU then bounded host RAM"}
                         break
+        if not result.get("fits") and engine == "auto" and r.get("strata"):
+            tier = self._strata_plan(r, obs, free, ctx=kw["ctx"], ctx_min=kw["ctx_min"],
+                                     context_mode=context_mode, cards=cards, gpu_ids=gpu_ids)
+            if tier["fits"]:
+                result = tier
         result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"],
                       ubatch=kw["ubatch"], context_mode=context_mode,
                       context_bounds={"min": kw["ctx_min"], "working": r.get("runtime", {}).get("ctx_size"),
@@ -982,6 +1047,14 @@ class Manager:
         demand."""
         await self._require_control()
         gpu_ids = sorted({int(g) for g in fit_kw.get("gpu_ids") or []})
+        if not gpu_ids and not fit_kw.get("cards") and wait_s != 0:
+            try:
+                ready = models.resolve(model, use, fit_kw.get("profile"))
+                if fit_kw.get("engine") == "strata" or (ready.get("strata") or {}).get("only"):
+                    gpu_ids = [0]
+                    fit_kw = {**fit_kw, "gpu_ids": gpu_ids}
+            except (KeyError, FileNotFoundError):
+                pass  # fit_model reports the proper missing-model error below
         if force:
             if not gpu_ids:
                 raise ManagerError(400, "force needs explicit gpu_ids")
@@ -1024,6 +1097,8 @@ class Manager:
     async def _load_planned(self, model: str, plan_: dict, *, extra_args: list[str] | None, claim: str | None,
                             use: str, owner: str = "", profile_id: str | None = None, **fit_kw) -> dict:
         r = models.resolve(model, use, fit_kw.get("profile"))
+        if plan_.get("backend") == "strata" and extra_args:
+            raise ManagerError(400, "Strata runtime options are fixed by the registered pack")
         rt = r.get("runtime", {})
         gpus = plan_["gpus"]
         pid = profile_id or models.profile_id(r["model"], gpus)  # a published profile keeps its own id
@@ -1031,11 +1106,13 @@ class Manager:
         spec = {"model": r["model"], "gguf_path": r["gguf_path"], "ctx_size": plan_["ctx"],
                 "batch_size": batch, "parallel": int(rt.get("parallel", 1)),
                 "n_gpu_layers": plan_.get("n_gpu_layers", "all"), "allow_partial_offload": plan_.get("placement") == "ram",
+                 "backend": plan_.get("backend", "llama"),
+                 **({"strata": r["strata"]} if plan_.get("backend") == "strata" else {}),
                  "extra_args": [*r.get("extra_args", []), *(extra_args or [])],
                 "image": r.get("image"), "use": use, "registry_profile": r["profile"],
                 **({"tensor_split": plan_["tensor_split"]} if plan_.get("tensor_split") else {})}
         guard = (await self.observe(fresh=True)).get("guard") or {}
-        cache_mib = (0 if plan_.get("placement") == "ram" else
+        cache_mib = (0 if plan_.get("placement") in ("ram", "strata") else
                      memory.cache_ram_mib(use, guard.get("mem_available_mb")))
         # Owner llm-gateway, like profile loads: the reconciler renews it while the rig profile lives.
         lease = await self.acquire(controller=models.CONTROLLER_BY_USE.get(use, "interactive"), owner=OWNER,
@@ -1083,7 +1160,7 @@ class Manager:
         try:  # what llama.cpp allocated: the next fit of this GGUF plans its compute buffer from it
             # A CPU-offload compute buffer is not a calibration point for a
             # later full-GPU fit of the same GGUF/card count.
-            if plan_.get("placement") != "ram" and not fit.record_observation(
+            if plan_.get("placement") not in ("ram", "strata") and not fit.record_observation(
                     facts["source"], r["model"], facts["ubatch"], gpus, loaded.get("fit"),
                                           **{k: v for k, v in facts.items()
                                              if k not in ("source", "model", "ubatch", "gpus")},

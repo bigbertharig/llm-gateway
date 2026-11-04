@@ -129,7 +129,8 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRout
                 "profile": b.get("profile"), "claim": b.get("claim"),
                 "margin_mb": int(b["margin_mb"]) if b.get("margin_mb") is not None else fit.MARGIN_MB_DEFAULT,
                 "batch_size": int(b["batch_size"]) if b.get("batch_size") else None,
-                "context_mode": b.get("context_mode", "working")}
+                "context_mode": b.get("context_mode", "working"),
+                "engine": b.get("engine", "auto")}
 
     @r.post("/models/fit")
     async def fit_model(request: Request):

@@ -294,6 +294,24 @@ def test_ready_roster_uses_served_context_and_matching_identity(client, env):
     assert env["starts"]() == []
 
 
+def test_ready_managed_strata_route_is_listed_and_rewrites_model(client, env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"mode": "bench", "profiles": [{
+        "id": "q38-g0", "model": "qwen3.8-flash-next:q2_0", "backend": "strata",
+        "upstream_model": "qwen3.8-flash-next-q2_0", "ctx_size": 8192,
+        "port": UPSTREAM_PORT, "state": "ready",
+    }]}))
+    model = "gpu-rig/q38-g0"
+    assert model in [m["id"] for m in client.get("/v1/models").json()["data"]]
+    roster = client.get("/v1/rig/ready-roster").json()["data"]
+    assert roster[-1]["id"] == model and roster[-1]["tokenizer_path"] is None
+    response = chat(client, model=model)
+    assert response.status_code == 200
+    assert response.json()["echo_model"] == "qwen3.8-flash-next-q2_0"
+    assert client.post("/tokenize", json={"model": model, "content": "hi"}).status_code == 501
+    assert env["starts"]() == []
+
+
 def test_ready_roster_excludes_cold_and_unknown_limits(client, env):
     state = Path(os.environ["FAKE_RIG_STATE"])
     state.write_text(json.dumps({"profiles": [

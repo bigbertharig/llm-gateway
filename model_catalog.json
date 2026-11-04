@@ -3032,7 +3032,9 @@
         "family": "qwen36",
         "model": "ud-q4_k_xl",
         "model_path": "/data/model-hotset/qwen3.6-35b-a3b-strata-xl/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
-        "validated_version": "0.2.10"
+        "validated_version": "0.2.10",
+        "max_context": 8192,
+        "min_host_available_mb": 8192
       },
       "profiles": {
         "default": {
@@ -3161,7 +3163,11 @@
         "model_path": "/data/model-hotset/qwen3.8-flash-next-q2_0",
         "data_dir": "/data/bench-staging/strata-v0.2.10/data",
         "resident_budget_gib": 8,
-        "validated_version": "0.2.10"
+        "validated_version": "0.2.10",
+        "only": true,
+        "max_context": 262144,
+        "min_host_available_mb": 12288,
+        "prepared_experts_path": "/data/bench-staging/strata-v0.2.10/data/packs/q2_0/experts.bin"
       },
       "profiles": {
         "default": {
@@ -3250,7 +3256,7 @@
     }
   },
   "summary": {
-    "generated_at": "2026-11-03T20:02:45",
+    "generated_at": "2026-11-03T20:33:29",
     "key_tests": [
       "bbh",
       "gsm8k",
