@@ -63,6 +63,18 @@ def test_wont_fit_says_why_and_suggests_cards(tmp_path):
     assert any("GPU 0" in a for a in alts) and any(a.startswith("4 card(s)") for a in alts)
 
 
+def test_ram_spill_keeps_requested_context_and_reserve(tmp_path):
+    s = fit.shape_for(dense(tmp_path, n_layer=40, layer_mb=640, output_mb=200), "overflow")
+    gpu = card(0, 24564)
+    assert not fit.plan(s, [gpu], ctx=8192)["fits"]
+    ram = fit.plan_ram(s, gpu, ctx=8192, ubatch=64, mem_available_mb=28000)
+    assert ram["fits"] and ram["placement"] == "ram" and ram["ctx"] == 8192
+    assert 0 < ram["n_gpu_layers"] < 40
+    assert ram["host_estimate_mb"] <= ram["host_budget_mb"]
+    assert ram["cards"][0]["headroom_mb"] >= ram["margin_mb"]
+    assert not fit.plan_ram(s, gpu, ctx=8192, ubatch=64, mem_available_mb=4096)["fits"]
+
+
 def test_harness_picks_one_card_for_small_context_and_splits_for_big(tmp_path):
     s = fit.shape_for(dense(tmp_path, n_layer=20, layer_mb=200, output_mb=400, ctx_train=262144), "m")
     free = [card(1), card(2), card(3), card(0, 24564)]
@@ -202,6 +214,33 @@ def test_chat_auto_placement_uses_big_card_but_explicit_cards_win(menv, registry
                     json={"model": "small:9b", "use": "chat", "ctx": 8192, "gpu_ids": [1]})
     assert pinned.status_code == 200, pinned.text
     assert pinned.json()["gpus"] == [1]
+
+
+def test_chat_ram_fallback_reaches_rig_with_explicit_partial_spec(menv, registry, tmp_path):  # noqa: F811
+    cat = json.loads(registry.read_text())
+    cat["models"]["big:30b"]["gguf_path"] = dense(
+        tmp_path, n_layer=40, layer_mb=640, output_mb=200, name="ram.gguf")
+    registry.write_text(json.dumps(cat))
+    st = menv["rig"]()
+    st["containers"] = [{"name": f"busy-{i}", "gpus": [i], "port": 12000 + i}
+                        for i in range(1, 6)]
+    st["guard"] = {"level": "ok", "mem_available_mb": 28000}
+    menv["write"](st)
+    c = menv["client"]
+    fit_result = c.post("/v1/manager/models/fit",
+                        json={"model": "big:30b", "use": "chat", "ctx": 8192})
+    assert fit_result.status_code == 200, fit_result.text
+    assert fit_result.json()["placement"] == "ram"
+    assert fit_result.json()["gpus"] == [0]
+    loaded = c.post("/v1/manager/models/load",
+                    json={"model": "big:30b", "use": "chat", "ctx": 8192})
+    assert loaded.status_code == 200, loaded.text
+    args = menv["rig"]()["plan_items"][-1]["args"]
+    spec = args["spec"]
+    assert args["cache_ram"] == 0
+    assert spec["allow_partial_offload"] is True
+    assert 0 < spec["n_gpu_layers"] < 40
+    assert spec["ctx_size"] == 8192
 
 
 def test_unspecified_context_uses_the_profile_working_context(menv, registry):  # noqa: F811

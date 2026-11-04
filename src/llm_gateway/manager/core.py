@@ -844,6 +844,18 @@ class Manager:
                 result = self._keep_for_demand(r["model"], shape, kw, obs, free, result, requester)
         else:
             result = fit.plan(shape, chosen, **kw)
+        # Only interactive, unpinned requests may spill to host RAM. Preserve
+        # the requested context; a missing RAM reading cannot authorize a load.
+        if (not result.get("fits") and use == "chat" and chosen is None
+                and kw["ctx"] is not None):
+            available = (obs.get("guard") or {}).get("mem_available_mb")
+            if available is not None:
+                for card in sorted(free, key=lambda g: (-int(g["total_mb"]), int(g["index"]))):
+                    ram = fit.plan_ram(shape, card, ctx=int(kw["ctx"]), ubatch=int(kw["ubatch"]),
+                                       mem_available_mb=int(available), margin_mb=margin_mb)
+                    if ram["fits"]:
+                        result = {**ram, "chosen_by": "gateway: GPU then bounded host RAM"}
+                        break
         result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"],
                       ubatch=kw["ubatch"], context_mode=context_mode,
                       context_bounds={"min": kw["ctx_min"], "working": r.get("runtime", {}).get("ctx_size"),
@@ -1018,11 +1030,13 @@ class Manager:
         batch = int(fit_kw.get("batch_size") or rt.get("batch_size", 64))
         spec = {"model": r["model"], "gguf_path": r["gguf_path"], "ctx_size": plan_["ctx"],
                 "batch_size": batch, "parallel": int(rt.get("parallel", 1)),
-                "n_gpu_layers": "all", "extra_args": [*r.get("extra_args", []), *(extra_args or [])],
+                "n_gpu_layers": plan_.get("n_gpu_layers", "all"), "allow_partial_offload": plan_.get("placement") == "ram",
+                 "extra_args": [*r.get("extra_args", []), *(extra_args or [])],
                 "image": r.get("image"), "use": use, "registry_profile": r["profile"],
                 **({"tensor_split": plan_["tensor_split"]} if plan_.get("tensor_split") else {})}
         guard = (await self.observe(fresh=True)).get("guard") or {}
-        cache_mib = memory.cache_ram_mib(use, guard.get("mem_available_mb"))
+        cache_mib = (0 if plan_.get("placement") == "ram" else
+                     memory.cache_ram_mib(use, guard.get("mem_available_mb")))
         # Owner llm-gateway, like profile loads: the reconciler renews it while the rig profile lives.
         lease = await self.acquire(controller=models.CONTROLLER_BY_USE.get(use, "interactive"), owner=OWNER,
                                    run_id=f"model-{pid}", gpu_ids=gpus, claim=claim, ttl_s=INTERACTIVE_TTL_S,
@@ -1066,7 +1080,10 @@ class Manager:
             self._in_flight.discard(lease_id)
         loaded = obs.get("profiles", {}).get(pid, {})
         try:  # what llama.cpp allocated: the next fit of this GGUF plans its compute buffer from it
-            if not fit.record_observation(facts["source"], r["model"], facts["ubatch"], gpus, loaded.get("fit"),
+            # A CPU-offload compute buffer is not a calibration point for a
+            # later full-GPU fit of the same GGUF/card count.
+            if plan_.get("placement") != "ram" and not fit.record_observation(
+                    facts["source"], r["model"], facts["ubatch"], gpus, loaded.get("fit"),
                                           **{k: v for k, v in facts.items()
                                              if k not in ("source", "model", "ubatch", "gpus")},
                                           seconds=round(time.monotonic() - started, 1),

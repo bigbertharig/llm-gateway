@@ -197,9 +197,14 @@ selected profile's working context.
   the 3090-only step.
 - **3090 occupied:** try one available 1060, then add only as many 1060s
   as the requested context requires. A small model may stop at one 1060.
-- **No full-GPU fit:** consider host-RAM offload, then a compatible
-  Strata NVMe-backed placement. These are separate runtime paths; the
-  current GPU-only planner does not select them automatically.
+- **No full-GPU fit:** unpinned interactive chat requests with an exact or
+  profile working context try a bounded one-GPU + host-RAM placement. The
+  largest free GPU is tried first. The planner reserves 4 GiB of available
+  host RAM, keeps 2 GiB of GPU headroom, and caps the estimated host
+  footprint at 18 GiB under the rig's 20g llama container limit. It keeps the requested context and records
+  the numeric GPU layer count. Explicit GPU requests and benchmark loads
+  stay GPU-only for reproducibility. A compatible Strata NVMe-backed
+  placement remains a separate runtime path to implement and validate.
 
 Do not silently shrink the requested context. Extra split devices can
 slow decode after the target fits. The ordering is a placement preference,
@@ -228,9 +233,17 @@ interactive chat fits, the manager now enforces the available-3090
 branch (3090 alone, then smallest fitting 3090 + 1060 split) or the
 occupied-3090 branch (one 1060, then smallest fitting 1060 split). There
 is no separate side-worker class. Explicit GPU pinning and current card
-availability cover placements that need a particular card. Host-RAM
-and Strata placement are separate runtime paths and are not automatically
-reached by this GPU-only planner. The benchmarking
+availability cover placements that need a particular card. A bounded
+host-RAM fallback is now selected for unpinned chat loads after all
+available full-GPU options fail. The rig verifies the actual GPU layer
+count, exact context, and at least 4 GiB available host RAM before ready;
+it disables container swap and host prompt cache for this path. A 2026-11-03 Nemotron 32K
+trial at the initial 512 MiB GPU margin failed during CUDA compute-buffer
+allocation; the margin is now 2 GiB and that placement is not admitted
+under the current 18 GiB host budget. Strata is still experimental in
+benchmarking and is not an automatic load backend. The successful Qwen
+262K smoke and the failed Nemotron calibration are in
+`receipts/ram_spillover_2026-11-03.md`. The benchmarking
 `CONTEXT_PROFILE_AUDIT_2026-10-26.md` is a read-only capacity projection;
 it is not the measured compact-baseline/full-ceiling matrix. Keep working
 contexts stable for benchmark comparability while the placement policy and

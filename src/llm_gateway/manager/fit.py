@@ -494,6 +494,56 @@ def plan(s: Shape, cards: list[dict[str, Any]], *, ctx: int | None = None, ctx_m
             "reason": f"fits: {s.model} on GPU {gpus} at ctx {best} (limited by {capped})"}
 
 
+
+# Host offload is an interactive fallback only. Reserve 4 GiB for the host and
+# leave 2 GiB inside the rig's 20g llama container for buffers and mmap pages.
+HOST_RESERVE_MB = 4096
+HOST_CONTAINER_BUDGET_MB = 18 * 1024
+
+
+def plan_ram(s: Shape, card: dict[str, Any], *, ctx: int, ubatch: int,
+             mem_available_mb: int, margin_mb: int = MARGIN_MB_DEFAULT) -> dict[str, Any]:
+    """Largest GPU suffix that fits this card; earlier layers and output stay on CPU.
+
+    llama.cpp offloads the final N transformer layers for a numeric -ngl N. A
+    partial plan keeps the exact requested context and never counts swap as RAM.
+    """
+    idx = int(card["index"])
+    if margin_mb < 0:
+        margin_mb = growth_margin_mb(s, [card])
+    # Partial loads have less calibration than GPU-only loads. A Nemotron
+    # 32K live load failed allocating a 611 MiB compute buffer at the old
+    # 512 MiB margin (2026-11-03); keep 2 GiB free when planning CPU spill.
+    margin_mb = max(margin_mb, 2048)
+    gpu_budget = (float(card["total_mb"]) - float(card.get("used_mb", 0))
+                  - overhead_mb(int(card["total_mb"])) - margin_mb
+                  - compute_mb(s, ctx, ubatch, 1)) * MIB
+    host_budget_mb = min(max(0, int(mem_available_mb) - HOST_RESERVE_MB), HOST_CONTAINER_BUDGET_MB)
+    base = {"model": s.model, "arch": s.arch, "gpus": [idx], "ctx": ctx,
+            "fits": False, "placement": "ram", "host_budget_mb": host_budget_mb,
+            "margin_mb": margin_mb, "tensor_split": None}
+    if gpu_budget <= 0 or host_budget_mb <= 0:
+        return {**base, "reason": "insufficient GPU or reserved host RAM"}
+    # CPU holds the input and output tensors. Count them even for tied embeddings:
+    # this deliberately overestimates shared storage.
+    active_layers = max((i + 1 for i, w in enumerate(s.weights) if w), default=0)
+    for n_gpu in range(active_layers - 1, 0, -1):
+        first = active_layers - n_gpu
+        gpu_bytes = sum(_layer_bytes(s, i, ctx) for i in range(first, active_layers))
+        host_bytes = (s.host_bytes + s.output_bytes
+                      + sum(_layer_bytes(s, i, ctx) for i in range(first)))
+        host_mb = host_bytes / MIB
+        if gpu_bytes <= gpu_budget and host_mb + 2048 <= host_budget_mb:
+            gpu_mb = gpu_bytes / MIB + compute_mb(s, ctx, ubatch, 1) + overhead_mb(int(card["total_mb"]))
+            return {**base, "fits": True, "n_gpu_layers": n_gpu,
+                    "host_estimate_mb": round(host_mb + 2048),
+                    "cards": [{"gpu": idx, "total_mb": int(card["total_mb"]),
+                               "free_mb": round(float(card["total_mb"]) - float(card.get("used_mb", 0))),
+                               "layers": n_gpu, "projected_mb": round(gpu_mb),
+                               "headroom_mb": round(float(card["total_mb"]) - float(card.get("used_mb", 0)) - gpu_mb)}],
+                    "reason": f"fits: {s.model} at ctx {ctx} on GPU {idx} plus host RAM"}
+    return {**base, "reason": f"host RAM or GPU budget cannot hold {s.model} at ctx {ctx}"}
+
 def choose_cards(free_cards: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
     """n cards for a request that only gives a count: smallest cards first, so big cards stay free."""
     return sorted(free_cards, key=lambda g: (g["total_mb"], g["index"]))[:n]
