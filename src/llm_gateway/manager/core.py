@@ -1047,7 +1047,8 @@ class Manager:
         started = time.monotonic()
         # Facts every observation of this load carries: what was asked, on which physical cards, and the estimate.
         facts = {"model": r["model"], "source": os.path.basename(r["gguf_path"]), "ubatch": min(batch, 512),
-                 "use": use, "gpus": gpus, "planned_ctx": plan_["ctx"], "tensor_split": plan_.get("tensor_split"),
+                 "use": use, "placement": plan_.get("placement", "gpu"), "gpus": gpus,
+                  "planned_ctx": plan_["ctx"], "tensor_split": plan_.get("tensor_split"),
                  "hw": observations.cards_from(self._obs, gpus), "owner": owner,
                  "card_sizes": [int(g["total_mb"]) for g in (self._obs or {}).get("gpus", []) if g.get("index") in gpus],
                  "estimate": [{k: c.get(k) for k in ("gpu", "weights_mb", "kv_mb", "compute_mb", "projected_mb")}

@@ -282,6 +282,8 @@ def _points() -> dict[tuple[str, int], list[tuple[int, float]]]:
         points: dict[tuple[str, int, int], list[tuple[int, float]]] = {}
         overheads: dict[int, float] = {}
         for row in observations.history("load"):
+            if row.get("placement") == "ram":
+                continue  # partial offload is not a full-GPU calibration
             try:
                 worst = max(float(c["compute_mb"]) for c in row["cards"])
                 points.setdefault((row["source"], int(row["ubatch"]), len(row["cards"])), []).append((int(row["n_ctx"]), worst))
@@ -318,14 +320,16 @@ def failed_ceiling(s: Shape, ubatch: int, card_sizes: list[int]) -> int | None:
     until a load at or above it succeeds."""
     sizes = sorted(int(c) for c in card_sizes)
     fails = [int(r["planned_ctx"]) for r in observations.rows("load_failed")
-             if r.get("source") == s.source and int(r.get("ubatch") or 0) == int(ubatch) and r.get("oom")
+             if r.get("placement") != "ram"
+             and r.get("source") == s.source and int(r.get("ubatch") or 0) == int(ubatch) and r.get("oom")
              and sorted(int(c) for c in r.get("card_sizes") or []) == sizes and r.get("planned_ctx")]
     if not fails:
         return None
     lowest = min(fails)
     # Only a success on cards of the same sizes lifts it: a bigger context on five 1060s says nothing of the 3090.
     ok = [r for r in observations.history("load")
-          if r.get("source") == s.source and int(r.get("ubatch") or 0) == int(ubatch)
+          if r.get("placement") != "ram"
+          and r.get("source") == s.source and int(r.get("ubatch") or 0) == int(ubatch)
           and int(r.get("n_ctx") or 0) >= lowest
           and sorted(int(h.get("total_mb") or 0) for h in r.get("hw") or []) == sizes]
     return None if ok else lowest

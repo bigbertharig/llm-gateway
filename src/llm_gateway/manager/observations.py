@@ -10,6 +10,8 @@ other direction is the importer, tools/generate_profiles.py). Nothing here reads
   use per card once serving (nvidia-smi), and the load time.
 - `load_failed`: a load the rig refused or that never served, with the same facts, the error and whether it ran
   out of memory: the other side of the fit boundary.
+- `placement` identifies GPU-only or RAM partial offload. RAM rows are retained as evidence but are excluded
+  from full-GPU memory calibration and OOM ceilings.
 
 - `depth_memory`: full-depth memory growth for a GGUF and card-size layout.
 - `performance`: prefill and decode rates for a GGUF, runtime image, context and card set.

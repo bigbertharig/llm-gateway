@@ -63,6 +63,17 @@ def test_wont_fit_says_why_and_suggests_cards(tmp_path):
     assert any("GPU 0" in a for a in alts) and any(a.startswith("4 card(s)") for a in alts)
 
 
+def test_partial_observations_do_not_calibrate_full_gpu_fit(tmp_path, monkeypatch):
+    s = fit.shape_for(dense(tmp_path, n_layer=10, layer_mb=300, name="partial.gguf"), "partial")
+    monkeypatch.setattr(observations, "PATH", str(tmp_path / "observations.jsonl"))
+    observations.record("load_failed", placement="ram", source=s.source, ubatch=64,
+                        oom=True, planned_ctx=8192, card_sizes=[6144])
+    observations.record("load", placement="ram", source=s.source, ubatch=64,
+                        n_ctx=8192, gpus=[1], cards=[{"gpu": 1, "compute_mb": 4000}])
+    assert fit.failed_ceiling(s, 64, [6144]) is None
+    assert fit.compute_basis(s, 64, 1).startswith("formula")
+
+
 def test_ram_spill_keeps_requested_context_and_reserve(tmp_path):
     s = fit.shape_for(dense(tmp_path, n_layer=40, layer_mb=640, output_mb=200), "overflow")
     gpu = card(0, 24564)
