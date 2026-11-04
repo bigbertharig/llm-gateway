@@ -18,12 +18,10 @@ from ..rig import RigUnavailable
 AGENT_PROFILE_ORDER = {
     "coding": ("coder-30b", "devstral-24b", "coder-7b"),
     "research": ("chat-27b", "gpt-oss-20b"),
-    "general": ("chat-27b", "gpt-oss-20b", "coder-30b"),
 }
 AGENT_COLD_ORDER = {
     "coding": ("coder-7b", "devstral-24b", "coder-30b"),
     "research": ("gpt-oss-20b", "chat-27b"),
-    "general": ("gpt-oss-20b", "chat-27b", "coder-30b"),
 }
 
 

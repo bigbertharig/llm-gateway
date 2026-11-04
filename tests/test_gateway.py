@@ -361,6 +361,34 @@ def test_agent_type_prepares_cold_route_through_manager(env):
     assert response.json()["gpu_ids"] == [2]
 
 
+def test_agent_type_rejects_unregistered_general_label(env):
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    with TestClient(create_app(settings, upstream_transport=httpx.MockTransport(fake_llama),
+                               run_reconciler=False)) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "general", "parent_route": "gpu-rig/chat-27b"})
+    assert response.status_code == 400
+
+
+def test_research_type_selects_separate_ready_route(env):
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama), run_reconciler=False)
+    async def observed():
+        return {"profiles": [
+            {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 8192,
+             "port": UPSTREAM_PORT, "state": "ready", "gpus": [1]},
+            {"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536,
+             "port": UPSTREAM_PORT, "state": "ready", "gpus": [0]},
+        ]}
+    app.state.manager.status = observed
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "research", "parent_route": "gpu-rig/coder-7b"})
+    assert response.status_code == 200
+    assert response.json()["route"] == "gpu-rig/chat-27b"
+    assert response.json()["gpu_ids"] == [0]
+
+
 def test_ready_managed_strata_route_is_listed_and_rewrites_model(client, env):
     state = Path(os.environ["FAKE_RIG_STATE"])
     state.write_text(json.dumps({"mode": "bench", "profiles": [{
