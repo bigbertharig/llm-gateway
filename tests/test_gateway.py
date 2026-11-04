@@ -279,7 +279,7 @@ def test_ready_roster_uses_served_context_and_matching_identity(client, env):
     state = Path(os.environ["FAKE_RIG_STATE"])
     state.write_text(json.dumps({"mode": "interactive", "profiles": [
         {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 8192,
-         "port": UPSTREAM_PORT, "state": "ready"},
+         "port": UPSTREAM_PORT, "state": "ready", "gpus": [2, 1]},
         {"id": "chat-27b", "model": "wrong-model", "ctx_size": 65536,
          "port": UPSTREAM_PORT, "state": "ready"},
         {"id": "unpublished", "model": "x", "ctx_size": 4096,
@@ -288,10 +288,77 @@ def test_ready_roster_uses_served_context_and_matching_identity(client, env):
     body = client.get("/v1/rig/ready-roster").json()
     assert body == {"object": "ready_roster", "version": 1, "data": [{
         "id": "gpu-rig/coder-7b", "model": "qwen2.5-coder:7b",
-        "registry_profile": None, "state": "ready", "context_length": 8192,
+        "registry_profile": None, "state": "ready", "gpu_ids": [1, 2], "context_length": 8192,
         "output_limit": None, "tool_call_format": None, "tokenizer_path": "/tokenize",
     }]}
     assert env["starts"]() == []
+
+
+def test_agent_type_resolves_disjoint_ready_route_without_loading(env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"mode": "interactive", "profiles": [
+        {"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536,
+         "port": UPSTREAM_PORT, "state": "ready", "gpus": [0]},
+        {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 8192,
+         "port": UPSTREAM_PORT, "state": "ready", "gpus": [2]},
+    ]}))
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama), run_reconciler=False)
+    async def observed():
+        return {"profiles": json.loads(state.read_text())["profiles"]}
+    app.state.manager.status = observed
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "coding", "parent_route": "gpu-rig/chat-27b"})
+    assert response.status_code == 200
+    assert response.json()["route"] == "gpu-rig/coder-7b"
+    assert response.json()["gpu_ids"] == [2]
+    assert env["starts"]() == []
+
+
+def test_agent_type_rejects_missing_separate_ready_route(env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"mode": "interactive", "profiles": [
+        {"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536,
+         "port": UPSTREAM_PORT, "state": "ready", "gpus": [0]},
+        {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 8192,
+         "port": UPSTREAM_PORT, "state": "ready", "gpus": [0]},
+    ]}))
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama), run_reconciler=False)
+    async def observed():
+        return {"profiles": json.loads(state.read_text())["profiles"]}
+    app.state.manager.status = observed
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "coding", "parent_route": "gpu-rig/chat-27b"})
+    assert response.status_code == 503
+    assert env["starts"]() == []
+
+
+def test_agent_type_prepares_cold_route_through_manager(env):
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama), run_reconciler=False)
+    rows = [{"id": "chat-27b", "model": "qwen3.6:27b", "ctx_size": 65536,
+             "port": UPSTREAM_PORT, "state": "ready", "gpus": [0]}]
+    async def observed():
+        return {"profiles": rows}
+    async def load_profile(pid, spec):
+        assert pid == "coder-7b" and spec["model"] == "qwen2.5-coder:7b"
+        rows.append({"id": pid, "model": spec["model"], "ctx_size": 8192,
+                     "port": UPSTREAM_PORT, "state": "ready", "gpus": [2]})
+    async def ensure_ready(pid, start):
+        await start()
+        return UPSTREAM_PORT
+    app.state.manager.status = observed
+    app.state.manager.load_profile = load_profile
+    app.state.manager.rig.ensure_ready = ensure_ready
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "coding", "parent_route": "gpu-rig/chat-27b"})
+    assert response.status_code == 200
+    assert response.json()["route"] == "gpu-rig/coder-7b"
+    assert response.json()["gpu_ids"] == [2]
 
 
 def test_ready_managed_strata_route_is_listed_and_rewrites_model(client, env):

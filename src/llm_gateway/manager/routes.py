@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Callable
 
@@ -10,6 +11,20 @@ from fastapi import APIRouter, Request
 from . import fit, observations
 from .core import Manager
 from .errors import ManagerError
+from ..rig import RigUnavailable
+
+
+# Ordered manager policy. The harness names a capability, never a model or GPU.
+AGENT_PROFILE_ORDER = {
+    "coding": ("coder-30b", "devstral-24b", "coder-7b"),
+    "research": ("chat-27b", "gpt-oss-20b"),
+    "general": ("chat-27b", "gpt-oss-20b", "coder-30b"),
+}
+AGENT_COLD_ORDER = {
+    "coding": ("coder-7b", "devstral-24b", "coder-30b"),
+    "research": ("gpt-oss-20b", "chat-27b"),
+    "general": ("gpt-oss-20b", "chat-27b", "coder-30b"),
+}
 
 
 async def _body(request: Request) -> dict[str, Any]:
@@ -29,12 +44,81 @@ def _require(body: dict, *keys: str) -> None:
         raise ManagerError(400, f"missing field(s): {', '.join(missing)}")
 
 
-def router(manager: Manager, profiles: Callable[[], dict[str, dict]]) -> APIRouter:
+def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_prefix: str = "gpu-rig") -> APIRouter:
     r = APIRouter(prefix="/v1/manager")
 
     @r.get("/status")
     async def status():
         return await manager.status()
+
+    @r.post("/agent-routes/resolve")
+    async def resolve_agent_route(request: Request):
+        """Offer an already-ready, disjoint route for a child agent capability."""
+        b = await _body(request)
+        agent_type, parent_id = b.get("agent_type"), b.get("parent_route")
+        if agent_type not in AGENT_PROFILE_ORDER or not isinstance(parent_id, str):
+            raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_PROFILE_ORDER)} and parent_route is required")
+        prefix = model_prefix + "/"
+        if not parent_id.startswith(prefix):
+            raise ManagerError(400, "parent_route must be a gateway route")
+        min_context = b.get("min_context", 4096)
+        if type(min_context) is not int or min_context < 1:
+            raise ManagerError(400, "min_context must be a positive integer")
+        observed = await manager.status()
+        if observed.get("from_copy"):
+            raise ManagerError(503, "rig observation is stale")
+        loaded = observed.get("profiles") or {}
+        if isinstance(loaded, list):
+            loaded = {row.get("id"): row for row in loaded if isinstance(row, dict)}
+        parent = loaded.get(parent_id[len(prefix):])
+        if not parent or parent.get("state") != "ready" or not parent.get("gpus"):
+            raise ManagerError(409, "parent route is not ready with known GPU placement")
+        parent_gpus = set(parent["gpus"])
+        published = profiles()
+        for pid in AGENT_PROFILE_ORDER[agent_type]:
+            row, spec = loaded.get(pid), published.get(pid)
+            if not row or not spec or row.get("state") != "ready" or row.get("model") != spec.get("model"):
+                continue
+            gpus, context = row.get("gpus"), row.get("ctx_size")
+            if (not gpus or not parent_gpus.isdisjoint(gpus) or
+                    type(context) is not int or context < min_context or not row.get("port")):
+                continue
+            return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
+                    "gpu_ids": sorted(gpus), "context_length": context, "state": "ready"}
+        # No ready offer: let the manager fit, lease, and load a published profile.
+        # Existing ready routes on the parent's cards are never moved by this request.
+        async def prepare_cold():
+            failures = []
+            for pid in AGENT_COLD_ORDER[agent_type]:
+                spec = published.get(pid)
+                if not spec or pid in loaded:
+                    continue
+                try:
+                    await manager.rig.ensure_ready(pid, start=lambda pid=pid, spec=spec: manager.load_profile(pid, spec))
+                except (ManagerError, RigUnavailable) as exc:
+                    if exc.status not in (409, 422, 503):
+                        raise
+                    failures.append(f"{pid}: {exc}")
+                    continue
+                refreshed = await manager.status()
+                if refreshed.get("from_copy"):
+                    raise ManagerError(503, "rig observation is stale after child load")
+                rows = refreshed.get("profiles") or {}
+                if isinstance(rows, list):
+                    rows = {row.get("id"): row for row in rows if isinstance(row, dict)}
+                parent_now, row = rows.get(parent_id[len(prefix):]), rows.get(pid)
+                if (parent_now and parent_now.get("state") == "ready" and row and row.get("state") == "ready"
+                        and row.get("model") == spec.get("model") and row.get("gpus")
+                        and set(parent_now.get("gpus") or []).isdisjoint(row["gpus"])
+                        and type(row.get("ctx_size")) is int and row["ctx_size"] >= min_context):
+                    return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
+                            "gpu_ids": sorted(row["gpus"]), "context_length": row["ctx_size"], "state": "ready"}
+                failures.append(f"{pid}: loaded route did not satisfy child offer")
+            raise ManagerError(503, f"no {agent_type} route on GPUs separate from {parent_id}", failures=failures)
+        try:
+            return await asyncio.wait_for(prepare_cold(), timeout=300)
+        except TimeoutError as exc:
+            raise ManagerError(504, f"{agent_type} route was not ready within 300 seconds") from exc
 
     @r.get("/leases")
     async def leases():

@@ -113,7 +113,7 @@ def create_app(
     app = FastAPI(title="llm-gateway", version="0.4.0", lifespan=lifespan)
     app.state.manager = manager
     if manager is not None:
-        app.include_router(manager_router(manager, profiles.all))
+        app.include_router(manager_router(manager, profiles.all, s.model_prefix))
         app.include_router(dashboard_router(manager))
 
     @app.exception_handler(ManagerError)
@@ -283,6 +283,7 @@ def create_app(
                 "model": loaded["model"],
                 "registry_profile": profile.get("registry_profile"),
                 "state": "ready",
+                "gpu_ids": sorted(loaded.get("gpus") or []),
                 "context_length": loaded["ctx_size"],
                 "output_limit": None,
                 "tool_call_format": None,
@@ -291,6 +292,7 @@ def create_app(
         for loaded in dynamic_strata_ready(status):
             data.append({"id": f"{s.model_prefix}/{loaded['id']}", "model": loaded["model"],
                          "registry_profile": None, "state": "ready",
+                         "gpu_ids": sorted(loaded.get("gpus") or []),
                          "context_length": loaded["ctx_size"], "output_limit": None,
                          "tool_call_format": None, "tokenizer_path": None})
         return {"object": "ready_roster", "version": 1, "data": data}
