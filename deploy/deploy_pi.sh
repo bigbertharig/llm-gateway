@@ -8,7 +8,7 @@ RIG="${RIG_HOST:-10.0.0.3}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
-python3 tools/generate_profiles.py --check
+.venv/bin/python tools/generate_profiles.py --check
 
 rsync -a --delete --exclude .git --exclude __pycache__ --exclude .venv --exclude '*.egg-info' --exclude results \
   "$REPO/" "$RIG:llm-gateway/"
