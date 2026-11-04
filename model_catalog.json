@@ -8,6 +8,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/deepseek-r1-14b/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+      "model_size_bytes": 8988110240,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 8988110240,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {},
@@ -37,6 +41,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/deepseek-r1-32b/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
+      "model_size_bytes": 19851335840,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 19851335840,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {},
@@ -66,6 +74,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/deepseek-r1-7b/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+      "model_size_bytes": 4683073504,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 4683073504,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -131,6 +143,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/devstral-small-24b/Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+      "model_size_bytes": 14334446752,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 14334446752,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -206,6 +222,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gemma-3-12b/gemma-3-12b-it-Q4_K_M.gguf",
+      "model_size_bytes": 7300575264,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 7300575264,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {},
@@ -235,6 +255,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gemma-3-4b/gemma-3-4b-it-Q4_K_M.gguf",
+      "model_size_bytes": 2489757856,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 2489757856,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -271,6 +295,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gemma-4-12b/gemma-4-12B-it-Q4_K_M.gguf",
+      "model_size_bytes": 7381382048,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 7381382048,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -333,6 +361,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gemma-4-26b-a4b/gemma-4-26B-A4B-it-Q4_K_M.gguf",
+      "model_size_bytes": 16796010720,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 16796010720,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -378,6 +410,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gemma-4-31b/gemma-4-31B-it-Q4_K_M.gguf",
+      "model_size_bytes": 18687057376,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 18687057376,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -501,6 +537,10 @@
         "gemma-4:e2b"
       ],
       "gguf_path": "/mnt/shared/models/gemma-4-e2b/gemma-4-e2b-it-Q8_0.gguf",
+      "model_size_bytes": 4967490208,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 4967490208,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -546,6 +586,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gemma-4-e4b/gemma-4-e4b-it-Q4_K_M.gguf",
+      "model_size_bytes": 5335285440,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 5335285440,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -591,6 +635,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/gpt-oss-20b/gpt-oss-20b-mxfp4.gguf",
+      "model_size_bytes": 12109566560,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 12109566560,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -674,6 +722,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/llama-3.2-3b/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "model_size_bytes": 2019377696,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 2019377696,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -715,6 +767,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/llama-3.3-70b/Llama-3.3-70B-Instruct-Q4_K_M.gguf",
+      "model_size_bytes": 42520398816,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 42520398816,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -766,6 +822,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/mellum2.1-12b-a2.5b/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+      "model_size_bytes": 8071295264,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 8071295264,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -885,6 +945,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/minicpm5-2b/MiniCPM5-2B-Q4_K_M.gguf",
+      "model_size_bytes": 1561318368,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 1561318368,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -929,6 +993,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/ministral-3-14b-instruct-2512/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+      "model_size_bytes": 8239067840,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 8239067840,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1042,6 +1110,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/ministral-3-3b-instruct-2512/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+      "model_size_bytes": 2146497824,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 2146497824,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1119,6 +1191,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/ministral-3-8b-instruct-2512/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+      "model_size_bytes": 5198386720,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 5198386720,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1196,6 +1272,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/mistral-7b-instruct/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "model_size_bytes": 4372812000,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 4372812000,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1261,6 +1341,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/nex-n2.5-mini/nex-agi_Nex-N2.5-mini-Q4_K_M.gguf",
+      "model_size_bytes": 22318512256,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 22318512256,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1344,6 +1428,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "model_size_bytes": 21713463040,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 21713463040,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1388,6 +1476,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/ornith-1.5-9b/Ornith-1.5-9B-Q4_K_M.gguf",
+      "model_size_bytes": 5780090816,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 5780090816,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1471,6 +1563,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/phi-4-mini-reasoning/Phi-4-mini-reasoning-Q4_K_M.gguf",
+      "model_size_bytes": 2491875232,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 2491875232,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1512,6 +1608,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/phi-4-mini/Phi-4-mini-instruct-Q4_K_M.gguf",
+      "model_size_bytes": 2491874272,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 2491874272,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1548,6 +1648,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/phi-4-14b/phi-4-Q4_K_M.gguf",
+      "model_size_bytes": 9053114816,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 9053114816,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1610,6 +1714,10 @@
         "qwen2.5:14b"
       ],
       "gguf_path": "/mnt/shared/models/qwen2.5-coder-14b/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+      "model_size_bytes": 8988111072,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 8988111072,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1725,6 +1833,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen2.5-coder-32b/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf",
+      "model_size_bytes": 19851336672,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 19851336672,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {},
@@ -1754,6 +1866,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen2.5-coder-7b/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+      "model_size_bytes": 4683074336,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 4683074336,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1865,6 +1981,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3-coder-30b-a3b/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "model_size_bytes": 18556689568,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 18556689568,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -1977,6 +2097,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.5-27b/Qwen3.5-27B-Q4_K_M.gguf",
+      "model_size_bytes": 16740812704,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 16740812704,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2060,6 +2184,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.5-35b-a3b/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "model_size_bytes": 22016023168,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 22016023168,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {},
@@ -2089,6 +2217,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.5-4b/Qwen3.5-4B-Q4_K_M.gguf",
+      "model_size_bytes": 2740937888,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 2740937888,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2157,6 +2289,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.5-9b/Qwen3.5-9B-Q3_K_M.gguf",
+      "model_size_bytes": 4673643744,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 4673643744,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2225,6 +2361,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.6-27b/Qwen3.6-27B-Q4_K_M.gguf",
+      "model_size_bytes": 16817244384,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 16817244384,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2344,6 +2484,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "model_size_bytes": 22134528992,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 22134528992,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2462,6 +2606,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "model_size_bytes": 16464440224,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 16464440224,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2506,6 +2654,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3-1.7b/Qwen3-1.7B-Q4_K_M.gguf",
+      "model_size_bytes": 1107409472,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 1107409472,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2542,6 +2694,10 @@
       "status": "invalid",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3-14b/Qwen3-14B-Q4_K_M.gguf",
+      "model_size_bytes": 5463531520,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 5463531520,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2599,6 +2755,10 @@
       "status": "archived",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3-8b/Qwen3-8B-Q4_K_M.gguf",
+      "model_size_bytes": 5027783488,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 5027783488,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {},
@@ -2628,6 +2788,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/smollm3-3b/SmolLM3-3B-Q4_K_M.gguf",
+      "model_size_bytes": 1915305312,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 1915305312,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2672,6 +2836,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3-coder-next/Qwen3-Coder-Next-Q4_K_S.gguf",
+      "model_size_bytes": 45531949088,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 45531949088,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2729,6 +2897,10 @@
       "status": "candidate",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/k2-v2-instruct/k2v2-Q4_K_M.gguf",
+      "model_size_bytes": 43904518656,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 43904518656,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2789,6 +2961,10 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/nemotron-3.5-bolt-74b-a9b/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-UD-Q3_K_XL.gguf",
+      "model_size_bytes": 39027158016,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 39027158016,
+      "strata": null,
       "profiles": {
         "default": {
           "schedule": {
@@ -2849,6 +3025,15 @@
       "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.6-35b-a3b-strata-xl/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "model_size_bytes": 22853663008,
+      "ngram_size_bytes": 0,
+      "total_size_bytes": 22853663008,
+      "strata": {
+        "family": "qwen36",
+        "model": "ud-q4_k_xl",
+        "model_path": "/data/model-hotset/qwen3.6-35b-a3b-strata-xl/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+        "validated_version": "0.2.10"
+      },
       "profiles": {
         "default": {
           "schedule": {
@@ -2962,6 +3147,50 @@
           }
         }
       }
+    },
+    "qwen3.8-flash-next:q2_0": {
+      "status": "candidate",
+      "aliases": [],
+      "gguf_path": "/data/model-hotset/qwen3.8-flash-next-q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+      "model_size_bytes": 37623740192,
+      "ngram_size_bytes": 28800138432,
+      "total_size_bytes": 66423878624,
+      "strata": {
+        "family": "qwen",
+        "model": "q2_0",
+        "model_path": "/data/model-hotset/qwen3.8-flash-next-q2_0",
+        "data_dir": "/data/bench-staging/strata-v0.2.10/data",
+        "resident_budget_gib": 8,
+        "validated_version": "0.2.10"
+      },
+      "profiles": {
+        "default": {
+          "schedule": {},
+          "system_prompt": "You are a helpful assistant. Answer the user directly.",
+          "inference": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 512
+          },
+          "runtime": {
+            "ctx_size": 8192,
+            "batch_size": 128,
+            "parallel": 1
+          },
+          "extra_args": [],
+          "tuning": {
+            "status": "untuned",
+            "last_tuned_at": null,
+            "benchmark_suite": "strata_memory"
+          },
+          "notes": "Two verified GGUF shards; model_size_bytes is shard 1 and ngram_size_bytes is shard 2. The manager sums them for total disk footprint. Strata placement is version- and pack-specific.",
+          "context_bounds": {
+            "min": 8192,
+            "max": 262144,
+            "max_basis": "gguf_train"
+          }
+        }
+      }
     }
   },
   "roles": {
@@ -3021,7 +3250,7 @@
     }
   },
   "summary": {
-    "generated_at": "2026-11-03T18:37:10",
+    "generated_at": "2026-11-03T20:02:45",
     "key_tests": [
       "bbh",
       "gsm8k",
@@ -4994,6 +5223,22 @@
           "file": "qwen3-coder-next_80b-a3b_runtime_characterization_20261021.json",
           "at": "20261021"
         }
+      },
+      {
+        "model": "qwen3.8-flash-next:q2_0",
+        "status": "candidate",
+        "placement": null,
+        "tier": null,
+        "profiles": [
+          "default"
+        ],
+        "roles": [],
+        "source_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09/Q2_0",
+        "superseded_by": null,
+        "scores": {},
+        "pipeline": null,
+        "pipeline_tests": 0,
+        "runtime": null
       },
       {
         "model": "qwen3.8:27b",

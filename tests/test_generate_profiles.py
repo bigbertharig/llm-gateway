@@ -96,6 +96,8 @@ def test_use_is_carried_and_checked():
 
 def test_the_catalog_copies_every_model_with_resolved_profiles_and_the_roles():
     reg = {**REGISTRY, "models": {"small:7b": {"status": "active", "gguf": "small/small.gguf", "aliases": ["s7"],
+                                               "model_size_bytes": 100, "ngram_size_bytes": 25,
+                                               "strata": {"family": "qwen", "model": "q2_0"},
                                                "profiles": {"default": {}, "interactive": {}}}}}
     roles = {"updated": "2026-10-15", "roles": {"brain": {"model": "small:7b", "lane": "3090"}}}
     cat = gen.build_catalog(LIBRARY, reg, roles, None)
@@ -103,6 +105,9 @@ def test_the_catalog_copies_every_model_with_resolved_profiles_and_the_roles():
     assert m["gguf_path"] == "/archive/small/small.gguf" and m["aliases"] == ["s7"]
     assert sorted(m["profiles"]) == ["default", "interactive"]
     assert m["profiles"]["default"]["runtime"]["ctx_size"] == 16384 and "gguf_path" not in m["profiles"]["default"]
+    assert (m["model_size_bytes"], m["ngram_size_bytes"], m["total_size_bytes"]) == (100, 25, 125)
+    assert m["strata"] == {"family": "qwen", "model": "q2_0"}
+    assert m["total_size_bytes"] == m["model_size_bytes"] + m["ngram_size_bytes"]
     assert cat["image"] == "llama-runtime:test"
     assert cat["roles"]["brain"]["model"] == "small:7b" and cat["roles_updated"] == "2026-10-15"
 
@@ -110,6 +115,7 @@ def test_the_catalog_copies_every_model_with_resolved_profiles_and_the_roles():
 def test_the_manager_resolves_from_the_catalog(tmp_path, monkeypatch):
     from llm_gateway.manager import models
     reg = {**REGISTRY, "models": {"small:7b": {"status": "active", "gguf": "small/small.gguf", "aliases": ["s7"],
+                                               "model_size_bytes": 100, "ngram_size_bytes": 25,
                                                "profiles": {"default": {}, "interactive": {}}}}}
     path = tmp_path / "model_catalog.json"
     path.write_text(gen.render(gen.build_catalog(LIBRARY, reg, None, None)))
@@ -118,3 +124,4 @@ def test_the_manager_resolves_from_the_catalog(tmp_path, monkeypatch):
     assert r["model"] == "small:7b" and r["profile"] == "interactive"
     assert r["gguf_path"] == "/archive/small/small.gguf" and r["image"] == "llama-runtime:test"
     assert r["runtime"]["batch_size"] == 64
+    assert (r["model_size_bytes"], r["ngram_size_bytes"], r["total_size_bytes"]) == (100, 25, 125)

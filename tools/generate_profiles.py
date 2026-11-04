@@ -141,8 +141,15 @@ def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] 
                 continue
             gguf = gguf or r.get("gguf_path")
             profiles[name] = {k: v for k, v in r.items() if k not in ("model", "profile", "status", "gguf_path")}
+        model_size = entry.get("model_size_bytes")
+        ngram_size = entry.get("ngram_size_bytes", 0)
+        if model_size is not None:
+            if type(model_size) is not int or model_size <= 0 or type(ngram_size) is not int or ngram_size < 0:
+                raise ValueError(f"{mid}: invalid model_size_bytes or ngram_size_bytes")
         models[mid] = {"status": entry.get("status"), "aliases": entry.get("aliases", []), "gguf_path": gguf,
-                       "profiles": profiles}
+                       "model_size_bytes": model_size, "ngram_size_bytes": ngram_size,
+                       "total_size_bytes": model_size + ngram_size if model_size is not None else None,
+                       "strata": entry.get("strata"), "profiles": profiles}
     role_rows = {name: {k: spec.get(k) for k in ("model", "profile", "lane", "why")}
                  for name, spec in ((roles or {}).get("roles") or {}).items() if isinstance(spec, dict)}
     return {"_comment": CATALOG_NOTE, "registry_updated": registry.get("updated"),

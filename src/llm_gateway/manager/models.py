@@ -74,4 +74,9 @@ def resolve(model: str, use: str, profile: str | None = None) -> dict[str, Any]:
             raise KeyError(f"model {model} has no profile {profile}; profiles: {sorted(entry['profiles'])}")
         name = "default"
     return {**entry["profiles"][name], "model": mid, "profile": name, "status": entry["status"],
-            "gguf_path": entry["gguf_path"], "image": catalog()["image"]}
+            "gguf_path": entry["gguf_path"], "image": catalog()["image"],
+            "model_size_bytes": entry.get("model_size_bytes"),
+            "ngram_size_bytes": entry.get("ngram_size_bytes", 0),
+            "total_size_bytes": (entry["model_size_bytes"] + entry.get("ngram_size_bytes", 0))
+            if entry.get("model_size_bytes") is not None else None,
+            "strata": entry.get("strata")}
