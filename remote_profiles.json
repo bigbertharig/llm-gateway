@@ -83,6 +83,36 @@
       "ctx_size": 16384
     },
     {
+      "id": "harness-ministral-8b",
+      "model": "ministral-3:8b",
+      "registry_profile": "default",
+      "status": "active",
+      "description": "Alternate small-model parent route for harness tool comparisons.",
+      "default": false,
+      "use": "chat",
+      "ctx_size": 16384
+    },
+    {
+      "id": "harness-ornith-9b",
+      "model": "ornith-1.5:9b",
+      "registry_profile": "default",
+      "status": "active",
+      "description": "Alternate small-model parent route for harness tool comparisons.",
+      "default": false,
+      "use": "chat",
+      "ctx_size": 8192
+    },
+    {
+      "id": "harness-phi-14b",
+      "model": "phi-4:14b",
+      "registry_profile": "default",
+      "status": "active",
+      "description": "Alternate 14B parent route for harness tool comparisons.",
+      "default": false,
+      "use": "chat",
+      "ctx_size": 8192
+    },
+    {
       "id": "harness-74b",
       "model": "nemotron-3.5-bolt:74b-a9b",
       "registry_profile": "default",
