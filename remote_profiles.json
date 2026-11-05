@@ -61,6 +61,36 @@
       "default": false,
       "use": "chat",
       "ctx_size": 65536
+    },
+    {
+      "id": "harness-7b",
+      "model": "qwen2.5-coder:7b",
+      "registry_profile": "interactive",
+      "status": "active",
+      "description": "Separate 7B parent route for harness size comparisons.",
+      "default": false,
+      "use": "chat",
+      "ctx_size": 16384
+    },
+    {
+      "id": "harness-14b",
+      "model": "qwen2.5-coder:14b",
+      "registry_profile": "orchestration",
+      "status": "active",
+      "description": "14B parent route for harness size comparisons.",
+      "default": false,
+      "use": "chat",
+      "ctx_size": 16384
+    },
+    {
+      "id": "harness-74b",
+      "model": "nemotron-3.5-bolt:74b-a9b",
+      "registry_profile": "default",
+      "status": "active",
+      "description": "74B parent route for harness size comparisons.",
+      "default": false,
+      "use": "chat",
+      "ctx_size": 16384
     }
   ]
 }
