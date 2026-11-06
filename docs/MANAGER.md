@@ -217,9 +217,10 @@ selected profile's working context.
 Do not silently shrink the requested context. Extra split devices can
 slow decode after the target fits. The ordering is a placement preference,
 not a universal speed guarantee across models, contexts, layer splits,
-and runtime engines. In matched Nemotron 32K runs, 3090 + three 1060s
-decoded at 24.63 tok/s versus 6.26 tok/s for 3090 + host RAM. Qwen3.6
-35B at 262K decoded faster on 3090 + one 1060 than on all six. A
+and runtime engines. In matched Nemotron 32K runs, 3090 + three, four,
+and five 1060s decoded at 24.63, 22.52, and 20.43 tok/s respectively,
+versus 6.26 tok/s for 3090 + host RAM. Qwen3.6 35B at 262K decoded
+faster on 3090 + one 1060 than on all six. A
 storage-backed Strata placement needs its own warm/cold speed and recall
 evidence. At the trained ceiling, record the fewest cards or memory
 tiers that load and pass depth/recall checks; if it remains unreachable,
@@ -258,7 +259,11 @@ when it fits unless a caller explicitly requests Strata. The successful Qwen
 `CONTEXT_PROFILE_AUDIT_2026-10-26.md` is a read-only capacity projection;
 it is not the measured compact-baseline/full-ceiling matrix. Keep working
 contexts stable for benchmark comparability while the placement policy and
-capacity tests are added.
+capacity tests are added. A known exception is unpinned loads with
+`wait_s != 0`: `_collect_cards` first requires a GPU-only fit and can
+reject a request before the RAM/Strata fit path runs. Direct no-wait
+fits use the cascade above; the wait path needs the same tier-aware
+collection logic before it can promise that behavior.
 
 Layers are never left to llama.cpp's `--fit`: given the choice it moves layers to the CPU (on
 Ornith-9B it balanced two 1060s by putting the output layer in host RAM, 33/34 layers on GPU). The
