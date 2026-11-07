@@ -100,3 +100,46 @@ The next load-only sweep held the same six GPUs, Q4_0 cache, batch 8, no idle-sl
 The six-slot load measured total allocations (MiB): GPU0 15,066; GPUs1-5 5,246 / 4,621 / 5,246 / 5,116 / 5,017. Six distinct first turns all answered correctly in 17.28 seconds; six continuations all reused their prefixes and answered correctly in 8.27 seconds. Receipt: `qwen27_gpu_all_q4_6x100k_smoke.json`. Thus six 100K *configured caps* fit and are callable; six nearly full 100K histories were not exercised. Five 130K is the largest tested configuration that has answered multi-turn requests. The 140K cap is only a startup proof with unsafe headroom. Neither the 5-slot nor 6-slot setup binds a slot to a particular 1060.
 
 The repeated 1M failure is at CUDA compute-buffer reservation on a 1060, not just the Q4 KV footprint. The current layer split replicates a context-dependent compute allocation on each participating GPU. More 1060s can therefore reduce available headroom even as they add nominal VRAM. A later placement study can skew the layer split toward the 3090 and test whether that changes the bound, followed by GPU+RAM and Strata tiers in that order. The present sweep did not perform those optimization stages.
+
+## Per-chat 1060 cache worker feasibility (2026-11-06)
+
+The placement objective is one model weight load on GPU0 (3090 Ti) and one
+live chat cache plus attention worker on each of GPUs1-5 (1060s). This differs
+from llama.cpp's existing layer split: each chat would keep its own KV on its
+assigned card while sharing GPU0's weights. The design should apply to dense
+and MoE models; expert placement is independent.
+
+Benchmarking's
+`KV_PER_CHAT_GPU_PLACEMENT_2026-11-06.md` and
+`results/runtime_experiments/kv_cache_residency_20261106/` hold the new
+source and receipts. The Qwen 27B measured Q4_0 KV rate (5,908 MiB for
+336,128 tokens) scales to about 4,395 MiB at 250K. All five 1060s
+simultaneously reserved 4,395 MiB of cache plus 1,024 MiB workspace, leaving
+576 MiB free each. The same cache with 1,536 MiB workspace also allocated,
+but left only 64 MiB free and is unsuitable as a serving target. At 200K,
+3,515 MiB cache plus 1,536 MiB workspace left 944 MiB free.
+
+A standalone CUDA worker then computed one FP16 attention head against a
+separate 100K/200K/250K resident token array on each 1060. GPU0 supplied
+the query and received all five results through pinned host memory; all
+five outputs verified. Five-worker median round trips were 1.30/2.44/2.85
+ms respectively. The worker reserved a Q4-sized whole-chat cache but only
+read one head's 49/98/122 MiB of FP16 K/V, so this is a placement and
+transport proof, not full-model inference or a 250K retrieval result.
+The existing 27B chat route stayed loaded and all five 1060s returned to
+idle memory use after the probe.
+
+Next: fork llama.cpp to give each sequence a KV device and run its attention
+on that device while weights stay on GPU0. Start with two real slots at
+100K, then test five 200K and 250K slots after measuring actual workspace.
+Use the same backend mechanism on a dense and a MoE model and test five
+near-capacity conversations, continuation reuse and isolation. Current
+`--override-tensor`, layer split and Strata flags cannot express this
+per-sequence GPU assignment.
+
+The final 250K worker run gave each 1060 a different cache value (1 through 5)
+and verified all five returned results on GPU0 in their correct lanes. Its
+10-iteration median round trip was 3.05 ms. Receipt:
+`results/runtime_experiments/kv_cache_residency_20261106/attention_250000_distinct.json`
+in the benchmarking repository. This checks the synthetic lane mapping; it
+does not establish real conversation isolation or full-model generation.
