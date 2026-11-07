@@ -195,3 +195,41 @@ concurrent throughput. The comparison uses different models and weight
 formats, and histories occupied only a few tokens. A filled 256K history
 remains unmeasured. Receipts and timed source are in
 `results/runtime_experiments/kv_paired_speed_20261107/`.
+
+## Concurrent five-worker chats and GPU0 preparation (2026-11-07)
+
+The private llama.cpp experiment now shares one GPU0 model weight load
+across concurrent context threads. Qwen3.6 27B Q4_K_M dense ran one short
+local chat plus five separate 256K-capacity Q4 worker chats, one on each
+1060. The workers generated at 7.50–7.63 tok/s each with 45.0 tok/s
+aggregate across all six chats. GPT-OSS 20B MXFP4 MoE ran the same six-chat
+layout at 131K capacity per chat; worker rates were 16.67–17.17 tok/s and
+aggregate was 100.0 tok/s. Histories in these six-chat runs were short.
+
+For worker preparation, a temporary GPU0 context can fill a history,
+export its state, and disappear before a worker chat is restored onto a
+1060. With no persistent local chat, five 1060 contexts restored a 90%-filled
+Qwen27 256K state and decoded concurrently. GPU0 prefill took 539 seconds;
+each 4.51 GB state restore took about 11 seconds. At 90% occupancy each
+worker produced only 1.21–1.26 tok/s, or 6.06 tok/s aggregate. At 10%
+occupancy they produced 6.57–6.70 tok/s, 32.84 tok/s aggregate. This
+supports the proposed GPU0-prepares-workers architecture, while showing
+that deep 27B chats on 1060s have poor interactive speed.
+
+The separate 1.7B 32K test prepared five different synthetic 10% histories
+on GPU0 and verified distinct state fingerprints before restoring them to
+GPUs1–5. All five continued concurrently at 252.0 tok/s aggregate. The
+private harness has no agent message orchestration or Manager load profile
+yet. Benchmarking owns the full matrix, receipts, PCIe samples, and patch
+at `results/runtime_experiments/kv_local_worker_matrix_20261107/`.
+
+The 27B version prepared five different 26,214-token histories on GPU0
+in 38.18–38.30 seconds each, verified distinct state fingerprints, and
+restored and decoded them simultaneously on GPUs1–5 at 31.94 tok/s
+aggregate. These histories were synthetic and occupied 10% of the
+allocated 256K capacity.
+The checkpointed 1.7B experiment also prepared five different 90%-filled
+32K histories in 12.76–12.85 seconds each, stored and verified five
+~952 MB state files, and restored them to GPUs1–5. Three consecutive
+parallel continuations gave 104.0, 142.3, and 143.5 tok/s aggregate;
+the first included warmup.
