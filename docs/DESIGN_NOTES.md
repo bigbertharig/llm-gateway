@@ -275,3 +275,11 @@ frees, MANAGER.md "Model loads"); an immediate load checks free memory (total mi
 (2) the "one model, many slots" test above, since it is the cheapest form; (3) two small models on one card,
 measured for speed and memory against one each; (4) the manager changes above; (5) a memory box, if one is
 bought, as one more rig.
+
+Update 2026-11-06: measured Qwen3.6 27B parallel-slot capacity and speed in
+[PARALLEL_CONTEXT_EXPERIMENT_2026-11-06.md](PARALLEL_CONTEXT_EXPERIMENT_2026-11-06.md).
+Four simultaneous slots worked at 32K each on the 3090 alone and at 64K each with
+one 1060 added. The same ~7K-per-chat workload was about twice as fast on the
+3090 alone. Neither configuration places each chat's KV on a dedicated 1060;
+the manager needs separate aggregate-pool and per-slot context accounting before
+larger tests.

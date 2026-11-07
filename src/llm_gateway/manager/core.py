@@ -254,6 +254,53 @@ class Manager:
                 "last_error": obs.get("last_error"), "state_error": obs.get("state_error"),
                 "leases": leases, "claims": claims, "rig": self.rig_report()}
 
+    async def chat_availability(self, profile_id: str | None = None) -> dict:
+        """Read-only busy signal for basic Chat. A ready requested profile may continue alone."""
+        obs = await self.observe(fresh=True)  # never decide from the stale mirror
+        profiles = obs.get("profiles") or {}
+        own = profiles.get(profile_id) if profile_id else None
+        own_ready = bool(own and own.get("state") == "ready")
+        own_lease = own.get("lease") if own_ready else None
+        own_gpus = set(own.get("gpus") or []) if own_ready else set()
+        blockers = []
+        if any(j.get("state") not in ("done", "finished", "failed", "cancelled", "stopped")
+               for j in obs.get("jobs") or []):
+            blockers.append("active rig job")
+        if any(i.get("state") in ("queued", "pending", "waiting", "running")
+               for i in (obs.get("plan") or {}).get("items") or []):
+            blockers.append("active rig plan")
+        if any(pid != profile_id or not own_ready for pid in profiles):
+            blockers.append("loaded or loading profile")
+        if obs.get("claims"):
+            blockers.append("GPU claim")
+        if any(lease.get("lease_id") != own_lease for lease in obs.get("leases") or []):
+            blockers.append("GPU lease")
+        if any(c.get("name") != f"rig-remote-{profile_id}" or not own_ready
+               for c in obs.get("containers") or []):
+            blockers.append("active runtime")
+        if any(int(g.get("used_mb") or 0) > placement.FREE_MAX_USED_MB and g.get("index") not in own_gpus
+               for g in obs.get("gpus") or []):
+            blockers.append("GPU memory in use")
+        if not own_ready and (obs.get("guard") or {}).get("loads_admitted") is False:
+            blockers.append("rig load guard")
+        return {"busy": bool(blockers), "reason": ", ".join(dict.fromkeys(blockers)),
+                "ready_profiles": [pid for pid, row in profiles.items() if row.get("state") == "ready"],
+                "requested_ready": own_ready}
+
+    async def prepare_chat_profile(self, profile_id: str, profile: dict) -> dict:
+        """Prepare one published chat profile without starting a cold load over existing work."""
+        availability = await self.chat_availability(profile_id)
+        if availability["busy"]:
+            raise ManagerError(409, "rig busy: " + availability["reason"], rig_busy=True)
+        port = await self.rig.ensure_ready(profile_id, start=lambda: self.load_profile(profile_id, profile))
+        obs = await self.observe(fresh=True)
+        ready = (obs.get("profiles") or {}).get(profile_id) or {}
+        if (ready.get("state") != "ready" or ready.get("model") != profile.get("model")
+                or ready.get("port") != port):
+            raise ManagerError(409, "loaded profile no longer matches the chosen model")
+        return {"profile": profile_id, "state": "ready", "port": port,
+                "context_length": ready.get("ctx_size"), "gpu_ids": ready.get("gpus") or []}
+
     # ------------------------------------------------------------------ leases
 
     async def acquire(self, *, controller: str, owner: str, run_id: str, gpus_needed: list[dict] | None = None,
@@ -707,7 +754,8 @@ class Manager:
         """
         use = profile.get("use", "chat")
         fit_kw = {"profile": profile.get("registry_profile"), "ctx": None, "gpu_ids": gpu_ids,
-                  "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT)}
+                  "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT),
+                  "context_mode": "max" if use == "chat" else "working"}
         try:
             plan_ = await self.fit_model(profile["model"], claim=claim, use=use, requester=profile_id, **fit_kw)
         except ManagerError as exc:
@@ -890,12 +938,15 @@ class Manager:
         else:
             chosen = None
         if chosen is None:
-            choice = (fit.plan(shape, free, **kw) if context_mode == "max" else
+            choice = (fit.choose_chat(shape, free, **kw) if context_mode == "max" and use == "chat" else
+                      fit.plan(shape, free, **kw) if context_mode == "max" else
                       fit.choose_min(shape, free, **kw) if context_mode == "min" else
                       fit.choose_chat(shape, free, **kw) if use == "chat" else
                       fit.choose(shape, free, **kw))
             result = choice or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
-            result["chosen_by"] = ("harness: largest context across free cards" if context_mode == "max" else
+            result["chosen_by"] = ("chat: largest context on fastest available fit"
+                                   if context_mode == "max" and use == "chat" else
+                                   "harness: largest context across free cards" if context_mode == "max" else
                                    "harness: fewest free cards at profile minimum" if context_mode == "min" else
                                    "harness: measured response speed" if result.get("performance_basis") else
                                    "harness: fastest single free card for chat" if use == "chat" and

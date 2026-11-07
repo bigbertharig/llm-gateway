@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import textwrap
 import time
 
 from llm_gateway.dashboard import sources
@@ -108,40 +107,28 @@ def test_benchmarks_summary_finds_lanes_and_campaigns(tmp_path):
     assert ("worker_lanes_20261019_120000", "gpu 1-2", False) in rows
 
 
-FAKE_ORCH = textwrap.dedent("""\
-    class Controls:
-        def __init__(self, shared_path, config):
-            self.shared_path, self.config = shared_path, config
-        def options(self):
-            return {"ok": True, "plans": ["p"], "plan_scopes": {"p": "shoulders"}}
-        def kill_plan(self, batch_id):
-            return {"ok": True, "message": f"Killed batch {batch_id}"}
-        def requeue_worker(self, worker=""):
-            return {"ok": True, "message": f"requeued 0 task(s) of {worker}"}
-    def summarize(shared_path, config):
-        return {"counts": {"queue": 1}, "workers": [], "alerts": [], "config_seen": config.get("marker")}
-""")
+def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noqa: F811
+    def fake_request(method, path, body=None):
+        if path.endswith("/status"):
+            return {"counts": {"queue": 1}, "workers": [], "alerts": []}
+        if path.endswith("/options"):
+            return {"ok": True, "plans": ["p"]}
+        if path.endswith("/kill_plan"):
+            return {"ok": True, "message": f"Killed batch {body['batch_id']}"}
+        if path.endswith("/requeue_worker"):
+            return {"ok": True, "message": f"requeued {body['worker']}"}
+        raise AssertionError((method, path, body))
 
-
-def test_orchestration_tab_uses_the_orchestration_package(menv, tmp_path, monkeypatch):  # noqa: F811
-    pkg = tmp_path / "orch" / "scripts" / "dashboard"
-    pkg.mkdir(parents=True)
-    (pkg / "__init__.py").write_text(FAKE_ORCH)
-    shared = tmp_path / "shared"
-    (shared / "agents").mkdir(parents=True)
-    (shared / "agents" / "config.json").write_text(json.dumps({"marker": "cfg"}))
-    monkeypatch.setenv("ORCHESTRATION_ROOT", str(tmp_path / "orch"))
-    monkeypatch.setenv("SHARED_ROOT", str(shared))
+    monkeypatch.setattr(sources, "orchestration_request", fake_request)
     c = menv["client"]
-    assert c.get("/dashboard/api/orchestration").json()["config_seen"] == "cfg"
+    assert c.get("/dashboard/api/orchestration").json()["counts"]["queue"] == 1
     assert c.get("/dashboard/api/orchestration/options").json()["plans"] == ["p"]
     assert c.post("/dashboard/api/orchestration/kill_plan", json={"batch_id": "b1"}).json()["message"] == "Killed batch b1"
     assert c.post("/dashboard/api/orchestration/requeue_worker", json={"worker": "gpu-3"}).json()["ok"]
     assert c.post("/dashboard/api/orchestration/rm_rf", json={}).status_code == 404
 
 
-def test_a_missing_orchestration_checkout_is_reported_not_raised(menv, tmp_path, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("ORCHESTRATION_ROOT", str(tmp_path / "nowhere"))
-    monkeypatch.setenv("SHARED_ROOT", str(tmp_path))
+def test_a_missing_orchestration_socket_is_reported_not_raised(menv, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("ORCHESTRATION_API_SOCKET", str(tmp_path / "missing.sock"))
     r = menv["client"].get("/dashboard/api/orchestration")
-    assert r.status_code == 503 and "ORCHESTRATION_ROOT" in r.json()["error"]["message"]
+    assert r.status_code == 503 and "FileNotFoundError" in r.json()["error"]["message"]

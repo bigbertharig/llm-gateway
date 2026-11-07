@@ -1,0 +1,22 @@
+server {
+    listen __LAN_DASHBOARD_BIND__:443 ssl;
+    server_name __LAN_DASHBOARD_HOST__;
+
+    ssl_certificate /etc/llm-gateway/lan/server.crt;
+    ssl_certificate_key /etc/llm-gateway/lan/server.key;
+    ssl_client_certificate /etc/llm-gateway/lan/ca.crt;
+    ssl_verify_client on;
+    ssl_verify_depth 1;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:8843;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_request_buffering on;
+        proxy_read_timeout 930s;
+        proxy_send_timeout 930s;
+        client_max_body_size 1m;
+    }
+}

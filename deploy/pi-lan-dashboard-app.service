@@ -1,0 +1,18 @@
+[Unit]
+Description=LAN dashboard route proxy (loopback only)
+After=network-online.target pi-gateway.service
+Wants=network-online.target pi-gateway.service
+
+[Service]
+Type=simple
+User=bryan
+Group=bryan
+WorkingDirectory=/home/bryan/llm-gateway
+Environment=PYTHONPATH=/home/bryan/llm-gateway/src
+EnvironmentFile=/etc/llm-gateway/lan/environment
+ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m uvicorn llm_gateway.lan_dashboard:app --host 127.0.0.1 --port 8843
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

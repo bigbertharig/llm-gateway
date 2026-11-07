@@ -18,10 +18,23 @@ rsync -a --delete --exclude .git --exclude __pycache__ --exclude .venv --exclude
 for unit in pi-rig-tunnel.service pi-gateway.service; do
   sudo -n install -m 644 "deploy/$unit" /etc/systemd/system/
 done
+if sudo -n test -s /etc/llm-gateway/lan/server.key && sudo -n test -s /etc/llm-gateway/lan/environment; then
+  command -v nginx >/dev/null || { echo "Install nginx before LAN dashboard deployment" >&2; exit 1; }
+  sudo -n install -m 644 deploy/pi-lan-dashboard-app.service /etc/systemd/system/
+  sudo -n bash deploy/configure_lan_dashboard_nginx.sh
+fi
 sudo -n systemctl daemon-reload
 sudo -n systemctl enable pi-rig-tunnel.service pi-gateway.service >/dev/null
 sudo -n systemctl restart pi-rig-tunnel.service
 sudo -n systemctl restart pi-gateway.service
+if sudo -n test -s /etc/llm-gateway/lan/server.key && sudo -n test -s /etc/llm-gateway/lan/environment; then
+  sudo -n systemctl enable pi-lan-dashboard-app.service nginx.service >/dev/null
+  sudo -n systemctl restart pi-lan-dashboard-app.service
+  if systemctl list-unit-files pi-lan-dashboard.service --no-legend 2>/dev/null | grep -q '^pi-lan-dashboard.service'; then
+    sudo -n systemctl disable --now pi-lan-dashboard.service >/dev/null
+  fi
+  sudo -n systemctl restart nginx.service
+fi
 for i in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
     systemctl is-active --quiet pi-rig-tunnel.service || { echo "pi-rig-tunnel not active" >&2; exit 1; }

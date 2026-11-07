@@ -6,6 +6,7 @@
 [Unit]
 Description=llm-gateway (OpenAI API -> rig remote profiles, on demand)
 After=network-online.target pi-rig-tunnel.service
+RequiresMountsFor=/media/bryan/shared
 Wants=network-online.target pi-rig-tunnel.service
 
 [Service]
@@ -27,6 +28,7 @@ Environment=RIG_MANAGER=on
 Environment=RIG_CONTROLLER_ID=pi
 Environment=START_TIMEOUT_SECONDS=900
 Environment=REQUEST_TIMEOUT_SECONDS=900
+Environment=CHAT_DATA_ROOT=/media/bryan/shared/llm-gateway/chat
 ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m llm_gateway
 Restart=on-failure
 RestartSec=5

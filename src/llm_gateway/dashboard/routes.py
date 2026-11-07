@@ -154,7 +154,7 @@ def router(manager: Manager) -> APIRouter:
     @r.get("/api/orchestration/options")
     async def orchestration_options():
         try:
-            return await asyncio.to_thread(lambda: sources.orchestration_controls().options())
+            return await asyncio.to_thread(sources.orchestration_options)
         except Exception as exc:
             return _unavailable(exc)
 
@@ -164,21 +164,8 @@ def router(manager: Manager) -> APIRouter:
             raise ManagerError(404, f"unknown orchestration action {action}; known: {', '.join(ORCHESTRATION_ACTIONS)}")
         b = await _body(request)
 
-        def run():
-            c = sources.orchestration_controls()
-            if action == "start_plan":
-                return c.start_plan(str(b.get("plan_name") or ""), str(b.get("config_json") or ""),
-                                    str(b.get("plan_scope") or "shoulders"), str(b.get("starter_file") or ""),
-                                    str(b.get("repo_path") or ""), str(b.get("repo_url") or ""),
-                                    str(b.get("claimed_behavior") or ""), str(b.get("inline_query_text") or ""))
-            if action in ("resume_plan", "kill_plan", "batch_outputs"):
-                return getattr(c, action)(str(b.get("batch_id") or ""))
-            if action == "requeue_worker":
-                return c.requeue_worker(str(b.get("worker") or ""))
-            return getattr(c, action)()
-
         try:
-            return await asyncio.to_thread(run)
+            return await asyncio.to_thread(sources.orchestration_action, action, b)
         except Exception as exc:
             return _unavailable(exc)
 

@@ -53,6 +53,39 @@ textarea { width: 100%; min-height: 80px; }
   border-radius: 6px; padding: 10px 14px; font: 13px var(--mono); white-space: pre-wrap; display: none; }
 #toast.show { display: block; }
 
+.chat-layout { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: 18px; min-height: 65vh; }
+.chat-sidebar, .chat-main { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; min-width: 0; }
+.chat-sidebar label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.chat-sidebar select { width: 100%; }
+.chat-sidebar .act { margin-top: 10px; }
+.chat-conversation { display: block; width: 100%; text-align: left; margin: 4px 0; padding: 8px; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 4px; color: var(--text); cursor: pointer; font: 14px var(--sans); }
+.chat-conversation[aria-current="true"] { border-color: var(--cool); }
+.chat-conversation small { display: block; color: var(--muted); font: 11px var(--mono); }
+.chat-main { display: flex; flex-direction: column; }
+.chat-heading, .chat-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.chat-heading h2 { margin: 0 0 8px; }
+.chat-messages { flex: 1; min-height: 260px; max-height: 60vh; overflow: auto; padding: 8px 0; }
+.chat-message { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 10px 12px; margin: 10px 0; max-width: 85%; }
+.chat-message.user { margin-left: auto; border-color: #3f5f7a; }
+.chat-message .meta { color: var(--muted); font: 11px var(--mono); margin-bottom: 6px; }
+#chat-form { border-top: 1px solid var(--line); padding-top: 10px; }
+#chat-form label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+#chat-input { min-height: 90px; resize: vertical; }
+#chat-rig-busy { padding: 9px 11px; margin: 8px 0; border: 1px solid var(--warm);
+  border-radius: 6px; color: var(--warm); background: var(--panel2); font: 12px var(--mono); }
+#chat-rig-busy[hidden] { display: none; }
+#chat-progress { margin-top: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel2); color: var(--cool); font: 12px var(--mono); }
+#chat-progress[hidden] { display: none; }
+#chat-progress::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: chat-spin .8s linear infinite; vertical-align: -2px; }
+@keyframes chat-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #chat-progress::before { animation: none; } }
+@media (max-width: 760px) { .chat-layout { grid-template-columns: 1fr; } .chat-messages { max-height: 50vh; } }
+
 /* The signature: the rig's cards as slots on the board, claims as brackets spanning their cards. */
 .board { position: relative; display: grid; gap: 10px; padding: 30px 0 4px; }
 .slot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; min-width: 0; }
@@ -94,6 +127,7 @@ a { color: var(--cool); }
   <button role="tab" data-tab="models" aria-selected="false">Models</button>
   <button role="tab" data-tab="benchmarks" aria-selected="false">Benchmarks</button>
   <button role="tab" data-tab="orchestration" aria-selected="false">Orchestration</button>
+  <button role="tab" data-tab="chat" aria-selected="false">Chat</button>
 </nav>
 <main>
   <section id="tab-rig">
@@ -123,6 +157,33 @@ a { color: var(--cool); }
   <section id="tab-benchmarks" hidden>
     <h2>Lanes</h2><div class="scroll" id="lanes"></div>
     <h2>Campaigns</h2><div class="scroll" id="campaigns"></div>
+  </section>
+
+  <section id="tab-chat" hidden>
+    <div class="chat-layout">
+      <aside class="chat-sidebar">
+        <label>Model <select id="chat-model" aria-label="Chat model"></select></label>
+        <div class="line" id="chat-model-note">Loading models...</div>
+        <div id="chat-rig-busy" role="status" aria-live="polite" hidden></div>
+        <button class="act" id="chat-new" type="button">New conversation</button>
+        <button class="act" id="chat-switch" type="button" hidden>Continue this conversation with selected model</button>
+        <h2>Saved conversations</h2>
+        <div id="chat-conversations"></div>
+      </aside>
+      <div class="chat-main">
+        <div class="chat-heading"><h2 id="chat-title">Choose a conversation</h2>
+          <button class="act danger" id="chat-delete" type="button" hidden>Delete</button></div>
+        <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+        <form id="chat-form">
+          <label for="chat-input">Message</label>
+          <textarea id="chat-input" maxlength="8000" placeholder="Ask the selected model..." required></textarea>
+          <div class="chat-actions"><span id="chat-status" class="line">Choose a model and send a message.</span>
+            <button class="act" id="chat-retry" type="button" hidden>Retry model load</button>
+            <button class="act" id="chat-send" type="submit">Send</button></div>
+          <div id="chat-progress" role="status" aria-live="polite" hidden></div>
+        </form>
+      </div>
+    </div>
   </section>
 
   <section id="tab-orchestration" hidden>
@@ -328,6 +389,185 @@ function planChanged() {
   $("#plan-config").value = JSON.stringify(orchOptions.plan_defaults[p] || {}, null, 1);
 }
 
+// ---------------------------------------------------------------- chat
+function chatContextStatus(c) {
+  const count = c.messages.length + " saved messages; up to 16 recent messages sent.";
+  const limit = c.context_length;
+  const used = c.last_total_tokens;
+  if (!Number.isInteger(limit) || limit <= 0) return count + " Context size unavailable.";
+  if (!Number.isInteger(used)) return count + " Last turn window: " + limit.toLocaleString() + " tokens; token usage unavailable.";
+  const detail = Number.isInteger(c.last_prompt_tokens) && Number.isInteger(c.last_completion_tokens)
+    ? " (input " + c.last_prompt_tokens.toLocaleString() + ", output " + c.last_completion_tokens.toLocaleString() + ")"
+    : "";
+  return count + " Last turn context: " + used.toLocaleString() + " / " +
+    limit.toLocaleString() + " tokens (" + (100 * used / limit).toFixed(1) + "%)" + detail + ".";
+}
+let chatId = (() => { try { return localStorage.getItem("dash-chat-id") || ""; } catch (e) { return ""; } })();
+let chatBusy = false;
+let chatBoundModel = "";
+async function loadChat() {
+  const [opts, saved] = await Promise.all([api("chat/options"), api("chat/conversations")]);
+  const select = $("#chat-model"), old = select.value;
+  select.innerHTML = '<option value="">Choose a model...</option>' + opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)}) ${m.ready ? "ready" : "cold"}</option>`).join("");
+  if (old && opts.models.some((m) => m.id === old)) select.value = old;
+  $("#chat-model-note").textContent = "The manager controls model loading and GPU placement.";
+  const busy = $("#chat-rig-busy");
+  busy.hidden = opts.rig_available && !opts.rig_busy;
+  busy.textContent = opts.rig_available
+    ? "Rig busy: " + opts.busy_reason + ". New chat loads are paused; an existing ready chat may continue."
+    : "Rig unavailable. Saved conversations are still readable.";
+  const list = $("#chat-conversations");
+  list.innerHTML = saved.conversations.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)} ? ${esc(c.updated_at)}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
+  list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => { if (!chatBusy) openChat(b.dataset.chatId); });
+  if (chatId && saved.conversations.some((c) => c.id === chatId)) await openChat(chatId, false, true);
+  else { chatId = ""; chatBoundModel = ""; $("#chat-title").textContent = "New conversation"; $("#chat-messages").replaceChildren(); $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
+}
+async function openChat(id, reloadList = true, preserveSelection = false) {
+  const pendingModel = preserveSelection ? $("#chat-model").value : "";
+  const c = await api("chat/conversations/" + encodeURIComponent(id));
+  chatId = c.id;
+  chatBoundModel = c.model;
+  try { localStorage.setItem("dash-chat-id", id); } catch (e) { /* private window */ }
+  $("#chat-retry").hidden = true;
+  if (!chatBusy) $("#chat-send").disabled = false;
+  $("#chat-title").textContent = c.title;
+  $("#chat-delete").hidden = false;
+  const box = $("#chat-messages");
+  box.replaceChildren();
+  for (const m of c.messages) {
+    const item = document.createElement("div");
+    item.className = "chat-message " + m.role;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = m.role + " ? " + m.model;
+    const content = document.createElement("div");
+    content.textContent = m.content;
+    item.append(meta, content);
+    box.append(item);
+  }
+  box.scrollTop = box.scrollHeight;
+  $("#chat-model").value = pendingModel && pendingModel !== c.model ? pendingModel : c.model;
+  $("#chat-switch").hidden = $("#chat-model").value === c.model;
+  $("#chat-status").textContent = $("#chat-switch").hidden
+    ? chatContextStatus(c)
+    : "This conversation uses " + c.model + ". Continue with the selected model, or start a new conversation.";
+  if (reloadList) await loadChat();
+}
+$("#chat-model").onchange = () => {
+  const selected = $("#chat-model").value;
+  $("#chat-switch").hidden = !chatId || !selected || selected === chatBoundModel;
+  if (chatId && selected !== chatBoundModel) {
+    $("#chat-status").textContent = "This conversation uses " + chatBoundModel +
+      ". Continue with the selected model, or start a new conversation.";
+  }
+};
+$("#chat-switch").onclick = async () => {
+  if (!chatId || chatBusy) return;
+  const selected = $("#chat-model").value;
+  if (!selected || selected === chatBoundModel) return;
+  try {
+    const c = await api("chat/conversations/" + encodeURIComponent(chatId) + "/model",
+      {expected_model: chatBoundModel, model: selected});
+    chatBoundModel = c.model;
+    await openChat(c.id);
+    toast("Conversation will continue with " + selected + ".", "good");
+  } catch (e) { toast("Model switch failed: " + e.message, "bad"); }
+};
+async function prepareChat(id, model) {
+  if (chatBusy || !id) return;
+  chatBusy = true;
+  $("#chat-send").disabled = true;
+  $("#chat-model").disabled = true;
+  $("#chat-retry").hidden = true;
+  const started = Date.now(), progress = $("#chat-progress");
+  progress.hidden = false;
+  progress.textContent = "Loading " + model + "...";
+  $("#chat-status").textContent = "Waiting for the manager to make " + model + " ready...";
+  const timer = setInterval(() => {
+    progress.textContent = "Loading " + model + " - " + Math.round((Date.now() - started) / 1000) + "s";
+  }, 1000);
+  let ready = false;
+  try {
+    const result = await api("chat/conversations/" + encodeURIComponent(id) + "/prepare", {});
+    if (result.state !== "ready") throw new Error("manager did not report ready");
+    ready = true;
+    await loadChat();
+    $("#chat-status").textContent = model + " ready. Loaded context: " +
+      (Number.isInteger(result.context_length) ? result.context_length.toLocaleString() + " tokens" : "unavailable") +
+      ". Usage appears after a measured reply.";
+  } catch (e) {
+    $("#chat-status").textContent = "Model load failed: " + e.message;
+    $("#chat-retry").hidden = false;
+    toast("Model load failed: " + e.message, "bad");
+  } finally {
+    clearInterval(timer);
+    progress.hidden = true;
+    chatBusy = false;
+    $("#chat-model").disabled = false;
+    $("#chat-send").disabled = !ready;
+  }
+}
+$("#chat-retry").onclick = () => prepareChat(chatId, chatBoundModel);
+$("#chat-new").onclick = async () => {
+  if (chatBusy) return;
+  try {
+    if (!$("#chat-model").value) { toast("Choose a chat model first.", "bad"); return; }
+    const c = await api("chat/conversations", {model: $("#chat-model").value});
+    await openChat(c.id);
+    $("#chat-input").focus();
+    prepareChat(c.id, c.model);
+  } catch (e) { toast(e.message, "bad"); }
+};
+$("#chat-delete").onclick = async () => {
+  if (!chatId || chatBusy || !confirm("Delete this saved conversation?")) return;
+  try {
+    const response = await fetch("/dashboard/api/chat/conversations/" + encodeURIComponent(chatId),
+      {method: "DELETE", headers: {"Content-Type": "application/json"}, body: "{}"});
+    if (!response.ok) throw new Error("delete failed: " + response.status);
+    chatId = "";
+    try { localStorage.removeItem("dash-chat-id"); } catch (e) { /* private window */ }
+    await loadChat();
+    toast("Conversation deleted.", "good");
+  } catch (e) { toast(e.message, "bad"); }
+};
+$("#chat-form").onsubmit = async (event) => {
+  event.preventDefault();
+  if (chatBusy) return;
+  const input = $("#chat-input"), prompt = input.value.trim(), model = $("#chat-model").value;
+  if (!prompt || !model) return;
+  if (chatId && model !== chatBoundModel) {
+    $("#chat-status").textContent = "Choose Continue with selected model or New conversation first.";
+    return;
+  }
+  chatBusy = true; $("#chat-send").disabled = true; $("#chat-model").disabled = true;
+  const started = Date.now(), progress = $("#chat-progress");
+  progress.hidden = false;
+  progress.textContent = "Preparing " + model + "...";
+  let phase = "Loading";
+  const timer = setInterval(async () => {
+    try {
+      const opts = await api("chat/options");
+      if ((opts.models || []).some((m) => m.id === model && m.ready)) phase = "Generating";
+    } catch (e) { /* The turn request reports the actual failure. */ }
+    progress.textContent = phase + " " + model + " - " + Math.round((Date.now() - started) / 1000) + "s";
+  }, 5000);
+  $("#chat-status").textContent = "Preparing model and waiting for a reply...";
+  try {
+    if (!chatId) {
+      const c = await api("chat/conversations", {model});
+      chatId = c.id;
+      chatBoundModel = c.model;
+      try { localStorage.setItem("dash-chat-id", c.id); } catch (e) { /* private window */ }
+    }
+    const out = await api("chat/conversations/" + encodeURIComponent(chatId) + "/turn", {model, message: prompt});
+    input.value = "";
+    await openChat(out.conversation.id);
+    $("#chat-status").textContent = chatContextStatus(out.conversation);
+  } catch (e) { $("#chat-status").textContent = e.message; toast("Chat failed: " + e.message, "bad"); }
+  finally { clearInterval(timer); progress.hidden = true; chatBusy = false;
+    $("#chat-send").disabled = false; $("#chat-model").disabled = false; }
+};
+
 // ---------------------------------------------------------------- tabs, forms, refresh
 let tab = (() => { try { return localStorage.getItem("dash-tab") || "rig"; } catch (e) { return "rig"; } })();
 function show(name) {
@@ -355,7 +595,7 @@ document.querySelectorAll("[data-orch]").forEach((b) => b.onclick = () => {
   const a = b.dataset.orch, worker = $("#house-form").worker.value.trim();
   act(b.textContent, "orchestration/" + a, a === "requeue_worker" ? {worker} : {}, a === "kill_all_active" ? "Kill every active plan?" : "");
 });
-const every = {rig: 5000, models: 60000, benchmarks: 15000, orchestration: 10000};
+const every = {rig: 5000, models: 60000, benchmarks: 15000, orchestration: 10000, chat: 30000};
 let last = {};
 async function refresh(now) {
   const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
@@ -364,6 +604,7 @@ async function refresh(now) {
     if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
     if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
     if (tab === "orchestration" && due("orchestration")) { renderOrch(await api("orchestration")); last.orchestration = Date.now(); if (!orchOptions) loadOrchOptions(); }
+    if (tab === "chat" && due("chat") && !chatBusy) { await loadChat(); last.chat = Date.now(); }
   } catch (e) {
     $("#stamp").textContent = "refresh failed: " + e.message;
   }

@@ -165,7 +165,8 @@ FAKE_RIG = textwrap.dedent("""\
                 item.update(state="failed", result="error: manager placed it on a busy GPU")
             else:
                 st["profiles"][pid] = {"port": int(args["port"]), "gpus": args["gpus"], "state": "loading",
-                                       "lease": args["lease"], "ready_at": time.time() + 0.5}
+                                       "lease": args["lease"], "ready_at": time.time() + 0.5,
+                                       "model": args["spec"]["model"], "ctx_size": args["spec"]["ctx_size"]}
         else:
             st["profiles"].pop(pid, None); item.update(state="done", result="unloaded")
         st["plan_items"].append(item)
@@ -297,9 +298,11 @@ def menv(tmp_path, monkeypatch):
         "b:20b": ("active", gguf.dense(tmp_path, n_layer=35, layer_mb=400, ctx_train=131072, name="b.gguf")),
         "w:7b": ("active", gguf.dense(tmp_path, n_layer=10, layer_mb=300, name="w.gguf"))})
     monkeypatch.setenv("MODEL_CATALOG", str(tmp_path / "model_catalog.json"))
+    monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "chat"))
     profiles = tmp_path / "remote_profiles.json"
     profiles.write_text(json.dumps({"remote_profiles": [
-        {"id": "small", "model": "s:7b", "registry_profile": "default", "ctx_size": 16384},
+        {"id": "small", "model": "s:7b", "registry_profile": "default", "ctx_size": 16384,
+         "status": "active", "use": "chat", "dashboard_chat": True},
         {"id": "big", "model": "b:20b", "registry_profile": "default", "ctx_size": 65536},
         {"id": "worker", "model": "w:7b", "registry_profile": "default", "ctx_size": 8192, "use": "worker"},
     ]}))
@@ -351,6 +354,48 @@ def test_cards_busy_without_a_lease_are_skipped(menv):
     assert chat(menv["client"], "gpu-rig/small").json()["port"] == 11434
     rows = {g["gpu"]: g["verdict"] for g in menv["client"].get("/v1/manager/status").json()["gpus"]}
     assert rows[1] == "unleased_busy" and rows[0] == "leased"
+
+
+def test_published_chat_load_uses_max_fit_on_fastest_card(menv):
+    c = menv["client"]
+    preview = c.post("/v1/manager/models/fit",
+                     json={"model": "s:7b", "use": "chat", "profile": "default",
+                           "ctx_min": 16384, "context_mode": "max"}).json()
+    assert preview["fits"] and preview["gpus"] == [0]
+    assert preview["ctx"] > 16384
+    assert chat(c, "gpu-rig/small").status_code == 200
+    load_item = next(i for i in menv["rig"]()["plan_items"] if i["kind"] == "load")
+    assert load_item["args"]["spec"]["ctx_size"] == preview["ctx"]
+
+
+def test_basic_chat_busy_signal_blocks_cold_load_even_with_free_1060s(menv):
+    c = menv["client"]
+    idle = c.get("/v1/manager/chat/availability").json()
+    assert idle["busy"] is False
+    st = menv["rig"]()
+    st["containers"] = [{"name": "benchmark-gpu0", "gpus": [0], "port": 11434}]
+    menv["write"](st)
+    busy = c.get("/v1/manager/chat/availability").json()
+    assert busy["busy"] is True and "active runtime" in busy["reason"]
+    conv = c.post("/dashboard/api/chat/conversations", json={"model": "small"}).json()
+    result = c.post(f"/dashboard/api/chat/conversations/{conv['id']}/turn",
+                    json={"model": "small", "message": "hello"})
+    assert result.status_code == 409 and "rig busy" in result.json()["error"]["message"]
+    assert menv["rig"]().get("starts", []) == []
+    assert c.get(f"/dashboard/api/chat/conversations/{conv['id']}").json()["messages"] == []
+
+
+def test_basic_chat_can_continue_its_own_ready_profile(menv):
+    c = menv["client"]
+    conv = c.post("/dashboard/api/chat/conversations", json={"model": "small"}).json()
+    path = f"/dashboard/api/chat/conversations/{conv['id']}/turn"
+    first = c.post(path, json={"model": "small", "message": "first"})
+    assert first.status_code == 200, first.text
+    availability = c.get("/v1/manager/chat/availability?profile_id=small").json()
+    assert availability["busy"] is False and availability["requested_ready"] is True
+    second = c.post(path, json={"model": "small", "message": "second"})
+    assert second.status_code == 200, second.text
+    assert len(menv["rig"]()["starts"]) == 1
 
 
 def test_chat_uses_a_1060_when_the_3090_is_busy(menv):

@@ -6,28 +6,25 @@
   characterization per model (`build_models_summary`); the dashboard itself never reads benchmarking;
 - benchmarks: lane runs (`logs/benchmarks/worker_lanes_*`) and campaign runs (`campaigns/history`) on the
   shared drive;
-- orchestration: llm_orchestration's own dashboard package (`scripts/dashboard`: `summarize`, `Controls`),
-  imported from its checkout. Its views and actions stay that repo's code; this module only loads it.
+- orchestration: llm_orchestration's versioned private API over a Unix socket.
 
 All readers are plain functions over files (blocking): the routes run them in a thread.
 """
 
 from __future__ import annotations
 
-import importlib
+import http.client
 import json
 import os
 import re
-import sys
 import time
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from ..manager import models as registry_models
 
 SHARED_ROOTS = (Path("/media/bryan/shared"), Path("/mnt/shared"))
-ORCHESTRATION_ROOT_DEFAULT = Path.home() / "llm_orchestration"
+ORCHESTRATION_API_SOCKET = Path("/run/llm-orchestration/api.sock")
 
 # The tests shown per model, in column order: (label, test_id).
 # Reasoning columns are the lenient rows (bench-reasoning extract v5): a correct answer counts however it
@@ -209,36 +206,41 @@ def benchmarks_summary(shared: Path | None = None, claims: set[str] | None = Non
 
 # ------------------------------------------------------------------ orchestration
 
-_orch: dict[str, Any] = {"root": None, "module": None}
+class _UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path: str):
+        super().__init__("localhost", timeout=30)
+        self.path = path
+
+    def connect(self):
+        import socket
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
 
 
-def orchestration() -> ModuleType:
-    """llm_orchestration's `dashboard` package (summarize, Controls), imported from its checkout."""
-    root = Path(os.getenv("ORCHESTRATION_ROOT") or ORCHESTRATION_ROOT_DEFAULT)
-    if _orch["module"] is not None and _orch["root"] == root:
-        return _orch["module"]
-    scripts = str(root / "scripts")
-    if not (root / "scripts" / "dashboard" / "__init__.py").is_file():
-        raise FileNotFoundError(f"no orchestration dashboard package under {scripts}; set ORCHESTRATION_ROOT")
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
-    for name in [n for n in sys.modules if n == "dashboard" or n.startswith("dashboard.")]:
-        del sys.modules[name]  # a different root than last time
-    module = importlib.import_module("dashboard")
-    _orch.update(root=root, module=module)
-    return module
-
-
-def orchestration_config() -> tuple[Path, dict]:
-    path = Path(os.getenv("ORCHESTRATION_CONFIG") or (shared_root() / "agents" / "config.json"))
-    return shared_root(), (_json(path) or {})
+def orchestration_request(method: str, path: str, body: dict | None = None) -> dict:
+    socket_path = os.getenv("ORCHESTRATION_API_SOCKET", str(ORCHESTRATION_API_SOCKET))
+    connection = _UnixConnection(socket_path)
+    try:
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        result = json.loads(response.read())
+        if response.status != 200:
+            raise RuntimeError(result.get("error", f"orchestration API HTTP {response.status}"))
+        return result
+    finally:
+        connection.close()
 
 
 def orchestration_summary() -> dict:
-    shared, config = orchestration_config()
-    return orchestration().summarize(shared, config)
+    return orchestration_request("GET", "/v1/orchestration/status")
 
 
-def orchestration_controls():
-    shared, config = orchestration_config()
-    return orchestration().Controls(shared, config)
+def orchestration_options() -> dict:
+    return orchestration_request("GET", "/v1/orchestration/options")
+
+
+def orchestration_action(action: str, body: dict) -> dict:
+    return orchestration_request("POST", f"/v1/orchestration/actions/{action}", body)

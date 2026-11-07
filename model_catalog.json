@@ -1,6 +1,6 @@
 {
   "_comment": "Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; the gateway reads models only from here. Re-run the importer to take in new lessons.",
-  "registry_updated": "2026-11-04",
+  "registry_updated": "2026-11-06",
   "roles_updated": "2026-10-15",
   "image": "llama-runtime:b11669",
   "models": {
@@ -1425,7 +1425,7 @@
       }
     },
     "ornith-1.5:35b-a3b": {
-      "status": "candidate",
+      "status": "active",
       "aliases": [],
       "gguf_path": "/mnt/shared/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-Q4_K_M.gguf",
       "model_size_bytes": 21713463040,
@@ -3034,7 +3034,9 @@
         "model_path": "/data/model-hotset/qwen3.6-35b-a3b-strata-xl/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         "validated_version": "0.2.10",
         "max_context": 8192,
-        "min_host_available_mb": 8192
+        "min_host_available_mb": 8192,
+        "prepared_pack_size_bytes": 9843821,
+        "bundle_size_bytes": 22863506829
       },
       "profiles": {
         "default": {
@@ -3167,7 +3169,9 @@
         "only": true,
         "max_context": 262144,
         "min_host_available_mb": 12288,
-        "prepared_experts_path": "/data/bench-staging/strata-v0.2.10/data/packs/q2_0/experts.bin"
+        "prepared_experts_path": "/data/bench-staging/strata-v0.2.10/data/packs/q2_0/experts.bin",
+        "prepared_pack_size_bytes": 35469412079,
+        "bundle_size_bytes": 101893290703
       },
       "profiles": {
         "default": {
@@ -3256,7 +3260,7 @@
     }
   },
   "summary": {
-    "generated_at": "2026-11-03T20:33:29",
+    "generated_at": "2026-11-06T16:40:34",
     "key_tests": [
       "bbh",
       "gsm8k",
@@ -4150,6 +4154,72 @@
           "file": "nemotron-3_5-bolt_74b-a9b_runtime_characterization_20261023.json",
           "at": "20261023"
         }
+      },
+      {
+        "model": "ornith-1.5:35b-a3b",
+        "status": "active",
+        "placement": "single_gpu",
+        "tier": 3,
+        "profiles": [
+          "default"
+        ],
+        "roles": [],
+        "source_url": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-Q4_K_M.gguf",
+        "superseded_by": null,
+        "scores": {
+          "bbh": {
+            "score": 0.9259259259259259,
+            "run_class": "validated",
+            "n": 1350,
+            "at": "2026-10-17",
+            "unreadable": 12
+          },
+          "gsm8k": {
+            "score": 0.94,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-10-17",
+            "unreadable": null
+          },
+          "drop": {
+            "score": 0.98,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-10-17",
+            "unreadable": 0
+          },
+          "ifeval": {
+            "score": 0.82,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-10-17",
+            "unreadable": null
+          },
+          "mmlu-pro": {
+            "score": 0.7571428571428571,
+            "run_class": "smoke",
+            "n": 140,
+            "at": "2026-10-17",
+            "unreadable": 1
+          },
+          "humaneval+": {
+            "score": 0.8536585365853658,
+            "run_class": "full",
+            "n": 164,
+            "at": "2026-10-17",
+            "unreadable": null
+          },
+          "mbpp+": {
+            "score": 0.753968253968254,
+            "run_class": "full",
+            "n": 378,
+            "at": "2026-10-17",
+            "unreadable": null
+          }
+        },
+        "pipeline": 0.767,
+        "pipeline_tests": 6,
+        "runtime": null
       },
       {
         "model": "ornith-1.5:9b",
@@ -5088,72 +5158,6 @@
           }
         },
         "pipeline": 0.776,
-        "pipeline_tests": 6,
-        "runtime": null
-      },
-      {
-        "model": "ornith-1.5:35b-a3b",
-        "status": "candidate",
-        "placement": "single_gpu",
-        "tier": 3,
-        "profiles": [
-          "default"
-        ],
-        "roles": [],
-        "source_url": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-Q4_K_M.gguf",
-        "superseded_by": null,
-        "scores": {
-          "bbh": {
-            "score": 0.9259259259259259,
-            "run_class": "validated",
-            "n": 1350,
-            "at": "2026-10-17",
-            "unreadable": 12
-          },
-          "gsm8k": {
-            "score": 0.94,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-17",
-            "unreadable": null
-          },
-          "drop": {
-            "score": 0.98,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-17",
-            "unreadable": 0
-          },
-          "ifeval": {
-            "score": 0.82,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-17",
-            "unreadable": null
-          },
-          "mmlu-pro": {
-            "score": 0.7571428571428571,
-            "run_class": "smoke",
-            "n": 140,
-            "at": "2026-10-17",
-            "unreadable": 1
-          },
-          "humaneval+": {
-            "score": 0.8536585365853658,
-            "run_class": "full",
-            "n": 164,
-            "at": "2026-10-17",
-            "unreadable": null
-          },
-          "mbpp+": {
-            "score": 0.753968253968254,
-            "run_class": "full",
-            "n": 378,
-            "at": "2026-10-17",
-            "unreadable": null
-          }
-        },
-        "pipeline": 0.767,
         "pipeline_tests": 6,
         "runtime": null
       },

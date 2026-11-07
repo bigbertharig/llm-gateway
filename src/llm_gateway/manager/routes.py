@@ -49,6 +49,12 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
     async def status():
         return await manager.status()
 
+    @r.get("/chat/availability")
+    async def chat_availability(profile_id: str | None = None):
+        if profile_id is not None and profile_id not in profiles():
+            raise ManagerError(404, "unknown published profile")
+        return await manager.chat_availability(profile_id)
+
     @r.post("/agent-routes/resolve")
     async def resolve_agent_route(request: Request):
         """Offer an already-ready, disjoint route for a child agent capability."""

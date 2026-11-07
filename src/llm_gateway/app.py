@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .manager import Manager, ManagerError
 from .manager.routes import router as manager_router
 from .dashboard import router as dashboard_router
+from .dashboard.chat import router as chat_router
 from .profiles import ProfileError, Profiles
 from .rig import Rig, RigUnavailable
 from .settings import Settings
@@ -207,6 +208,9 @@ def create_app(
 
         return StreamingResponse(relay(), resp.status_code, media_type=ctype.split(";")[0],
                                  headers={"Cache-Control": "no-cache"})
+
+    if manager is not None:
+        app.include_router(chat_router(manager, profiles, forward))
 
     @app.get("/health")
     async def health():

@@ -46,7 +46,7 @@ USES = ("chat", "worker", "benchmark")  # manager/memory.py USES
 # on the cards it fits best and plans the largest context that fits, at least the profile's ctx_size.
 # use (chat | worker | benchmark, default chat) sizes the host prompt cache (manager/memory.py).
 OFFER: list[dict[str, Any]] = [
-    {"id": "chat-27b", "model": "qwen3.6:27b", "profile": "interactive", "default": True,
+    {"id": "chat-27b", "dashboard_chat": True, "model": "qwen3.6:27b", "profile": "interactive", "default": True,
      "description": "Strong general/coding model for interactive agents (Roo)."},
     {"id": "coder-7b", "model": "qwen2.5-coder:7b", "profile": "interactive", "default": True,
      "description": "Fast small coder for scoped/bulk tasks. No native tool calls."},
@@ -54,7 +54,7 @@ OFFER: list[dict[str, Any]] = [
      "description": "Coding MoE (30B, 3B active). Roo candidate."},
     {"id": "devstral-24b", "model": "devstral-small:24b", "profile": "interactive", "default": False,
      "description": "Agentic coding model (built for tool-using agents). Roo candidate."},
-    {"id": "gpt-oss-20b", "model": "gpt-oss:20b", "profile": "interactive", "default": False,
+    {"id": "gpt-oss-20b", "dashboard_chat": True, "model": "gpt-oss:20b", "profile": "interactive", "default": False,
      "description": "MoE (21B, 3.6B active), strong tool calling, fast. Roo candidate."},
     {"id": "nex-split", "model": "nex-n2.5:mini", "profile": "interactive", "default": False,
      "description": "Nex N2.5 mini (35B MoE, 3B active)."},
@@ -62,6 +62,10 @@ OFFER: list[dict[str, Any]] = [
      "description": "Separate 7B parent route for harness size comparisons."},
     {"id": "harness-14b", "model": "qwen2.5-coder:14b", "profile": "orchestration", "default": False,
      "description": "14B parent route for harness size comparisons."},
+    {"id": "harness-gemma4-e4b-64k", "dashboard_chat": True, "model": "gemma-4:e4b", "profile": "default", "default": False,
+     "ctx_size": 65536, "description": "One GTX 1060 parent route for harness comparison."},
+    {"id": "harness-gemma4-12b-64k", "dashboard_chat": True, "model": "gemma-4:12b", "profile": "default", "default": False,
+     "ctx_size": 65536, "description": "Two GTX 1060 parent route for harness comparison."},
     {"id": "harness-ministral-8b", "model": "ministral-3:8b", "profile": "default", "default": False,
      "description": "Alternate small-model parent route for harness tool comparisons."},
     {"id": "harness-ornith-9b", "model": "ornith-1.5:9b", "profile": "default", "default": False,
@@ -130,8 +134,9 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             "status": r["status"],
             "description": item.get("description", ""),
             "default": bool(item.get("default", False)),
+            "dashboard_chat": bool(item.get("dashboard_chat", False)),
             "use": item.get("use", "chat"),
-            "ctx_size": runtime["ctx_size"],  # the least context the manager plans for it
+            "ctx_size": item.get("ctx_size", runtime["ctx_size"]),  # minimum context for this route
         })
     doc = {"_comment": GENERATED_NOTE, "registry_updated": registry.get("updated"), "remote_profiles": profiles}
     return doc, problems
