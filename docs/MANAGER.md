@@ -302,7 +302,9 @@ once its current work frees, as the collecting wait uses it); a fit for an immed
 (total minus what is loaded now). Later: use the active size to stack several small jobs on one card.
 
 **Models come from the gateway's own catalog (2026-10-25).** The manager never reads benchmarking at
-runtime. `tools/generate_profiles.py` imports the benchmarking model library into `model_catalog.json`
+runtime. Run `tools/sync_model_library.py --dry-run` to see what benchmarking learned and
+`tools/sync_model_library.py` to validate and import it (see [MODEL_LIBRARY_HANDOFF.md](MODEL_LIBRARY_HANDOFF.md)).
+The importer uses `tools/generate_profiles.py` to transform the library into `model_catalog.json`
 (every model, its resolved profiles, the roles, the runtime image, the dashboard's model summary) and
 `remote_profiles.json` (the offer); `manager/models.py` resolves from the catalog. Re-run the importer to take
 in what benchmarking has learned. A published profile names no cards: `load_profile` plans it like any model
