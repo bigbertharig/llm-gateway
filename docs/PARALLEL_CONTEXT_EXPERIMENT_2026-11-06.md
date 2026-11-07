@@ -122,20 +122,18 @@ but left only 64 MiB free and is unsuitable as a serving target. At 200K,
 A standalone CUDA worker then computed one FP16 attention head against a
 separate 100K/200K/250K resident token array on each 1060. GPU0 supplied
 the query and received all five results through pinned host memory; all
-five outputs verified. Five-worker median round trips were 1.30/2.44/2.85
+five outputs verified. Five-worker median round trips were 1.30/2.44/3.05
 ms respectively. The worker reserved a Q4-sized whole-chat cache but only
 read one head's 49/98/122 MiB of FP16 K/V, so this is a placement and
 transport proof, not full-model inference or a 250K retrieval result.
 The existing 27B chat route stayed loaded and all five 1060s returned to
 idle memory use after the probe.
 
-Next: fork llama.cpp to give each sequence a KV device and run its attention
-on that device while weights stay on GPU0. Start with two real slots at
-100K, then test five 200K and 250K slots after measuring actual workspace.
-Use the same backend mechanism on a dense and a MoE model and test five
-near-capacity conversations, continuation reuse and isolation. Current
-`--override-tensor`, layer split and Strata flags cannot express this
-per-sequence GPU assignment.
+The next gate was to fork llama.cpp so each context could assign KV and
+attention to a 1060 while weights stayed on GPU0. That short-prompt gate
+passed as described below. Near-capacity conversations, continuation reuse,
+and isolation remain to be tested. Current `--override-tensor`, layer split,
+and Strata flags cannot express this per-context GPU assignment.
 
 The final 250K worker run gave each 1060 a different cache value (1 through 5)
 and verified all five returned results on GPU0 in their correct lanes. Its
@@ -143,3 +141,21 @@ and verified all five returned results on GPU0 in their correct lanes. Its
 `results/runtime_experiments/kv_cache_residency_20261106/attention_250000_distinct.json`
 in the benchmarking repository. This checks the synthetic lane mapping; it
 does not establish real conversation isolation or full-model generation.
+
+## Real-model per-chat KV proof (2026-11-06)
+
+A private llama.cpp prototype now shares one model object on GPU0 across five
+contexts. Each context stores KV and runs flash attention on its assigned 1060.
+Five distinct short chats passed on dense Qwen3 1.7B, MoE GPT-OSS 20B, and the
+original dense Qwen3.6 27B, with 32,768-token cache allocations per chat. The
+27B run peaked at 19,019 MiB on GPU0 and 2,208 MiB on each 1060; each chat
+produced its expected capital as the first token. The existing `chat-27b` route
+was restored after testing.
+
+This proves multiple independent resident KV windows sharing one real model
+weight load across the six cards. The harness decodes them sequentially and
+filled only short prompts, so long-context quality, near-full cache use, and
+concurrent serving remain open. The exact private patch, model logs, GPU samples,
+and summary are in benchmarking at
+`results/runtime_experiments/kv_chat_real_model_20261106/`. The per-chat mapping
+is still an experimental runtime change and is not a Manager load profile.
