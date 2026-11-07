@@ -159,3 +159,24 @@ concurrent serving remain open. The exact private patch, model logs, GPU samples
 and summary are in benchmarking at
 `results/runtime_experiments/kv_chat_real_model_20261106/`. The per-chat mapping
 is still an experimental runtime change and is not a Manager load profile.
+
+## Paired 1060 cache workers and staged context addition (2026-11-07)
+
+The next private llama.cpp experiment loaded Qwen3.6 27B Q4_0 weights once
+on GPU0, then created a 256K Q4 K/V chat on GPUs1+2, another 256K chat on
+GPUs3+4, and a 32K chat on GPU5. It decoded and continued earlier chats
+between additions. The corrected run placed 2,304 MiB KV plus about 1,029
+MiB compute buffer on each card in the two pairs, with sampled peaks of
+3,412 and 3,408 MiB. All short capital prompts gave the expected first
+tokens. This demonstrates adding independent contexts after model load in
+one process, without reserving every chat when the model starts.
+
+An earlier placement bug sent each 256K cache to just one 1060; both chats
+still decoded, with about 5,716 MiB sampled peak per active card. Therefore
+a single 1060 can reserve this model's 256K Q4 cache at `n_ubatch=8`, but
+has little headroom. This does not establish that FP16 KV fits. Neither run
+filled a 256K conversation: full-history retrieval, concurrent serving,
+cache growth or migration, and Manager integration remain open. The device
+selector is currently process-global. Detailed receipts and the corrected
+private patch are in benchmarking at
+`results/runtime_experiments/kv_pair_dynamic_20261107/`.
