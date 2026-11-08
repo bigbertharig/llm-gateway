@@ -25,11 +25,13 @@ def test_inspect_ignores_summary_build_time_but_detects_profile_change(tmp_path,
     (root / "scripts/active").mkdir(parents=True)
     (root / "model_registry.json").write_text("{}")
     (root / "model_roles.json").write_text("{}")
+    (root / "load_recipes.json").write_text('{"schema_version":1,"recipes":{}}')
     (root / "scripts/active/model_library.py").write_text("# converter")
     catalog_path = tmp_path / "model_catalog.json"
     offer_path = tmp_path / "remote_profiles.json"
     old_catalog = {"models": {"a": {"profiles": {"default": {"runtime": {"ctx_size": 4096}}}}},
-                   "roles": {}, "summary": {"generated_at": "old"}, "image": "llama-runtime:x"}
+                   "roles": {}, "summary": {"generated_at": "old"}, "image": "llama-runtime:x",
+                   "load_recipes": {"schema_version": 1, "recipes": {}}}
     catalog_path.write_text(json.dumps(old_catalog))
     offer_path.write_text(json.dumps({"remote_profiles": [{"id": "a", "ctx_size": 4096}]}))
     monkeypatch.setattr(sync.gen, "CATALOG_PATH", catalog_path)
@@ -42,6 +44,31 @@ def test_inspect_ignores_summary_build_time_but_detects_profile_change(tmp_path,
     assert report["catalog_stale"] and report["offers_stale"]
     assert report["models"]["changed"] == ["a"]
     assert report["offers"]["changed"] == ["a"]
+
+
+def test_recipe_handoff_is_evidence_linked_and_not_executable(tmp_path):
+    root = tmp_path / "benchmarking"
+    evidence = root / "results/runtime_experiments/case/README.md"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("measured result")
+    path = root / "load_recipes.json"
+    recipe = {"model": "model-a", "status": "research", "procedure": "private_kv_v1",
+              "placement": {"weights": ["gpu0"], "chat_state": ["gpu_workers"]},
+              "evidence": ["results/runtime_experiments/case/README.md"]}
+    path.write_text(json.dumps({"schema_version": 1, "recipes": {"case_v1": recipe}}))
+    assert sync.gen.load_recipes(root, {"models": {"model-a": {}}})["recipes"]["case_v1"] == recipe
+
+    recipe["status"] = "manager_ready"
+    path.write_text(json.dumps({"schema_version": 1, "recipes": {"case_v1": recipe}}))
+    import pytest
+    with pytest.raises(ValueError, match="Manager execution requires"):
+        sync.gen.load_recipes(root, {"models": {"model-a": {}}})
+
+    recipe["status"] = "validated"
+    recipe["evidence"] = ["results/runtime_experiments/missing/README.md"]
+    path.write_text(json.dumps({"schema_version": 1, "recipes": {"case_v1": recipe}}))
+    with pytest.raises(ValueError, match="missing or invalid evidence"):
+        sync.gen.load_recipes(root, {"models": {"model-a": {}}})
 
 
 def test_atomic_text_replaces_complete_file(tmp_path):

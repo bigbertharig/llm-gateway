@@ -40,7 +40,7 @@ def _read_json(path: Path) -> dict:
 def inspect(root: Path, catalog: dict, offer: dict) -> dict:
     old_catalog = _read_json(gen.CATALOG_PATH)
     old_offer = _read_json(gen.OUTPUT_PATH)
-    inputs = [root / "model_registry.json", root / "model_roles.json",
+    inputs = [root / "model_registry.json", root / "model_roles.json", root / "load_recipes.json",
               root / "scripts/active/model_library.py"]
     digest = hashlib.sha256()
     for path in inputs:
@@ -55,6 +55,8 @@ def inspect(root: Path, catalog: dict, offer: dict) -> dict:
         "roles_updated": catalog.get("roles_updated"),
         "models": changed_keys(old_catalog.get("models", {}), catalog["models"]),
         "roles": changed_keys(old_catalog.get("roles", {}), catalog["roles"]),
+        "load_recipes": changed_keys(old_catalog.get("load_recipes", {}).get("recipes", {}),
+                                     catalog["load_recipes"]["recipes"]),
         "offers": changed_keys(old_offers, new_offers),
         "runtime_image_changed": old_catalog.get("image") != catalog.get("image"),
         "catalog_stale": _without_build_time(old_catalog) != _without_build_time(catalog),
@@ -97,7 +99,12 @@ def main() -> int:
             print(f"problem: {problem}", file=sys.stderr)
         return 2
 
-    catalog = gen.build_catalog(library, registry, roles, gen._summary(root))
+    try:
+        recipes = gen.load_recipes(root, registry)
+    except (OSError, ValueError) as exc:
+        print(f"problem: {exc}", file=sys.stderr)
+        return 2
+    catalog = gen.build_catalog(library, registry, roles, gen._summary(root), recipes)
     report = inspect(root, catalog, offer)
     pending = report["catalog_stale"] or report["offers_stale"]
     if pending and not (args.dry_run or args.check):

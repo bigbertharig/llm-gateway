@@ -40,6 +40,9 @@ BENCHMARKING_ROOTS = (
 # Registry statuses the gateway may offer. Candidates are allowed so they can be tried remotely.
 OFFERABLE_STATUSES = {"active", "candidate"}
 USES = ("chat", "worker", "benchmark")  # manager/memory.py USES
+RECIPE_STATUSES = {"research", "validated"}
+RECIPE_TIERS = {"gpu0", "gpu_workers", "host_ram", "nvme"}
+RECIPE_COMPONENTS = {"weights", "experts", "lookup", "chat_state"}
 
 # The offer: what the gateway publishes, under which registry profile. Model settings come from that profile,
 # never from this list, and so do card choice and context: the manager's fit places each published profile
@@ -99,6 +102,47 @@ def load_library(root: Path) -> ModuleType:
     return library
 
 
+def load_recipes(root: Path, registry: dict[str, Any]) -> dict[str, Any]:
+    """Validate passive benchmark recipes. Manager never executes these IDs directly."""
+    path = root / "load_recipes.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(doc, dict) or set(doc) != {"schema_version", "recipes"}
+            or type(doc["schema_version"]) is not int or doc["schema_version"] != 1):
+        raise ValueError("load_recipes.json: expected schema_version 1 and recipes")
+    recipes = doc["recipes"]
+    if not isinstance(recipes, dict):
+        raise ValueError("load_recipes.json: recipes must be an object")
+    for rid, recipe in recipes.items():
+        if not isinstance(rid, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", rid):
+            raise ValueError(f"load_recipes.json: invalid recipe id {rid!r}")
+        if not isinstance(recipe, dict) or set(recipe) != {
+                "model", "status", "procedure", "placement", "evidence"}:
+            raise ValueError(f"load_recipes.json: {rid}: invalid fields")
+        if not isinstance(recipe["model"], str) or recipe["model"] not in registry["models"]:
+            raise ValueError(f"load_recipes.json: {rid}: unknown model {recipe['model']!r}")
+        if not isinstance(recipe["status"], str) or recipe["status"] not in RECIPE_STATUSES:
+            raise ValueError(f"load_recipes.json: {rid}: status must be research or validated; "
+                             "Manager execution requires a separate capability implementation")
+        if not isinstance(recipe["procedure"], str) or not re.fullmatch(
+                r"[a-z][a-z0-9_]*", recipe["procedure"]):
+            raise ValueError(f"load_recipes.json: {rid}: procedure must be an identifier, not a command")
+        placement = recipe["placement"]
+        if not isinstance(placement, dict) or not placement or set(placement) - RECIPE_COMPONENTS:
+            raise ValueError(f"load_recipes.json: {rid}: invalid placement components")
+        for component, tiers in placement.items():
+            if (not isinstance(tiers, list) or not tiers
+                    or any(not isinstance(t, str) or t not in RECIPE_TIERS for t in tiers)):
+                raise ValueError(f"load_recipes.json: {rid}: invalid tiers for {component}")
+        evidence = recipe["evidence"]
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError(f"load_recipes.json: {rid}: evidence must be a nonempty list")
+        for ref in evidence:
+            if (not isinstance(ref, str) or not ref.startswith("results/runtime_experiments/")
+                    or not ref.endswith(".md") or ".." in Path(ref).parts or not (root / ref).is_file()):
+                raise ValueError(f"load_recipes.json: {rid}: missing or invalid evidence {ref!r}")
+    return doc
+
+
 def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """(remote_profiles document, problems). Profiles with problems are left out."""
     problems: list[str] = []
@@ -143,7 +187,8 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
 
 
 def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] | None,
-                  summary: dict[str, Any] | None) -> dict[str, Any]:
+                  summary: dict[str, Any] | None,
+                  load_recipes: dict[str, Any] | None = None) -> dict[str, Any]:
     """The gateway's copy of the model library: every model with its resolved profiles, the roles, the image,
     and the dashboard's model summary."""
     models = {}
@@ -171,7 +216,8 @@ def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] 
                  for name, spec in ((roles or {}).get("roles") or {}).items() if isinstance(spec, dict)}
     return {"_comment": CATALOG_NOTE, "registry_updated": registry.get("updated"),
             "roles_updated": (roles or {}).get("updated"), "image": library.runtime_image(registry),
-            "models": models, "roles": role_rows, "summary": summary}
+            "models": models, "roles": role_rows, "summary": summary,
+            "load_recipes": load_recipes or {"schema_version": 1, "recipes": {}}}
 
 
 def render(doc: dict[str, Any]) -> str:
@@ -196,7 +242,12 @@ def main() -> int:
     doc, problems = build(OFFER, library, registry)
     roles = json.loads((root / "model_roles.json").read_text(encoding="utf-8")) \
         if (root / "model_roles.json").is_file() else None
-    catalog = build_catalog(library, registry, roles, _summary(root))
+    try:
+        recipes = load_recipes(root, registry)
+    except (OSError, ValueError) as exc:
+        problems.append(str(exc))
+        recipes = None
+    catalog = build_catalog(library, registry, roles, _summary(root), recipes)
     for p in problems:
         print(f"problem: {p}")
     outputs = {OUTPUT_PATH: render(doc), CATALOG_PATH: render(catalog)}
