@@ -178,6 +178,7 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             "description": item.get("description", ""),
             "default": bool(item.get("default", False)),
             "good_for": r.get("good_for", []),
+            "dashboard_chat": "chatbot" in r.get("good_for", []),  # compatibility for running gateway
             "use": item.get("use", "chat"),
             "ctx_size": item.get("ctx_size", runtime["ctx_size"]),  # minimum context for this route
         })
