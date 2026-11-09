@@ -814,6 +814,9 @@ class Manager:
         bounds = r.get("context_bounds") or {}
         lower = int(bounds.get("min") or fit.CTX_MIN_DEFAULT)
         upper = min(int(bounds.get("max") or shape.n_ctx_train or 131072), shape.n_ctx_train or 1 << 30)
+        tested_limit = int((r.get("loading_stage") or {}).get("context_limit") or 0)
+        if tested_limit:
+            upper = min(upper, tested_limit)
         if context_mode not in ("working", "min", "max"):
             raise ManagerError(400, "context_mode must be working, min, or max")
         if lower > upper:
@@ -847,6 +850,9 @@ class Manager:
         cfg = r.get("strata") or {}
         bounds = r.get("context_bounds") or {}
         maximum = min(int(bounds.get("max") or 0), int(cfg.get("max_context") or 0))
+        tested_limit = int((r.get("loading_stage") or {}).get("context_limit") or 0)
+        if tested_limit:
+            maximum = min(maximum, tested_limit)
         minimum = max(int(bounds.get("min") or fit.CTX_MIN_DEFAULT), ctx_min)
         if context_mode not in ("working", "min", "max"):
             raise ManagerError(400, "context_mode must be working, min, or max")

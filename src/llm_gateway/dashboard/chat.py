@@ -157,7 +157,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
     def offered() -> dict[str, dict]:
         published = profiles.all()
         return {pid: spec for pid, spec in published.items()
-                if spec.get("dashboard_chat") is True
+                if "chatbot" in spec.get("good_for", [])
                 and spec.get("status") == "active" and spec.get("use") == "chat"}
 
     @r.get("/options")

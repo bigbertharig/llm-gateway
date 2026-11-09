@@ -72,11 +72,12 @@ def test_chat_store_migrates_existing_conversations(tmp_path):
 
 def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
-    profile = {"id": "harness-gemma4-e4b-64k", "model": "gemma-test", "status": "active", "use": "chat", "dashboard_chat": True}
-    other = {"id": "gpt-oss-20b", "model": "other-test", "status": "active", "use": "chat", "dashboard_chat": True}
+    profile = {"id": "harness-gemma4-e4b-64k", "model": "gemma-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
+    other = {"id": "gpt-oss-20b", "model": "other-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
+    unmarked = {"id": "code-only", "model": "code-test", "status": "active", "use": "chat", "good_for": ["coding"]}
     class Profiles:
         def all(self):
-            return {profile["id"]: profile, other["id"]: other}
+            return {profile["id"]: profile, other["id"]: other, unmarked["id"]: unmarked}
     class Manager:
         def __init__(self):
             self.loads = []
@@ -119,6 +120,7 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
     with TestClient(app) as client:
         opts = client.get("/dashboard/api/chat/options").json()
         assert opts["models"][0]["id"] == profile["id"]
+        assert [model["id"] for model in opts["models"]] == [profile["id"], other["id"]]
         c = client.post("/dashboard/api/chat/conversations", json={"model": profile["id"]}).json()
         prepared = client.post(f"/dashboard/api/chat/conversations/{c['id']}/prepare", json={})
         assert prepared.status_code == 200

@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from llm_gateway.manager import models as manager_models
 from llm_gateway.profiles import Profiles
 
 spec = importlib.util.spec_from_file_location(
@@ -19,7 +22,8 @@ REGISTRY = {
     "runtime_image": "llama-runtime:test",
     "models": {
         "small:7b": {"status": "active", "gguf": "small/small.gguf"},
-        "split:35b": {"status": "candidate", "gguf": "split/split.gguf"},
+        "split:35b": {"status": "candidate", "in_testing": True, "gguf": "split/split.gguf"},
+        "testing:7b": {"status": "active", "in_testing": True, "gguf": "testing/testing.gguf"},
         "old:8b": {"status": "archived", "gguf": "old/old.gguf"},
     },
 }
@@ -33,6 +37,7 @@ def resolve(model_id, profile, registry):
         raise KeyError(f"model {model_id} has no profile missing")
     return {"model": model_id, "profile": profile, "status": entry["status"],
             "gguf_path": f"/archive/{entry['gguf']}", "extra_args": ["--jinja"],
+            "good_for": ["chatbot"] if model_id == "small:7b" and profile == "interactive" else [],
             "runtime": {"ctx_size": 16384, "batch_size": 64, "parallel": 1}}
 
 
@@ -46,14 +51,33 @@ def test_only_offered_models_are_resolved_with_registry_settings():
     assert problems == []
     (p,) = doc["remote_profiles"]
     assert p["id"] == "s" and p["model"] == "small:7b" and p["registry_profile"] == "interactive"
+    assert p["good_for"] == ["chatbot"]
     assert p["ctx_size"] == 16384 and doc["registry_updated"] == "2026-10-17"
     assert not {"gpus_needed", "tensor_split", "gguf_path", "image", "extra_args"} & set(p)  # the catalog has those
 
 
-def test_candidates_are_offerable_archived_are_not():
-    doc, problems = build([{"id": "c", "model": "split:35b"}, {"id": "a", "model": "old:8b"}])
-    assert [p["id"] for p in doc["remote_profiles"]] == ["c"]
-    assert any("a: old:8b is archived" in p for p in problems), problems
+def test_testing_and_archived_models_are_not_runtime_offers():
+    doc, problems = build([{"id": "c", "model": "split:35b"},
+                           {"id": "t", "model": "testing:7b"},
+                           {"id": "a", "model": "old:8b"}])
+    assert doc["remote_profiles"] == []
+    assert len(problems) == 3
+    assert all("not approved for routine runtime offers" in p for p in problems)
+
+
+def test_testing_model_is_available_only_for_benchmark_use(monkeypatch):
+    monkeypatch.setattr(manager_models, "catalog", lambda: {
+        "image": "llama-runtime:test",
+        "models": {"split:35b": {"status": "candidate", "in_testing": True,
+                                  "gguf_path": "/mnt/shared/split.gguf",
+                                  "model_size_bytes": 1,
+                                  "profiles": {"default": {"runtime": {"ctx_size": 8192}}}}},
+    })
+    assert manager_models.resolve("split:35b", "benchmark")["model"] == "split:35b"
+    with pytest.raises(KeyError, match="in testing"):
+        manager_models.resolve("split:35b", "worker")
+    with pytest.raises(KeyError, match="in testing"):
+        manager_models.resolve("split:35b", "chat")
 
 
 def test_bad_offers_are_reported_and_left_out():

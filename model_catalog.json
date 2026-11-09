@@ -327,6 +327,9 @@
               "higher_reasoning"
             ]
           },
+          "good_for": [
+            "chatbot"
+          ],
           "system_prompt": "You are a strict worker assistant. Follow instructions exactly and keep output minimal. When JSON is requested, return raw JSON only. Never wrap JSON in ```json code blocks or markdown formatting. Start JSON with { and end with }.",
           "inference": {
             "temperature": 0.0,
@@ -601,6 +604,9 @@
               "gemma4"
             ]
           },
+          "good_for": [
+            "chatbot"
+          ],
           "system_prompt": "You are a strict worker assistant. Follow instructions exactly and keep output minimal. When JSON is requested, return raw JSON only. Never wrap JSON in ```json code blocks or markdown formatting. Start JSON with { and end with }.",
           "inference": {
             "temperature": 0.0,
@@ -714,7 +720,10 @@
             "min": 8192,
             "max": 131072,
             "max_basis": "gguf_train"
-          }
+          },
+          "good_for": [
+            "chatbot"
+          ]
         }
       }
     },
@@ -820,6 +829,7 @@
     },
     "mellum2.1:12b-a2.5b": {
       "status": "candidate",
+      "in_testing": true,
       "aliases": [],
       "gguf_path": "/mnt/shared/models/mellum2.1-12b-a2.5b/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
       "model_size_bytes": 8071295264,
@@ -828,6 +838,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 2,
             "placement": "split_gpu",
@@ -884,6 +895,7 @@
           }
         },
         "thinking": {
+          "in_testing": true,
           "schedule": {
             "tier": 2,
             "placement": "split_gpu",
@@ -943,6 +955,7 @@
     },
     "minicpm5:2b": {
       "status": "candidate",
+      "in_testing": true,
       "aliases": [],
       "gguf_path": "/mnt/shared/models/minicpm5-2b/MiniCPM5-2B-Q4_K_M.gguf",
       "model_size_bytes": 1561318368,
@@ -951,6 +964,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 1,
             "placement": "single_gpu",
@@ -1339,6 +1353,7 @@
     },
     "nex-n2.5:mini": {
       "status": "candidate",
+      "in_testing": true,
       "aliases": [],
       "gguf_path": "/mnt/shared/models/nex-n2.5-mini/nex-agi_Nex-N2.5-mini-Q4_K_M.gguf",
       "model_size_bytes": 22318512256,
@@ -1347,6 +1362,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "single_gpu",
@@ -1384,6 +1400,7 @@
           }
         },
         "interactive": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "single_gpu",
@@ -2439,6 +2456,9 @@
             "max": 262144,
             "max_basis": "gguf_train"
           },
+          "good_for": [
+            "chatbot"
+          ],
           "tensor_split": "4,1"
         },
         "orchestration": {
@@ -2604,6 +2624,7 @@
     },
     "qwen3.8:27b": {
       "status": "candidate",
+      "in_testing": true,
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf",
       "model_size_bytes": 16464440224,
@@ -2612,6 +2633,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "single_gpu",
@@ -2834,6 +2856,7 @@
     },
     "qwen3-coder-next:80b-a3b": {
       "status": "candidate",
+      "in_testing": true,
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3-coder-next/Qwen3-Coder-Next-Q4_K_S.gguf",
       "model_size_bytes": 45531949088,
@@ -2842,6 +2865,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "split_gpu",
@@ -2895,6 +2919,7 @@
     },
     "k2-v2-instruct:70b": {
       "status": "candidate",
+      "in_testing": true,
       "aliases": [],
       "gguf_path": "/mnt/shared/models/k2-v2-instruct/k2v2-Q4_K_M.gguf",
       "model_size_bytes": 43904518656,
@@ -2903,6 +2928,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "split_gpu",
@@ -3154,6 +3180,16 @@
     },
     "qwen3.8-flash-next:q2_0": {
       "status": "candidate",
+      "in_testing": true,
+      "loading_stage": {
+        "state": "ready_for_benchmark",
+        "runtime": "strata/0.2.10",
+        "recipe": "Q2_0 bundle on GPU 0 with 8 GiB resident expert RAM; gateway route works",
+        "default_context": 8192,
+        "context_limit": 262144,
+        "context_basis": "Single-chat marker recall passed at 251864 prompt tokens within 262144 configured context.",
+        "limits": "The 256K result is single-chat; concurrent chats were short at 8K. This loading result applies only to the Q2_0 Strata recipe."
+      },
       "aliases": [],
       "gguf_path": "/data/model-hotset/qwen3.8-flash-next-q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
       "model_size_bytes": 37623740192,
@@ -3175,6 +3211,7 @@
       },
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {},
           "system_prompt": "You are a helpful assistant. Answer the user directly.",
           "inference": {
@@ -3208,59 +3245,102 @@
       "model": "qwen3.6:27b",
       "profile": "default",
       "lane": "3090",
-      "why": "Running brain model; Qwen3.8-27B is the next candidate."
+      "why": "Running brain model; Qwen3.8-27B is the next candidate.",
+      "good_for": [
+        "general",
+        "planning",
+        "orchestration_brain"
+      ]
     },
     "brain_code": {
       "model": "qwen3-coder:30b-a3b",
       "profile": "default",
       "lane": "3090",
-      "why": "Leads MBPP+ base 87.8% vs 85.7%; code-only brain work."
+      "why": "Leads MBPP+ base 87.8% vs 85.7%; code-only brain work.",
+      "good_for": [
+        "coding",
+        "code_review",
+        "orchestration_brain"
+      ]
     },
     "split_quality": {
       "model": "ministral-3:14b",
       "profile": "default",
       "lane": "2x1060",
-      "why": "Data prep and split-worker code; HumanEval+ base 87.2%."
+      "why": "Data prep and split-worker code; HumanEval+ base 87.2%.",
+      "good_for": [
+        "data_preparation",
+        "coding",
+        "split_worker"
+      ]
     },
     "split_speed": {
       "model": "ministral-3:8b",
       "profile": "default",
       "lane": "2x1060",
-      "why": "Faster split lane for parallel import prep and cheaper code work."
+      "why": "Faster split lane for parallel import prep and cheaper code work.",
+      "good_for": [
+        "data_preparation",
+        "small_coding",
+        "split_worker"
+      ]
     },
     "single_1060": {
       "model": "ornith-1.5:9b",
       "profile": "default",
       "lane": "1x1060",
-      "why": "General single-1060 worker: structured extraction, document prep, QA. Provisional; leads qwen2.5-coder:7b on reasoning, ambiguity, orchestration and long context."
+      "why": "General single-1060 worker: structured extraction, document prep, QA. Provisional; leads qwen2.5-coder:7b on reasoning, ambiguity, orchestration and long context.",
+      "good_for": [
+        "structured_extraction",
+        "document_preparation",
+        "question_answering"
+      ]
     },
     "single_1060_code": {
       "model": "qwen2.5-coder:7b",
       "profile": "default",
       "lane": "1x1060",
-      "why": "Code on one 1060: still leads ornith-1.5:9b on HumanEval+ (84.1 vs 73.8). The single_1060 default until 2026-10-20."
+      "why": "Code on one 1060: still leads ornith-1.5:9b on HumanEval+ (84.1 vs 73.8). The single_1060 default until 2026-10-20.",
+      "good_for": [
+        "coding",
+        "small_coding",
+        "single_gpu_worker"
+      ]
     },
     "single_1060_compact": {
       "model": "ministral-3:3b",
       "profile": "default",
       "lane": "1x1060",
-      "why": "Tested smaller alternative; weaker than the 7B default."
+      "why": "Tested smaller alternative; weaker than the 7B default.",
+      "good_for": [
+        "compact_worker",
+        "small_tasks"
+      ]
     },
     "text_extraction": {
       "model": "gemma-4:e2b-q8",
       "profile": "default",
       "lane": "1x1060",
-      "why": "Document QA and reading comprehension (high DROP, low code)."
+      "why": "Document QA and reading comprehension (high DROP, low code).",
+      "good_for": [
+        "document_qa",
+        "reading_comprehension",
+        "text_extraction"
+      ]
     },
     "safe_tool_use": {
       "model": "phi-4:14b",
       "profile": "default",
       "lane": "2x1060",
-      "why": "Command safety and tool sequencing; not for complex reasoning."
+      "why": "Command safety and tool sequencing; not for complex reasoning.",
+      "good_for": [
+        "tool_sequencing",
+        "command_safety"
+      ]
     }
   },
   "summary": {
-    "generated_at": "2026-11-07T18:11:42",
+    "generated_at": "2026-11-08T19:24:28",
     "key_tests": [
       "bbh",
       "gsm8k",

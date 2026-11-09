@@ -39,7 +39,48 @@ The importer updates two Manager-owned files:
 Manager reads its imported copies at runtime; the rig does not need to read the
 benchmarking checkout to answer a load request. Ordinary profiles give Manager
 requirements such as context, batch, engine pack, and llama arguments. Manager
-still chooses cards and context fit for the load.
+still chooses cards and context fit for the load. Where a model has a measured
+`loading_stage.context_limit`, Manager caps both llama and Strata fit at that
+limit even if the GGUF advertises a larger trained window.
+
+## Testing and runtime eligibility
+
+Benchmarking marks candidate models with `in_testing: true`. They remain in the
+complete catalog so orchestration and benchmark lanes can request them with
+`use=benchmark`. They are excluded from ordinary remote profiles and from
+`GET /v1/manager/model-offers`. A chat or worker load by model ID also rejects
+models that are in testing or not active. This separates permission to run a
+controlled test from permission to advertise a model for routine work.
+
+Reviewed `model_roles.json` entries and specific registry profiles carry
+`good_for` category IDs. The importer carries these into Manager's catalog.
+`GET /v1/manager/model-offers` returns approved roles and their categories
+without launch commands. A published profile tagged `chatbot` appears in the
+web chat model list; removing that tag removes it after the next import.
+The child-agent route resolver maps its `coding` and `research` requests to
+reviewed role IDs in Manager policy; it finds matching published profiles from
+the imported catalog. It no longer keeps a second list of model IDs. Moving
+orchestration's direct model selection and launches behind the same runtime
+contract requires a separate controlled migration of its clients and leases.
+
+## Runtime coordination boundary
+
+Benchmarking and orchestration may exercise `in_testing` models in an explicit
+benchmark run. They must not become routine harness or web-chat offers through
+that test path. For normal work, harness and orchestration should consume the
+same approved capability list and request a prepared route from the shared
+runtime scheduler. A harness may call orchestration directly if orchestration
+uses that same lease and readiness authority; Gateway remains the inference
+route and API surface for clients that need it.
+
+The present `agent-routes/resolve` covers `coding` and `research` child requests
+on GPUs separate from a parent. It is not yet a generic scheduler request for
+root agents or orchestration workers. Orchestration still reads the benchmarking
+roles directly and launches its own brain/worker runtimes. Its launcher audits
+lease identity but does not yet refuse a load without a valid lease. Those
+clients and the rig lease gate must migrate together before there is one
+runtime loading authority. The offer list is discovery, not an admission or
+ready receipt.
 
 ## Passive recipe contract, schema v1
 

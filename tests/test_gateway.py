@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_gateway.app import create_app, translate_upstream_error
+from llm_gateway.manager.routes import _agent_profile_order
 from llm_gateway.rig import Rig, RigUnavailable
 from llm_gateway.settings import Settings, read_api_keys
 
@@ -368,6 +369,42 @@ def test_agent_type_rejects_unregistered_general_label(env):
         response = client.post("/v1/manager/agent-routes/resolve", json={
             "agent_type": "general", "parent_route": "gpu-rig/chat-27b"})
     assert response.status_code == 400
+
+
+def test_model_offers_exclude_in_testing_and_unapproved(monkeypatch, env):
+    monkeypatch.setattr("llm_gateway.manager.models.catalog", lambda: {
+        "models": {
+            "approved": {"status": "active", "in_testing": False},
+            "trial": {"status": "candidate", "in_testing": True},
+            "paused": {"status": "active", "in_testing": True},
+        },
+        "roles": {
+            "coding": {"model": "approved", "profile": "default",
+                       "good_for": ["coding"], "why": "Reviewed code model"},
+            "trial": {"model": "trial", "good_for": ["research"]},
+            "paused": {"model": "paused", "good_for": ["planning"]},
+        },
+    })
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    with TestClient(create_app(settings, upstream_transport=httpx.MockTransport(fake_llama),
+                               run_reconciler=False)) as client:
+        response = client.get("/v1/manager/model-offers")
+    assert response.status_code == 200
+    assert response.json() == {"object": "model_offers", "version": 1, "data": [{
+        "capability": "coding", "model": "approved", "profile": "default",
+        "good_for": ["coding"], "description": "Reviewed code model"}]}
+
+
+def test_child_route_order_uses_reviewed_roles(monkeypatch):
+    monkeypatch.setattr("llm_gateway.manager.models.catalog", lambda: {
+        "models": {"reviewed": {"status": "active", "in_testing": False},
+                   "trial": {"status": "candidate", "in_testing": True}},
+        "roles": {"brain_code": {"model": "trial"},
+                  "single_1060_code": {"model": "reviewed"}},
+    })
+    published = {"trial-route": {"model": "trial"},
+                 "reviewed-route": {"model": "reviewed"}}
+    assert _agent_profile_order("coding", published) == ["reviewed-route"]
 
 
 def test_research_type_selects_separate_ready_route(env):

@@ -302,7 +302,7 @@ def menv(tmp_path, monkeypatch):
     profiles = tmp_path / "remote_profiles.json"
     profiles.write_text(json.dumps({"remote_profiles": [
         {"id": "small", "model": "s:7b", "registry_profile": "default", "ctx_size": 16384,
-         "status": "active", "use": "chat", "dashboard_chat": True},
+         "status": "active", "use": "chat", "good_for": ["chatbot"]},
         {"id": "big", "model": "b:20b", "registry_profile": "default", "ctx_size": 65536},
         {"id": "worker", "model": "w:7b", "registry_profile": "default", "ctx_size": 8192, "use": "worker"},
     ]}))

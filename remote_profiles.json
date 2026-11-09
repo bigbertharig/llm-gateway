@@ -9,7 +9,9 @@
       "status": "active",
       "description": "Strong general/coding model for interactive agents (Roo).",
       "default": true,
-      "dashboard_chat": true,
+      "good_for": [
+        "chatbot"
+      ],
       "use": "chat",
       "ctx_size": 65536
     },
@@ -20,7 +22,7 @@
       "status": "active",
       "description": "Fast small coder for scoped/bulk tasks. No native tool calls.",
       "default": true,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 16384
     },
@@ -31,7 +33,7 @@
       "status": "active",
       "description": "Coding MoE (30B, 3B active). Roo candidate.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 32768
     },
@@ -42,7 +44,7 @@
       "status": "active",
       "description": "Agentic coding model (built for tool-using agents). Roo candidate.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 32768
     },
@@ -53,18 +55,9 @@
       "status": "active",
       "description": "MoE (21B, 3.6B active), strong tool calling, fast. Roo candidate.",
       "default": false,
-      "dashboard_chat": true,
-      "use": "chat",
-      "ctx_size": 65536
-    },
-    {
-      "id": "nex-split",
-      "model": "nex-n2.5:mini",
-      "registry_profile": "interactive",
-      "status": "candidate",
-      "description": "Nex N2.5 mini (35B MoE, 3B active).",
-      "default": false,
-      "dashboard_chat": false,
+      "good_for": [
+        "chatbot"
+      ],
       "use": "chat",
       "ctx_size": 65536
     },
@@ -75,7 +68,7 @@
       "status": "active",
       "description": "Separate 7B parent route for harness size comparisons.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 16384
     },
@@ -86,7 +79,7 @@
       "status": "active",
       "description": "14B parent route for harness size comparisons.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 16384
     },
@@ -97,7 +90,9 @@
       "status": "active",
       "description": "One GTX 1060 parent route for harness comparison.",
       "default": false,
-      "dashboard_chat": true,
+      "good_for": [
+        "chatbot"
+      ],
       "use": "chat",
       "ctx_size": 65536
     },
@@ -108,7 +103,9 @@
       "status": "active",
       "description": "Two GTX 1060 parent route for harness comparison.",
       "default": false,
-      "dashboard_chat": true,
+      "good_for": [
+        "chatbot"
+      ],
       "use": "chat",
       "ctx_size": 65536
     },
@@ -119,7 +116,7 @@
       "status": "active",
       "description": "Alternate small-model parent route for harness tool comparisons.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 16384
     },
@@ -130,7 +127,7 @@
       "status": "active",
       "description": "Alternate small-model parent route for harness tool comparisons.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 8192
     },
@@ -141,7 +138,7 @@
       "status": "active",
       "description": "Alternate 14B parent route for harness tool comparisons.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 8192
     },
@@ -152,7 +149,7 @@
       "status": "active",
       "description": "74B parent route for harness size comparisons.",
       "default": false,
-      "dashboard_chat": false,
+      "good_for": [],
       "use": "chat",
       "ctx_size": 16384
     }

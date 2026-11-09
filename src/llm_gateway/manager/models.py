@@ -68,6 +68,8 @@ def resolve(model: str, use: str, profile: str | None = None) -> dict[str, Any]:
     """Merged settings for the model and use: {model, profile, status, gguf_path, runtime, extra_args, image}.
     KeyError for an unknown model or profile."""
     mid, entry = find_model(model)
+    if use != "benchmark" and (entry.get("in_testing") or entry.get("status") != "active"):
+        raise KeyError(f"model {mid} is in testing or not approved for routine runtime use")
     name = profile or PROFILE_BY_USE.get(use, "default")
     if name not in entry["profiles"]:
         if profile:
@@ -79,4 +81,4 @@ def resolve(model: str, use: str, profile: str | None = None) -> dict[str, Any]:
             "ngram_size_bytes": entry.get("ngram_size_bytes", 0),
             "total_size_bytes": (entry["model_size_bytes"] + entry.get("ngram_size_bytes", 0))
             if entry.get("model_size_bytes") is not None else None,
-            "strata": entry.get("strata")}
+            "strata": entry.get("strata"), "loading_stage": entry.get("loading_stage")}

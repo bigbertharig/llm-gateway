@@ -8,21 +8,37 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 
-from . import fit, observations
+from . import fit, models, observations
 from .core import Manager
 from .errors import ManagerError
 from ..rig import RigUnavailable
 
 
-# Ordered manager policy. The harness names a capability, never a model or GPU.
-AGENT_PROFILE_ORDER = {
-    "coding": ("coder-30b", "devstral-24b", "coder-7b"),
-    "research": ("chat-27b", "gpt-oss-20b"),
+# Agent capability policy names reviewed benchmarking roles, never models or GPUs.
+# Ready routes favor quality; cold loads try smaller workers first.
+AGENT_ROLE_ORDER = {
+    "coding": ("brain_code", "single_1060_code"),
+    "research": ("brain", "single_1060", "text_extraction"),
 }
-AGENT_COLD_ORDER = {
-    "coding": ("coder-7b", "devstral-24b", "coder-30b"),
-    "research": ("gpt-oss-20b", "chat-27b"),
-}
+
+
+def _agent_profile_order(agent_type: str, published: dict[str, dict], *, cold: bool = False) -> list[str]:
+    catalog = models.catalog()
+    entries = catalog.get("models", {})
+    roles = catalog.get("roles", {})
+    order = list(AGENT_ROLE_ORDER[agent_type])
+    if cold:
+        order.reverse()
+    selected = []
+    for role_name in order:
+        model = (roles.get(role_name) or {}).get("model")
+        entry = entries.get(model, {})
+        if entry.get("status") != "active" or entry.get("in_testing"):
+            continue
+        for pid, profile in published.items():
+            if profile.get("model") == model and pid not in selected:
+                selected.append(pid)
+    return selected
 
 
 async def _body(request: Request) -> dict[str, Any]:
@@ -49,6 +65,23 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
     async def status():
         return await manager.status()
 
+    @r.get("/model-offers")
+    async def model_offers():
+        """Reviewed capabilities for runtime clients; benchmark candidates stay private."""
+        catalog = models.catalog()
+        available = catalog.get("models", {})
+        data = []
+        for capability, role in sorted(catalog.get("roles", {}).items()):
+            model = role.get("model")
+            entry = available.get(model, {})
+            if entry.get("status") != "active" or entry.get("in_testing"):
+                continue
+            data.append({"capability": capability, "model": model,
+                         "profile": role.get("profile") or "default",
+                         "good_for": role.get("good_for") or [],
+                         "description": role.get("why") or ""})
+        return {"object": "model_offers", "version": 1, "data": data}
+
     @r.get("/chat/availability")
     async def chat_availability(profile_id: str | None = None):
         if profile_id is not None and profile_id not in profiles():
@@ -60,8 +93,8 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         """Offer an already-ready, disjoint route for a child agent capability."""
         b = await _body(request)
         agent_type, parent_id = b.get("agent_type"), b.get("parent_route")
-        if agent_type not in AGENT_PROFILE_ORDER or not isinstance(parent_id, str):
-            raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_PROFILE_ORDER)} and parent_route is required")
+        if agent_type not in AGENT_ROLE_ORDER or not isinstance(parent_id, str):
+            raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_ROLE_ORDER)} and parent_route is required")
         prefix = model_prefix + "/"
         if not parent_id.startswith(prefix):
             raise ManagerError(400, "parent_route must be a gateway route")
@@ -79,7 +112,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             raise ManagerError(409, "parent route is not ready with known GPU placement")
         parent_gpus = set(parent["gpus"])
         published = profiles()
-        for pid in AGENT_PROFILE_ORDER[agent_type]:
+        for pid in _agent_profile_order(agent_type, published):
             row, spec = loaded.get(pid), published.get(pid)
             if not row or not spec or row.get("state") != "ready" or row.get("model") != spec.get("model"):
                 continue
@@ -93,7 +126,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         # Existing ready routes on the parent's cards are never moved by this request.
         async def prepare_cold():
             failures = []
-            for pid in AGENT_COLD_ORDER[agent_type]:
+            for pid in _agent_profile_order(agent_type, published, cold=True):
                 spec = published.get(pid)
                 if not spec or pid in loaded:
                     continue

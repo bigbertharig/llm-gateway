@@ -194,7 +194,7 @@ def registry(tmp_path, monkeypatch):
     big = dense(tmp_path, n_layer=40, layer_mb=400, name="big.gguf")
     mid = dense(tmp_path, n_layer=20, layer_mb=400, output_mb=400, name="mid.gguf")   # needs two 1060s
     path = tmp_path / "model_catalog.json"
-    gguf.write_catalog(path, {"mid:14b": ("candidate", mid), "small:9b": ("candidate", small), "big:30b": ("active", big)},
+    gguf.write_catalog(path, {"mid:14b": ("candidate", mid), "small:9b": ("active", small), "big:30b": ("active", big)},
                        {"runtime": {"batch_size": 64, "parallel": 1}, "extra_args": ["--reasoning", "off"]})
     monkeypatch.setenv("MODEL_CATALOG", str(path))
     return path
@@ -267,6 +267,16 @@ def test_unspecified_context_uses_the_profile_working_context(menv, registry):  
     assert chat.json()["ctx"] == 8192
     named = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark", "ctx": 16384})
     assert named.json()["ctx"] == 16384  # a request that names a context keeps it
+
+
+def test_loading_stage_caps_offered_context(menv, registry):  # noqa: F811
+    catalog = json.loads(registry.read_text())
+    catalog["models"]["small:9b"]["loading_stage"] = {"context_limit": 8192}
+    registry.write_text(json.dumps(catalog))
+    response = menv["client"].post("/v1/manager/models/fit", json={
+        "model": "small:9b", "use": "chat", "ctx": 16384})
+    assert response.status_code == 400
+    assert "maximum 8192" in response.json()["error"]["message"]
 
 
 def test_a_published_profile_without_cards_is_placed_by_the_fit_under_its_own_id(menv, registry, tmp_path):  # noqa: F811
