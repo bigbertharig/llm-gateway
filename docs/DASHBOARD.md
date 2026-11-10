@@ -56,6 +56,26 @@ The Chat tab is basic saved model chat, not a harness agent session. It lists th
 
 Each conversation stores its selected profile. Opening a saved conversation restores that choice; sending a turn with another model is rejected until the operator explicitly chooses "Continue this conversation with selected model." "New conversation" starts a separate history with the chosen model and begins preparation before its first message. Reopening an existing saved conversation remains immediate; if its model was unloaded, the next Send prepares it. Historical messages retain their producing model label. Switching changes future turns only and does not reload the model until a message is sent. The SQLite transcript belongs to this basic Chat tab; the planned harness session service will own agent instructions, tools, compaction, delegation, approvals, and durable event replay when implemented. See `docs/REMOTE_SESSION_ACCESS_DESIGN.md` and the harness companion design. Do not treat the basic Chat transcript as a harness session.
 
+### Saved transcript and runtime checkpoint
+
+Opening a saved dashboard conversation restores its SQLite transcript and
+selected profile. The next turn currently sends only its latest 16 messages
+to `llama-server`; its RAM prompt cache may reuse a prefix, but the dashboard
+does not own an exact, durable KV state. Thus "resume old chat" means reopen
+the saved transcript, not resume a worker GPU context after a process restart.
+
+The benchmarking repo's
+`results/runtime_experiments/model_loading_sequences/qwen35-return-durable-20261109/README.md`
+is a separate experimental runtime state format. Before integrating that
+mechanism, bind a checkpoint to the dashboard conversation ID, model/profile
+identity, KV format, and committed message/turn number. The manager would
+validate and restore it; the dashboard would keep owning transcript selection
+and display whether a turn used a warm context, restored checkpoint, or
+history replay. A completed answer and its transcript row must agree with the
+checkpoint's committed turn. The current prototype has not solved that
+delivery transaction or on-disk compaction. Keep this integration behind
+speed/capacity validation of the worker path.
+
 Conversations and messages are saved in SQLite under `CHAT_DATA_ROOT` (default `~/.local/share/llm-gateway/chat`). On the Pi, `deploy/pi-gateway.service` sets this to `/media/bryan/shared/llm-gateway/chat` on the 4 TB volume and requires that mount before startup. Change that environment value to relocate history; stop the service and move the directory as a unit. The directory is mode 0700 and the database mode 0600. The dashboard provides new, list, open, send, and delete operations. No cloud sync or remote access is involved.
 
 For now, the Chat tab displays a manager-owned "Rig busy" signal and a cold turn returns 409 before loading when another job, profile, claim, lease, runtime, or GPU load is present. The same ready chat profile can continue alone. A failed preparation or turn does not add messages to the saved conversation. This guard does not stop or replace other work, and the manager's lease checks still arbitrate any race after the signal. When idle, cold Chat loads use the manager's automatic placement. The manager plans the largest context that fits its selected fast placement; the UI does not yet present a capacity negotiation when the 3090 is busy. A future manager response should offer choices such as "use free 1060s now" versus "wait for 3090" with projected context and measured speed when available. Chat should render the manager's options without deciding placement or fallback itself. It must never silently stop existing work or switch the conversation's model. See `docs/MANAGER.md` for the proposed offer contract and tests. Loading a large context does not expand this basic UI's 16-message history limit; context use and truncation need separate work before the UI can claim full-history use.
