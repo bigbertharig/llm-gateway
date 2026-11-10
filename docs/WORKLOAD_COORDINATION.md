@@ -92,3 +92,20 @@ thread, and left the gateway worktree status unchanged. None of these tests
 sent a load or kill to the live rig. The live gateway process was left running
 while speed tests occupied the GPUs; the 503 response change takes effect on
 its next restart.
+
+
+## Multi-card benchmark reservation verification, 2026-11-10
+
+The Pi Manager now reports an idle claimed card as `claimed` rather than
+`free`, with its claim owner and purpose in status and placement conflicts.
+The benchmark sequence can create or extend one persistent claim for all
+planned cards, including cards used only in later stages. It passes that claim
+to new-load leases and preserves it when a successful stage freezes a model.
+An already loaded matching service can be reused under the claim without
+taking a second lease. The Qwen3.8 Q4 Strata service remained healthy on GPU0
+through the gateway restart; its `qwen38-q4-frozen` claim was extended to
+GPUs 0?5. Live Manager status showed GPU0 occupied and claimed and GPUs 1?5
+idle but claimed. The gateway Manager tests passed 88 cases, including claim
+visibility and owner-checked extension. Legacy experimental scripts that
+stop their own runtime still need conversion before they can use frozen
+stages.
