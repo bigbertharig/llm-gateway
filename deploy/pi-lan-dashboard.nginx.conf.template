@@ -15,7 +15,7 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_request_buffering on;
-        proxy_read_timeout 930s;
+        proxy_read_timeout 3700s;
         proxy_send_timeout 930s;
         client_max_body_size 1m;
     }

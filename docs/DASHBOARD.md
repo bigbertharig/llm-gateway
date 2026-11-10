@@ -52,6 +52,33 @@ upgraded independently; `/v1/orchestration` is the versioned cross-repo contract
 
 ## Chat tab (local dashboard)
 
+### Codex coding sessions (live 2026-11-09)
+
+The model dropdown also offers **Codex (cloud coding agent)**. Selecting it and clicking New conversation
+opens a separate in-page chat tab. The selected Pi workspace is fixed for that conversation. Codex
+uses its own persisted app-server thread, so several Codex and local chats can run concurrently.
+The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
+operator's ChatGPT account; the browser receives only the verification URL and one-time code.
+Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access
+to its selected workspace, `networkAccess: false`, and on-request approvals. The dashboard shows
+pending command or file-change approvals and only offers one-time Approve or Decline. Other
+app-server interaction types are currently rejected. The workspace allowlist comes from
+`CODEX_CHAT_WORKSPACES` (colon-delimited); its default is the Pi gateway, orchestration, and
+harness repos. The service user needs a current `codex` executable and file access to these repos.
+The gateway starts app-server lazily and restarts it after a gateway restart; SQLite keeps the
+dashboard conversation-to-Codex-thread mapping. A running turn may be interrupted if the gateway
+service restarts, including when Codex upgrades the gateway itself. Reopen the conversation to
+continue from the saved thread after checking the repo and service state.
+Verification on 2026-11-09: the desktop chat and LAN contract selection passed 5/5; its full suite
+passed 147 tests with two existing Windows-only failures (Unix-domain socket support and POSIX
+directory mode assertions). The browser JavaScript passed `node --check`. On the Pi, the full
+gateway suite passed 149/149, Codex CLI 0.147.0 recognized the existing ChatGPT Plus sign-in,
+and a bounded no-edit Codex turn returned `READY`; its test thread was deleted. The gateway,
+LAN proxy, and Nginx services were restarted and active. Through the LAN proxy, the dashboard
+and Codex account routes each returned 200. Browser rendering and a live approval decision have
+not yet been exercised.
+
+
 The Chat tab is basic saved model chat, not a harness agent session. It lists the active chat profiles marked `dashboard_chat` in the gateway's generated official profile offer; it has no hardcoded model IDs. Selecting one and clicking "New conversation" creates and opens the saved conversation immediately, then asks the manager to load that profile if cold. The Chat tab shows load progress and disables Send until the manager reports ready; a failed load leaves the empty conversation saved and offers Retry model load. Sending then uses the gateway's shared inference forwarding path for the OpenAI-style chat request. The choice of profile is explicit; no model is loaded merely by opening the Chat tab. The manager currently favors the fastest free GPU for chat, which can be the 3090 even for a small model; the UI requires an explicit model choice and tells the operator to check Rig before sending. During a turn the UI shows elapsed time and switches to generating once the ready route appears. The current basic UI sends up to 16 recent saved messages for context and limits each new message to 8,000 characters. It shows the manager-reported loaded context length at preparation and, after a reply, the model server's reported prompt, output, and total token counts for the last completed turn against that window. Counts are persisted with the conversation and cleared when its model changes. Older conversations and servers that omit usage show an unavailable measurement rather than a guessed one. This is a last-turn snapshot, not a prediction of the next request or a claim that all saved messages fit. Cold loading or generation can take several minutes.
 
 Each conversation stores its selected profile. Opening a saved conversation restores that choice; sending a turn with another model is rejected until the operator explicitly chooses "Continue this conversation with selected model." "New conversation" starts a separate history with the chosen model and begins preparation before its first message. Reopening an existing saved conversation remains immediate; if its model was unloaded, the next Send prepares it. Historical messages retain their producing model label. Switching changes future turns only and does not reload the model until a message is sent. The SQLite transcript belongs to this basic Chat tab; the planned harness session service will own agent instructions, tools, compaction, delegation, approvals, and durable event replay when implemented. See `docs/REMOTE_SESSION_ACCESS_DESIGN.md` and the harness companion design. Do not treat the basic Chat transcript as a harness session.

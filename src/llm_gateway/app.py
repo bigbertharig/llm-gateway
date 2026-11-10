@@ -14,6 +14,7 @@ from .manager import Manager, ManagerError
 from .manager.routes import router as manager_router
 from .dashboard import router as dashboard_router
 from .dashboard.chat import router as chat_router
+from .dashboard.codex_bridge import CodexBridge
 from .profiles import ProfileError, Profiles
 from .rig import Rig, RigUnavailable
 from .settings import Settings
@@ -97,6 +98,7 @@ def create_app(
     profiles = Profiles(s.profiles_path)
     rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
     manager: Manager | None = None
+    codex_bridge = CodexBridge()
     if s.manager_enabled:
         manager = Manager(rig, s.start_timeout_seconds, s.controller_id, mirror_path=s.mirror_path)
 
@@ -109,6 +111,7 @@ def create_app(
         yield
         if reconciler:
             reconciler.cancel()
+        await codex_bridge.close()
         await app.state.http.aclose()
 
     app = FastAPI(title="llm-gateway", version="0.4.0", lifespan=lifespan)
@@ -210,7 +213,7 @@ def create_app(
                                  headers={"Cache-Control": "no-cache"})
 
     if manager is not None:
-        app.include_router(chat_router(manager, profiles, forward))
+        app.include_router(chat_router(manager, profiles, forward, codex_bridge))
 
     @app.get("/health")
     async def health():

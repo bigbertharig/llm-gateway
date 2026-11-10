@@ -19,6 +19,7 @@ GET_PATHS = frozenset({
     "/dashboard/api/benchmarks", "/dashboard/api/orchestration",
     "/dashboard/api/orchestration/options",
     "/dashboard/api/chat/options", "/dashboard/api/chat/conversations",
+    "/dashboard/api/chat/codex/account",
 })
 RIG_ACTIONS = frozenset({"kill", "unload", "unclaim", "cancel", "load"})
 RUN_ACTIONS = frozenset({"recover", "dismiss", "stop"})
@@ -44,13 +45,18 @@ SECURITY_HEADERS = {
 def _allowed(method: str, path: str) -> bool:
     if method in ("GET", "HEAD"):
         return path in GET_PATHS or (path.startswith("/dashboard/api/chat/conversations/")
-                                     and len(path.rsplit("/", 1)[-1]) == 32)
+                                     and (len(path.rsplit("/", 1)[-1]) == 32 or
+                                          (path.endswith("/agent") and len(path.split("/")[-2]) == 32)))
     if method == "DELETE":
         return path.startswith("/dashboard/api/chat/conversations/") and len(path.rsplit("/", 1)[-1]) == 32
     if method != "POST":
         return False
     if path == "/dashboard/api/chat/conversations":
         return True
+    if path in ("/dashboard/api/chat/codex/login", "/dashboard/api/chat/codex/logout"):
+        return True
+    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith("/agent/approval"):
+        return len(path.split("/")[-3]) == 32
     if path.startswith("/dashboard/api/chat/conversations/") and path.endswith(("/turn", "/model", "/prepare")):
         return len(path.split("/")[-2]) == 32
     if path.startswith("/dashboard/api/rig/run/"):
@@ -109,7 +115,7 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
             result = await request.app.state.client.request(
                 request.method, upstream_route, params=request.url.query,
                 content=body, headers={"content-type": "application/json"} if body else {},
-                timeout=900 if route.endswith(("/turn", "/prepare")) else 35,
+                timeout=3600 if route.endswith("/turn") else 900 if route.endswith("/prepare") else 35,
             )
         except httpx.RequestError:
             return JSONResponse({"error": "dashboard unavailable"}, status_code=503, headers=SECURITY_HEADERS)

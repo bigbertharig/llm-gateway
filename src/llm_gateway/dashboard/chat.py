@@ -18,6 +18,7 @@ from ..manager.core import Manager
 from ..manager.errors import ManagerError
 from ..rig import RigUnavailable
 from ..profiles import Profiles
+from .codex_bridge import CodexBridge, CodexBridgeError
 
 MAX_MESSAGE = 8000
 HISTORY_MESSAGES = 16
@@ -50,6 +51,10 @@ class ChatStore:
             for name in ("context_length", "last_prompt_tokens", "last_completion_tokens", "last_total_tokens"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE conversations ADD COLUMN {name} INTEGER")
+            for name, definition in (("provider", "TEXT NOT NULL DEFAULT 'local'"),
+                                     ("thread_id", "TEXT"), ("cwd", "TEXT")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE conversations ADD COLUMN {name} {definition}")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -71,11 +76,16 @@ class ChatStore:
             return [dict(r) for r in db.execute(
                 "SELECT * FROM conversations ORDER BY updated_at DESC, id DESC LIMIT 200")]
 
-    def create(self, model: str) -> dict:
+    def create(self, model: str, provider: str = "local", cwd: str | None = None) -> dict:
         now, cid = _now(), uuid.uuid4().hex
         with self._db() as db:
-            db.execute("INSERT INTO conversations (id,title,model,created_at,updated_at) VALUES (?,?,?,?,?)", (cid, "New conversation", model, now, now))
+            db.execute("INSERT INTO conversations (id,title,model,created_at,updated_at,provider,cwd) "
+                       "VALUES (?,?,?,?,?,?,?)", (cid, "New conversation", model, now, now, provider, cwd))
         return self.get(cid)
+
+    def set_thread(self, cid: str, thread_id: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE conversations SET thread_id=? WHERE id=? AND thread_id IS NULL", (thread_id, cid))
 
     def get(self, cid: str) -> dict:
         with self._db() as db:
@@ -139,7 +149,8 @@ async def _json_body(request: Request) -> dict:
     return body
 
 
-def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter:
+def router(manager: Manager, profiles: Profiles, forward_inference,
+           codex: CodexBridge | None = None) -> APIRouter:
     root = Path(os.getenv("CHAT_DATA_ROOT") or (Path.home() / ".local/share/llm-gateway/chat"))
     store: ChatStore | None = None
     init_lock = threading.Lock()
@@ -153,6 +164,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
         return store
 
     r = APIRouter(prefix="/dashboard/api/chat")
+    codex = codex or CodexBridge()
+    active_codex: set[str] = set()
 
     def offered() -> dict[str, dict]:
         published = profiles.all()
@@ -173,6 +186,28 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
                 "models": [{"id": pid, "model": p["model"], "description": p.get("description", ""),
                             "ready": pid in ready} for pid, p in offered().items()]}
 
+    @r.get("/codex/account")
+    async def codex_account():
+        try:
+            return {**await codex.account(), "workspaces": [str(p) for p in codex.workspaces if p.is_dir()]}
+        except CodexBridgeError as exc:
+            return {"connected": False, "error": str(exc), "workspaces": []}
+
+    @r.post("/codex/login")
+    async def codex_login():
+        try:
+            return await codex.start_login()
+        except CodexBridgeError as exc:
+            raise ManagerError(503, str(exc)) from exc
+
+    @r.post("/codex/logout")
+    async def codex_logout():
+        try:
+            await codex.logout()
+        except CodexBridgeError as exc:
+            raise ManagerError(503, str(exc)) from exc
+        return {"connected": False}
+
     @r.get("/conversations")
     async def conversations():
         return {"conversations": await asyncio.to_thread(get_store().list)}
@@ -181,6 +216,15 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
     async def create(request: Request):
         body = await _json_body(request)
         model = body.get("model")
+        if model == "Codex":
+            cwd = body.get("cwd")
+            try:
+                codex.workspace(cwd)
+                if not (await codex.account())["connected"]:
+                    raise CodexBridgeError("Connect a ChatGPT account first")
+            except (CodexBridgeError, TypeError) as exc:
+                raise ManagerError(400, str(exc)) from exc
+            return await asyncio.to_thread(get_store().create, "Codex", "codex", cwd)
         if model not in offered():
             raise ManagerError(400, "choose a listed chat model")
         return await asyncio.to_thread(get_store().create, model)
@@ -191,6 +235,14 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
 
     @r.delete("/conversations/{cid}")
     async def delete(cid: str):
+        conversation = await asyncio.to_thread(get_store().get, cid)
+        if cid in active_codex:
+            raise ManagerError(409, "Wait for the running Codex turn before deleting this conversation")
+        if conversation["provider"] == "codex" and conversation["thread_id"]:
+            try:
+                await codex.delete_thread(conversation["thread_id"])
+            except CodexBridgeError as exc:
+                raise ManagerError(502, str(exc)) from exc
         await asyncio.to_thread(get_store().delete, cid)
         return {"deleted": cid}
 
@@ -198,6 +250,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
     async def switch_model(cid: str, request: Request):
         body = await _json_body(request)
         model, expected = body.get("model"), body.get("expected_model")
+        if (await asyncio.to_thread(get_store().get, cid))["provider"] == "codex":
+            raise ManagerError(409, "Codex conversations use their own agent thread")
         if model not in offered() or not isinstance(expected, str):
             raise ManagerError(400, "choose a listed chat model and provide expected_model")
         return await asyncio.to_thread(get_store().switch_model, cid, expected, model)
@@ -205,6 +259,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
     @r.post("/conversations/{cid}/prepare")
     async def prepare(cid: str):
         conversation = await asyncio.to_thread(get_store().get, cid)
+        if conversation["provider"] == "codex":
+            raise ManagerError(400, "Codex sessions do not load rig models")
         model = conversation["model"]
         spec = offered().get(model)
         if spec is None:
@@ -217,12 +273,31 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
     async def turn(cid: str, request: Request):
         body = await _json_body(request)
         model, prompt = body.get("model"), body.get("message")
+        conversation = await asyncio.to_thread(get_store().get, cid)
+        if conversation["provider"] == "codex":
+            if model != "Codex":
+                raise ManagerError(409, "This conversation uses Codex")
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_MESSAGE:
+                raise ManagerError(400, f"message must be 1 to {MAX_MESSAGE} characters")
+            if cid in active_codex:
+                raise ManagerError(409, "This Codex conversation already has a running turn")
+            active_codex.add(cid)
+            try:
+                async def save_thread(thread_id):
+                    await asyncio.to_thread(get_store().set_thread, cid, thread_id)
+                thread_id, answer = await codex.turn(conversation["thread_id"], prompt.strip(), conversation["cwd"], save_thread)
+            except CodexBridgeError as exc:
+                raise ManagerError(502, str(exc)) from exc
+            finally:
+                active_codex.discard(cid)
+            saved = await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
+                                            "Codex", prompt.strip(), answer)
+            return {"conversation": saved, "history_sent": 0, "history_limit": None}
         choices = offered()
         if model not in choices:
             raise ManagerError(400, "choose a listed chat model")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_MESSAGE:
             raise ManagerError(400, f"message must be 1 to {MAX_MESSAGE} characters")
-        conversation = await asyncio.to_thread(get_store().get, cid)
         if model != conversation["model"]:
             raise ManagerError(409, "conversation uses another model; switch it explicitly or start a new conversation")
         spec = choices[model]
@@ -259,4 +334,24 @@ def router(manager: Manager, profiles: Profiles, forward_inference) -> APIRouter
                                         model, prompt.strip(), answer, context_length, prompt_tokens,
                                         completion_tokens, total_tokens)
         return {"conversation": saved, "history_sent": len(history), "history_limit": HISTORY_MESSAGES}
+
+    @r.get("/conversations/{cid}/agent")
+    async def agent_status(cid: str):
+        conversation = await asyncio.to_thread(get_store().get, cid)
+        if conversation["provider"] != "codex":
+            raise ManagerError(400, "Not a Codex conversation")
+        thread_id = conversation["thread_id"]
+        return codex.status(thread_id) if thread_id else {"events": [], "approvals": []}
+
+    @r.post("/conversations/{cid}/agent/approval")
+    async def agent_approval(cid: str, request: Request):
+        conversation = await asyncio.to_thread(get_store().get, cid)
+        if conversation["provider"] != "codex" or not conversation["thread_id"]:
+            raise ManagerError(400, "Not an active Codex conversation")
+        body = await _json_body(request)
+        try:
+            await codex.decide(conversation["thread_id"], str(body.get("request_id")), str(body.get("decision")))
+        except CodexBridgeError as exc:
+            raise ManagerError(409, str(exc)) from exc
+        return {"resolved": True}
     return r

@@ -172,5 +172,71 @@ def test_lan_chat_routes_are_explicit():
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/model")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/prepare")
     assert _allowed("DELETE", f"/dashboard/api/chat/conversations/{cid}")
+    assert _allowed("GET", "/dashboard/api/chat/codex/account")
+    assert _allowed("POST", "/dashboard/api/chat/codex/login")
+    assert _allowed("POST", "/dashboard/api/chat/codex/logout")
+    assert _allowed("GET", f"/dashboard/api/chat/conversations/{cid}/agent")
+    assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/agent/approval")
     assert not _allowed("GET", "/v1/chat/completions")
     assert not _allowed("POST", "/dashboard/api/chat/admin")
+
+
+def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    class Codex:
+        def __init__(self):
+            self.workspaces = [workspace]
+            self.calls = []
+            self.deleted = []
+        def workspace(self, value):
+            if value != str(workspace):
+                raise ValueError("unknown workspace")
+            return workspace
+        async def account(self):
+            return {"connected": True, "email": "operator@example.test", "plan": "plus"}
+        async def start_login(self):
+            return {"verification_url": "https://auth.openai.com/codex/device", "user_code": "TEST-1234"}
+        async def logout(self):
+            return None
+        async def turn(self, thread_id, prompt, cwd, on_thread):
+            tid = thread_id or f"thread-{len(self.calls) + 1}"
+            await on_thread(tid)
+            self.calls.append((tid, prompt, cwd))
+            return tid, "Codex answer: " + prompt
+        def status(self, thread_id):
+            return {"events": [], "approvals": []}
+        async def decide(self, thread_id, request_id, decision):
+            return None
+        async def delete_thread(self, thread_id):
+            self.deleted.append(thread_id)
+
+    class Profiles:
+        def all(self):
+            return {}
+    class Manager:
+        async def chat_availability(self):
+            return {"busy": False, "reason": "", "ready_profiles": []}
+    cloud = Codex()
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda request, exc: JSONResponse({"error": str(exc)}, status_code=exc.status))
+    app.include_router(router(Manager(), Profiles(), None, cloud))
+    with TestClient(app) as client:
+        assert client.get("/dashboard/api/chat/codex/account").json()["connected"]
+        first = client.post("/dashboard/api/chat/conversations",
+                            json={"model": "Codex", "cwd": str(workspace)}).json()
+        second = client.post("/dashboard/api/chat/conversations",
+                             json={"model": "Codex", "cwd": str(workspace)}).json()
+        assert first["provider"] == second["provider"] == "codex"
+        for cid, message in ((first["id"], "first"), (second["id"], "second"), (first["id"], "follow up")):
+            response = client.post(f"/dashboard/api/chat/conversations/{cid}/turn",
+                                   json={"model": "Codex", "message": message})
+            assert response.status_code == 200
+        assert [call[0] for call in cloud.calls] == ["thread-1", "thread-2", "thread-1"]
+        assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["thread_id"] == "thread-1"
+        assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/prepare", json={}).status_code == 400
+        assert client.delete(f"/dashboard/api/chat/conversations/{second['id']}").status_code == 200
+        assert cloud.deleted == ["thread-2"]
