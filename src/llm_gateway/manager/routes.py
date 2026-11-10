@@ -201,6 +201,12 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             ttl_s=int(b["ttl_s"]) if b.get("ttl_s") else None, purpose=b.get("purpose", ""),
             model=b.get("model", ""))}
 
+    @r.post("/claims/{name}/extend")
+    async def extend_claim(name: str, request: Request):
+        b = await _body(request)
+        _require(b, "gpu_ids", "owner")
+        return {"claim": await manager.extend_claim(name, [int(g) for g in b["gpu_ids"]], b["owner"])}
+
     @r.post("/claims/{name}/renew")
     async def renew_claim(name: str, request: Request):
         b = await _body(request)

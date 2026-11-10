@@ -376,6 +376,11 @@ class Manager:
 
     async def extend_claim(self, name: str, gpu_ids: list[int], owner: str = "") -> dict:
         await self._require_control()
+        existing = next((item for item in await self.claims() if item["name"] == name), None)
+        if existing is None:
+            raise ManagerError(404, f"no claim {name}")
+        if not owner or existing.get("owner") != owner:
+            raise ManagerError(403, f"claim {name} belongs to {existing.get('owner') or 'unknown owner'}")
         claim = await self.record.extend_claim(name, gpu_ids, owner)
         self._obs = None
         return claim

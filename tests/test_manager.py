@@ -417,6 +417,39 @@ def test_claimed_cards_leave_the_pool(menv):
     assert c.post("/v1/manager/claims/bench/release").status_code == 200
 
 
+def test_benchmark_claim_explains_idle_and_loaded_cards(menv):
+    c = menv["client"]
+    created = c.post("/v1/manager/claims", json={
+        "name": "bench-session", "gpu_ids": [0, 1, 2],
+        "owner": "benchmarking", "purpose": "Nemo fit and two chats",
+    })
+    assert created.status_code == 201, created.text
+    from llm_gateway.manager.placement import availability
+    rig = menv["rig"]()
+    rig["gpus"][0]["used_mb"] = 18000
+    _, why = availability(rig, menv["leases"](), [created.json()["claim"]])
+    for card in (0, 1, 2):
+        assert "bench-session" in why[card]
+        assert "benchmarking" in why[card]
+        assert "Nemo fit and two chats" in why[card]
+    assert "busy without a lease" in why[0]
+    assert "busy without a lease" not in why[1]
+    rows = {row["gpu"]: row for row in c.get("/v1/manager/status").json()["gpus"]}
+    assert rows[1]["verdict"] == "claimed"
+    assert rows[1]["claim_info"]["purpose"] == "Nemo fit and two chats"
+    wrong = c.post("/v1/manager/claims/bench-session/extend",
+                   json={"gpu_ids": [0, 1, 2], "owner": "someone-else"})
+    assert wrong.status_code == 403
+    assert c.post("/v1/manager/claims/bench-session/release").status_code == 200
+    first = c.post("/v1/manager/claims", json={
+        "name": "expand", "gpu_ids": [0], "owner": "benchmarking", "purpose": "next stage",
+    })
+    assert first.status_code == 201
+    extended = c.post("/v1/manager/claims/expand/extend",
+                      json={"gpu_ids": [0, 1, 2], "owner": "benchmarking"})
+    assert extended.status_code == 200 and extended.json()["claim"]["gpu_ids"] == [0, 1, 2]
+
+
 def test_published_profile_load_can_pin_gpus(menv):
     c = menv["client"]
     r = c.post("/v1/manager/profiles/small/load", json={"gpu_ids": [1]})

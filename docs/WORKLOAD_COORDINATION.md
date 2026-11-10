@@ -44,9 +44,15 @@ keep its local load lock, guard, and occupancy checks after global modes go away
   direct GPU launches and the mode-gated watchdog with lease-aware launches and
   owner-scoped recovery. A stuck worker's stop request targets its owner or
   runtime; other cards keep running.
-- **Benchmarking:** keep the existing run IDs, claims, checkpoints, and
-  cancel-by-owner path. A benchmark can share the rig with chat on disjoint
-  cards once all of its launchers follow leases.
+- **Benchmarking:** take one persistent claim over every card planned for
+  the session before its first stage, including cards that are temporarily
+  idle. Give the claim a run owner and purpose. Each new GPU launch takes a
+  short lease naming that claim; stage completion may release the lease while
+  the claim stays in place. A frozen native runtime stays occupied and claimed;
+  a matching follow-up can reuse it under the same claim without launching
+  another copy. Release the claim only after the session and its live runtimes
+  end. Keep run IDs, checkpoints, and cancel-by-owner. A benchmark can share
+  the rig with chat on disjoint cards once all launchers follow leases.
 - **Harness:** request a capability and resource envelope from the gateway.
   The manager decides reuse, queue, or a new model load. The harness owns the
   agent's session, tools, context, and cancellation; it does not choose cards
