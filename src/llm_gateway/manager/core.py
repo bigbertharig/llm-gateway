@@ -1115,6 +1115,14 @@ class Manager:
         if force:
             if not gpu_ids:
                 raise ManagerError(400, "force needs explicit gpu_ids")
+            # Validate the requested work before the explicit stop command. A typo or
+            # disallowed model must never evict a healthy runtime.
+            if use not in memory.USES:
+                raise ManagerError(400, f"use must be one of {memory.USES}")
+            try:
+                models.resolve(model, use, fit_kw.get("profile"))
+            except (KeyError, FileNotFoundError) as exc:
+                raise ManagerError(404, str(exc.args[0] if exc.args else exc)) from exc
             await self.kill(gpu_ids, reason=f"force load {model}")
         own = None
         try:

@@ -469,6 +469,20 @@ def test_explicit_gpus_conflict_names_the_holder(menv):
     assert c.post(f"/v1/manager/leases/{lid}/release", json={"owner": "lanes"}).status_code == 200
 
 
+def test_force_load_rejects_unknown_model_before_stopping_occupant(menv):
+    c = menv["client"]
+    assert c.post("/v1/manager/models/load", json={"model": "s:7b", "use": "chat",
+                                                  "gpu_ids": [0]}).status_code == 200
+    before = menv["rig"]()
+    result = c.post("/v1/manager/models/load", json={"model": "missing:model", "use": "chat",
+                                                     "gpu_ids": [0], "force": True})
+    assert result.status_code == 404
+    after = menv["rig"]()
+    assert after["profiles"] == before["profiles"]
+    assert after["leases"] == before["leases"]
+    assert after["starts"] == before["starts"]
+
+
 def test_release_refuses_while_a_runtime_runs(menv):
     c = menv["client"]
     lid = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "lanes", "run_id": "r",

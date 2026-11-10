@@ -14,6 +14,7 @@ Plus the dashboard for the whole rig (`/dashboard/`).
 | Doc | For |
 |---|---|
 | [docs/MANAGER.md](docs/MANAGER.md) | the entry point: the two layers (Pi manager, rig hardware), the rules, model loads and fit, reservations and card collecting, runs, cancel by owner and demand, and "Pick up here" |
+| [docs/WORKLOAD_COORDINATION.md](docs/WORKLOAD_COORDINATION.md) | migration from exclusive rig modes to gateway-coordinated requests and explicit commands |
 | [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | design notes and ideas: failure recovery, slots, sharing capacity (exploratory) |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | the dashboard |
 | [docs/multi_rig_tests.md](docs/multi_rig_tests.md) | tests across two machines (network splits, failover) |
