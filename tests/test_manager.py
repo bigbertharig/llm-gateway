@@ -483,6 +483,75 @@ def test_force_load_rejects_unknown_model_before_stopping_occupant(menv):
     assert after["starts"] == before["starts"]
 
 
+def test_all_cards_occupied_refuses_suggestion_without_a_rig_action(menv):
+    c = menv["client"]
+    st = menv["rig"]()
+    for gpu in st["gpus"]:
+        gpu["used_mb"] = 3000 if gpu["index"] else 23000
+    menv["write"](st)
+    before = menv["rig"]()
+
+    preview = c.post("/v1/manager/models/fit", json={"model": "s:7b", "use": "chat"})
+    request = c.post("/v1/manager/models/load", json={"model": "s:7b", "use": "chat"})
+    chat_status = c.get("/v1/manager/chat/availability").json()
+
+    assert preview.status_code == request.status_code == 503
+    assert "no capacity" in preview.json()["error"]["message"]
+    assert chat_status["busy"] and "GPU memory in use" in chat_status["reason"]
+    after = menv["rig"]()
+    assert after["profiles"] == before["profiles"] == {}
+    assert after["leases"] == before["leases"] == []
+    assert after.get("starts", []) == before.get("starts", []) == []
+    assert after.get("plan_items", []) == before.get("plan_items", []) == []
+
+
+def test_owner_stop_frees_only_its_card_then_new_request_rechecks(menv):
+    c = menv["client"]
+    first = c.post("/v1/manager/models/load", json={"model": "s:7b", "use": "chat",
+                                                  "gpu_ids": [0], "owner": "stuck-worker"})
+    other = c.post("/v1/manager/models/load", json={"model": "w:7b", "use": "worker",
+                                                  "gpu_ids": [1], "owner": "other-worker"})
+    assert first.status_code == other.status_code == 200
+    first_id, other_id = first.json()["profile"], other.json()["profile"]
+    blocked = c.post("/v1/manager/models/fit", json={"model": "s:7b", "use": "chat", "gpu_ids": [0]})
+    assert blocked.status_code == 409
+
+    stopped = c.post("/v1/manager/owners/stuck-worker/cancel", json={"reason": "test stuck worker"})
+    assert stopped.status_code == 200
+    assert first_id in stopped.json()["profiles_unloaded"]
+    snapshot = menv["rig"]()
+    assert first_id not in snapshot["profiles"]
+    assert other_id in snapshot["profiles"]
+    assert {l["metadata"].get("requested_by") for l in snapshot["leases"]} == {"other-worker"}
+
+    offer = c.post("/v1/manager/models/fit", json={"model": "s:7b", "use": "chat", "gpu_ids": [0]})
+    assert offer.status_code == 200 and offer.json()["gpus"] == [0]
+    replacement = c.post("/v1/manager/models/load", json={"model": "s:7b", "use": "chat",
+                                                        "gpu_ids": [0], "owner": "replacement"})
+    assert replacement.status_code == 200
+    assert other_id in menv["rig"]()["profiles"]
+
+
+def test_expired_foreign_lease_stays_occupied_until_owner_releases_it(menv):
+    c = menv["client"]
+    created = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "speed-test",
+                                                  "run_id": "speed-1", "gpu_ids": [2]})
+    assert created.status_code == 201
+    lease_id = created.json()["lease"]["lease_id"]
+    st = menv["rig"]()
+    st["leases"][0]["expires_at"] = "2000-01-01T00:00:00Z"
+    menv["write"](st)
+
+    blocked = c.post("/v1/manager/models/fit", json={"model": "s:7b", "use": "chat", "gpu_ids": [2]})
+    assert blocked.status_code == 409
+    assert lease_id in blocked.json()["error"]["message"]
+    assert c.post("/v1/manager/reconcile").status_code == 200
+    assert [l["lease_id"] for l in menv["leases"]()] == [lease_id]
+    assert c.post(f"/v1/manager/leases/{lease_id}/release", json={"owner": "speed-test"}).status_code == 200
+    free = c.post("/v1/manager/models/fit", json={"model": "s:7b", "use": "chat", "gpu_ids": [2]})
+    assert free.status_code == 200 and free.json()["gpus"] == [2]
+
+
 def test_release_refuses_while_a_runtime_runs(menv):
     c = menv["client"]
     lid = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "lanes", "run_id": "r",

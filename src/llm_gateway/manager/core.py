@@ -983,6 +983,12 @@ class Manager:
                       context_bounds={"min": kw["ctx_min"], "working": r.get("runtime", {}).get("ctx_size"),
                                       "max": kw["ctx_max"], "max_basis": (r.get("context_bounds") or {}).get("max_basis", "gguf_train")})
         if not result["fits"]:
+            # A model that fits the rig when its cards are free is waiting on
+            # capacity, not intrinsically too large for the hardware.
+            idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
+            if why and fit.choose(shape, idle_cards, **kw):
+                raise ManagerError(503, f"{model}: no capacity while GPUs are occupied or reserved",
+                                   unavailable=why, fit=result)
             alts = fit.suggest(shape, free, **kw)
             if chosen is not None and kw["ctx"] and kw["ctx"] > kw["ctx_min"]:
                 smaller = fit.plan(shape, chosen, **{**kw, "ctx": kw["ctx_min"]})

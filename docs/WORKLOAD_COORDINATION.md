@@ -71,3 +71,18 @@ non-mutating placement check; `/models/load` is an admission request;
 `/owners/{who}/cancel`, `/profiles/{id}/unload`, `/runs/{id}/stop`, and `/kill`
 are commands. They need a shared typed offer/result shape before the dashboard
 and harness can present one consistent workflow.
+
+## No-GPU verification, 2026-11-09
+
+The Pi manager suite passed 36 tests with a fake rig and mock model server.
+New cases cover all cards occupied (both fit preview and load return 503 with
+no lease, plan item, or launch), owner-scoped stop followed by a fresh fit and
+load while unrelated work remains, and an expired foreign lease staying
+occupied until its owner releases it. Existing cases cover the stale rig
+report, reboot hold/recovery, and a failed load releasing its lease. The
+dashboard, chat, LAN, and gateway tests passed 50 tests using fake services.
+A separate bounded Codex app-server turn returned `READY`, deleted its test
+thread, and left the gateway worktree status unchanged. None of these tests
+sent a load or kill to the live rig. The live gateway process was left running
+while speed tests occupied the GPUs; the 503 response change takes effect on
+its next restart.
