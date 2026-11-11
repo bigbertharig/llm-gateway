@@ -78,6 +78,8 @@ and each model's supported reasoning efforts from app-server. The approval selec
 **Ask for approval** or **Approve for me**; the latter sets Codex's `approvals_reviewer` to
 `auto_review` without expanding the workspace sandbox. Full access is shown as unavailable in
 the gateway dashboard. These settings are saved per conversation and affect future turns.
+Opening a saved conversation from the sidebar restores its top-level model, Codex model,
+reasoning effort, approval mode, and fixed workspace in the chat controls.
 The dashboard shows pending command or file-change approvals in the conversation and offers
 one-time Approve or Decline when manual approval is needed. Other
 app-server interaction types are currently rejected. The workspace allowlist comes from

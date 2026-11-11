@@ -557,6 +557,7 @@ function chatContextStatus(c) {
 let chatId = (() => { try { return localStorage.getItem("dash-chat-id") || ""; } catch (e) { return ""; } })();
 let chatBusy = false;
 let chatBoundModel = "";
+let displayedChatId = "", chatOpening = 0, activeCodexWorkspace = null;
 const busyChats = new Set();
 const chatDrafts = new Map();
 const chatImageDrafts = new Map();
@@ -824,11 +825,15 @@ async function loadCodexAccount() {
       : "No ChatGPT account connected on the Pi.");
     $("#chat-connect").hidden = codexConnected;
     $("#chat-disconnect").hidden = !codexConnected;
-    const workspace = $("#chat-workspace"), old = workspace.value;
+    const workspace = $("#chat-workspace"), wanted = activeCodexWorkspace || workspace.value;
     workspace.replaceChildren(...(state.workspaces || []).map((path) => {
       const option = document.createElement("option"); option.value = path; option.textContent = path; return option;
     }));
-    if ((state.workspaces || []).includes(old)) workspace.value = old;
+    if (wanted && !(state.workspaces || []).includes(wanted) && activeCodexWorkspace) {
+      const option = document.createElement("option"); option.value = wanted;
+      option.textContent = wanted + " (saved workspace)"; workspace.append(option);
+    }
+    if (wanted && [...workspace.options].some((option) => option.value === wanted)) workspace.value = wanted;
     if (state.login && state.login.success) $("#chat-device-code").hidden = true;
     if (state.login && state.login.success === false) $("#chat-device-code").textContent = "Sign-in failed: " + state.login.error;
     if ($("#chat-model").value === "Codex" && chatId && !busyChats.has(chatId))
@@ -862,7 +867,17 @@ $("#chat-input").addEventListener("paste", async (event) => {
   try { await addChatImages(files); toast(files.length === 1 ? "Image pasted." : files.length + " images pasted.", "good"); }
   catch (e) { toast("Could not paste image: " + e.message, "bad"); }
 });
+function selectSavedChatModel(model) {
+  const select = $("#chat-model");
+  if (!model) return;
+  if (![...select.options].some((option) => option.value === model)) {
+    const option = document.createElement("option"); option.value = model;
+    option.textContent = model + " (saved; unavailable)"; select.append(option);
+  }
+  select.value = model;
+}
 async function loadChat() {
+  const openingAtStart = chatOpening;
   const [opts, saved] = await Promise.all([api("chat/options"), api("chat/conversations")]);
   for (const c of saved.conversations) {
     if (c.provider === "codex") {
@@ -872,7 +887,9 @@ async function loadChat() {
   }
   const select = $("#chat-model"), old = select.value;
   select.innerHTML = '<option value="">Choose a model...</option>' + opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)}) ${m.ready ? "ready" : "cold"}</option>`).join("") + '<option value="Codex">Codex (cloud coding agent)</option>';
-  if (old && (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
+  const current = saved.conversations.find((c) => c.id === chatId);
+  if (current) selectSavedChatModel(current.model);
+  else if (old && (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
   chatProviderChanged();
   $("#chat-model-note").textContent = "The manager controls model loading and GPU placement.";
   const busy = $("#chat-rig-busy");
@@ -884,26 +901,30 @@ async function loadChat() {
   list.innerHTML = saved.conversations.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)} ? ${esc(c.updated_at)}${c.last_turn_state && c.last_turn_state !== "completed" ? " ? " + esc(c.last_turn_state) : ""}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
   list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openChat(b.dataset.chatId));
   renderChatTabs(saved.conversations);
-  if (chatId && saved.conversations.some((c) => c.id === chatId)) await openChat(chatId, false, true);
-  else { chatId = ""; chatBoundModel = ""; $("#chat-title").textContent = "New conversation";
+  if (current && displayedChatId !== chatId && openingAtStart === chatOpening) await openChat(chatId, false);
+  else if (!current && openingAtStart === chatOpening) { chatId = ""; displayedChatId = "";
+    chatBoundModel = ""; activeCodexWorkspace = null; $("#chat-title").textContent = "New conversation";
     const live = $("#chat-live"); $("#chat-messages").replaceChildren(live);
     $("#chat-agent-events").hidden = true; $("#chat-progress").hidden = true;
     $("#chat-approvals").hidden = true; syncChatLive();
     $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
 }
 async function openChat(id, reloadList = true, preserveSelection = false) {
+  const opening = ++chatOpening;
   const sameChat = chatId === id;
   const transcript = $("#chat-messages");
   const distanceFromBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
   if (chatId !== id) showChatCommandOutput("");
   if (chatId) { chatDrafts.set(chatId, $("#chat-input").value); chatImageDrafts.set(chatId, chatImages); }
-  const pendingModel = preserveSelection ? $("#chat-model").value : "";
+  const pendingModel = preserveSelection && sameChat ? $("#chat-model").value : "";
   const c = await api("chat/conversations/" + encodeURIComponent(id));
+  if (opening !== chatOpening) return;
   chatId = c.id;
   chatImages = chatImageDrafts.get(id) || [];
   $("#chat-input").value = chatDrafts.get(id) || "";
   if (!openChatTabs.includes(id)) { openChatTabs.push(id); saveChatTabs(); }
   chatBoundModel = c.model;
+  activeCodexWorkspace = c.provider === "codex" ? c.cwd || null : null;
   if (c.provider === "codex") {
     codexModelChoice = c.codex_model || null;
     codexEffortChoice = c.codex_effort || null;
@@ -970,13 +991,23 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   syncChatLive();
   box.scrollTop = sameChat && distanceFromBottom > 90
     ? Math.max(0, box.scrollHeight - box.clientHeight - distanceFromBottom) : box.scrollHeight;
-  $("#chat-model").value = pendingModel && pendingModel !== c.model ? pendingModel : c.model;
+  selectSavedChatModel(c.model);
+  if (pendingModel && pendingModel !== c.model) $("#chat-model").value = pendingModel;
   chatProviderChanged();
+  if (activeCodexWorkspace) {
+    const workspace = $("#chat-workspace");
+    if (![...workspace.options].some((option) => option.value === activeCodexWorkspace)) {
+      const option = document.createElement("option"); option.value = activeCodexWorkspace;
+      option.textContent = activeCodexWorkspace + " (saved workspace)"; workspace.append(option);
+    }
+    workspace.value = activeCodexWorkspace;
+  }
   renderPendingChatImages();
   $("#chat-switch").hidden = c.provider === "codex" || $("#chat-model").value === c.model;
   $("#chat-status").textContent = $("#chat-switch").hidden
     ? chatContextStatus(c)
     : "This conversation uses " + c.model + ". Continue with the selected model, or start a new conversation.";
+  displayedChatId = c.id;
   if (reloadList) await loadChat();
   if (c.provider === "codex") refreshCodexApprovals(id);
   else $("#chat-approvals").hidden = true;
