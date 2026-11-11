@@ -188,7 +188,7 @@ class CodexBridge:
         if not account["connected"]:
             raise CodexBridgeError("Connect a ChatGPT account first")
         if thread_id:
-            result = await self._call("thread/resume", {"threadId": thread_id, "excludeTurns": True})
+            result = await self._call("thread/resume", {"threadId": thread_id})
         else:
             result = await self._call("thread/start", {
                 "cwd": str(workspace), "approvalPolicy": "on-request", "sandbox": "workspace-write",
