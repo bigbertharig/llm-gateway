@@ -33,17 +33,28 @@ def availability(obs: dict, leases: list[dict], claims: list[dict],
     if claim is not None and not any(c["name"] == claim for c in claims):
         raise KeyError(f"no claim {claim}")
     free, why = [], {}
+    def claim_label(item):
+        owner = item.get("owner") or item.get("by") or "unknown owner"
+        purpose = item.get("purpose") or item.get("note") or "unspecified purpose"
+        return f"claimed by {item['name']} (owner {owner}; purpose {purpose})"
+
     for gpu in obs.get("gpus", []):
         i = gpu["index"]
         if i in held:
             lease = held[i]
             why[i] = f"leased by {lease.get('controller')}/{lease.get('owner')} ({lease.get('lease_id')})"
+            if i in claimed:
+                why[i] += f"; {claim_label(claimed[i])}"
         elif i in running:
             why[i] = f"busy without a lease (container {running[i]['name']})"
+            if i in claimed:
+                why[i] += f"; {claim_label(claimed[i])}"
         elif gpu.get("used_mb", 0) > FREE_MAX_USED_MB:
             why[i] = f"busy without a lease ({gpu['used_mb']} MB in use)"
+            if i in claimed:
+                why[i] += f"; {claim_label(claimed[i])}"
         elif claim is None and i in claimed:
-            why[i] = f"claimed by {claimed[i]['name']}"
+            why[i] = claim_label(claimed[i])
         elif claim is not None and claimed.get(i, {}).get("name") != claim:
             why[i] = f"not in claim {claim}"
         else:

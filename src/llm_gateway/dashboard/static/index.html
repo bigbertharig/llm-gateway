@@ -101,7 +101,7 @@ textarea { width: 100%; min-height: 80px; }
 .slot .idx { font: 700 26px var(--sans); line-height: 1; }
 .slot .card { color: var(--muted); font-size: 12px; text-align: right; }
 .slot .verdict { margin-top: 6px; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
-.v-free { color: var(--ok); } .v-leased { color: var(--cool); } .v-loading { color: var(--warm); }
+.v-free { color: var(--ok); } .v-claimed { color: var(--warm); } .v-leased { color: var(--cool); } .v-loading { color: var(--warm); }
 .v-stale, .v-unleased_busy { color: var(--hot); } .v-lease_idle { color: var(--muted); }
 .slot .holder { font: 12px var(--mono); color: var(--text); margin-top: 2px; overflow-wrap: anywhere; min-height: 2.6em; }
 .meter { height: 6px; background: var(--bg); border-radius: 3px; margin-top: 7px; overflow: hidden; }
@@ -270,7 +270,7 @@ function renderRig(s) {
     const vram = x.vram_mb ? Math.round(100 * (o.used_mb || 0) / x.vram_mb) : 0;
     const t = o.temp_c, tp = t == null ? 0 : Math.min(100, Math.max(0, (t - 30) * 100 / 60));
     const holder = l ? `${esc(l.controller)}/${esc(l.owner)}<br>${esc(l.model || "")} :${esc(l.port)}` :
-      (o.containers || []).length ? esc(o.containers.join(", ")) : "nothing";
+      (o.containers || []).length ? esc(o.containers.join(", ")) : x.claim ? `reserved by ${esc(x.claim)}<br>${esc((x.claim_info || {}).purpose || "")}` : "nothing";
     return `<div class="slot ${(x.vram_mb || 0) > 12000 ? "big" : ""}">
       <div class="head"><span class="idx">${x.gpu}</span><span class="card">${esc((x.name || "").replace("NVIDIA GeForce ", ""))}</span></div>
       <div class="verdict v-${esc(x.verdict)}">${esc(String(x.verdict).replace("_", " "))}</div>

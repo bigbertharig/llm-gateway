@@ -12,6 +12,7 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
                                                            a claim may cover cards still in use: it reserves
                                                            them for when their holder releases; --ttl: it
                                                            lapses unless renewed (rigctl renew-claim NAME)
+    rigctl extend-claim NAME --gpus 0,1,2 --owner O         add cards to an existing claim
     rigctl claims                                          claims with owner, expiry and purpose
     rigctl kill --gpus 1,3 [--reason TEXT]                 OVERRIDE: stop every runtime on the cards,
                                                            release their leases, drop claims on them
@@ -123,6 +124,8 @@ def print_status(s: dict) -> None:
         claim = (f" claim={g['claim']}" + (f" ({info['owner']}" + (f", until {info['expires_at']}" if info.get("expires_at")
                                                                    else "") + ")" if info.get("owner") else "")
                  if g["claim"] else "")
+        if info.get("purpose"):
+            claim += f" purpose={info['purpose']}"
         print(f"  GPU{g['gpu']} {g['verdict']:<14} {held:<44}{claim}  {obs['used_mb']} MB "
               f"{obs['util_pct']}% {obs['power_w']} W  {','.join(obs['containers']) or '-'}")
     print_plan(s.get("plan") or {}, limit=5)
@@ -156,6 +159,8 @@ def main() -> int:
     s.add_argument("--note", default=""); s.add_argument("--by", default=os.getenv("USER", ""))
     s.add_argument("--owner", default=""); s.add_argument("--ttl", type=int)
     s.add_argument("--purpose", default=""); s.add_argument("--model", default="")
+    s = sub.add_parser("extend-claim"); s.add_argument("name"); s.add_argument("--gpus", required=True)
+    s.add_argument("--owner", required=True)
     s = sub.add_parser("renew-claim"); s.add_argument("name"); s.add_argument("--owner", default="")
     s.add_argument("--ttl", type=int)
     s = sub.add_parser("unclaim"); s.add_argument("name")
@@ -325,6 +330,9 @@ def main() -> int:
                                                          "gpu_ids": [int(g) for g in a.gpus.split(",")],
                                                          "owner": a.owner, "ttl_s": a.ttl, "purpose": a.purpose,
                                                          "model": a.model})
+    elif a.cmd == "extend-claim":
+        code, out = call("POST", f"/v1/manager/claims/{a.name}/extend",
+                         {"gpu_ids": [int(g) for g in a.gpus.split(",")], "owner": a.owner})
     elif a.cmd == "renew-claim":
         code, out = call("POST", f"/v1/manager/claims/{a.name}/renew", {"owner": a.owner, "ttl_s": a.ttl})
     elif a.cmd == "unclaim":

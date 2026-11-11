@@ -7,7 +7,7 @@ from typing import Any
 
 from .placement import FREE_MAX_USED_MB
 
-VERDICTS = ("free", "leased", "loading", "lease_idle", "stale", "unleased_busy")
+VERDICTS = ("free", "claimed", "leased", "loading", "lease_idle", "stale", "unleased_busy")
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -53,7 +53,7 @@ def gpu_rows(obs: dict, leases: list[dict], claims: list[dict], now: datetime | 
                 verdict = "stale" if expired else "lease_idle"
         else:
             busy = containers or gpu.get("used_mb", 0) > FREE_MAX_USED_MB
-            verdict = "unleased_busy" if busy else "free"
+            verdict = "unleased_busy" if busy else ("claimed" if claim else "free")
         rows.append({
             "gpu": i, "name": gpu.get("name"), "vram_mb": gpu.get("total_mb"),
             "verdict": verdict,
