@@ -1,6 +1,9 @@
 """Dashboard chat storage, generation bridge, and LAN route scope."""
 
+import asyncio
 import json
+import threading
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -8,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from llm_gateway.dashboard.chat import ChatStore, router
+from llm_gateway.dashboard.chat import ChatStore, _image_attachments, router
 from llm_gateway.lan_dashboard import _allowed
 from llm_gateway.rig import RigUnavailable
 from llm_gateway.manager.errors import ManagerError
@@ -18,9 +21,12 @@ def test_chat_store_persists_and_checks_concurrent_turns(tmp_path):
     root = tmp_path / "chat"
     store = ChatStore(root)
     c = store.create("small")
-    saved = store.append_exchange(c["id"], 0, "small", "hello", "world")
+    image = {"name": "screen.png", "type": "image/png", "data_url": "data:image/png;base64,iVBORw0KGgo="}
+    saved = store.append_exchange(c["id"], 0, "small", "hello", "world", attachments=[image])
     assert saved["title"] == "hello"
     assert [m["role"] for m in saved["messages"]] == ["user", "assistant"]
+    assert saved["messages"][0]["attachments"] == [image]
+    assert saved["messages"][1]["attachments"] == []
     assert ChatStore(root).get(c["id"])["messages"][1]["content"] == "world"
     assert store.switch_model(c["id"], "small", "large")["model"] == "large"
     try:
@@ -45,6 +51,17 @@ def test_chat_store_persists_and_checks_concurrent_turns(tmp_path):
     assert store.list() == []
     assert root.stat().st_mode & 0o777 == 0o700
     assert store.path.stat().st_mode & 0o777 == 0o600
+
+
+def test_chat_image_validation_accepts_supported_data_urls():
+    image = {"name": "screen.png", "type": "image/png", "data_url": "data:image/png;base64,iVBORw0KGgo="}
+    assert _image_attachments([image]) == [image]
+    try:
+        _image_attachments([{**image, "data_url": "data:text/html;base64,PHNjcmlwdD4="}])
+    except ManagerError as exc:
+        assert exc.status == 400
+    else:
+        raise AssertionError("non-image data URL was accepted")
 
 
 def test_chat_store_migrates_existing_conversations(tmp_path):
@@ -177,6 +194,10 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
         assert len(client.get(f"/dashboard/api/chat/conversations/{c['id']}").json()["messages"]) == 2
         manager.busy = False
         assert requests[0]["messages"] == [{"role": "user", "content": "Hi"}]
+        image = {"name": "screen.png", "type": "image/png", "data_url": "data:image/png;base64,iVBORw0KGgo="}
+        image_blocked = client.post(f"/dashboard/api/chat/conversations/{c['id']}/turn",
+                                    json={"model": profile["id"], "message": "look", "images": [image]})
+        assert image_blocked.status_code == 400
         assert client.post(f"/dashboard/api/chat/conversations/{c['id']}/turn",
                            json={"model": other["id"], "message": "Hi"}).status_code == 409
         switched = client.post(f"/dashboard/api/chat/conversations/{c['id']}/model",
@@ -208,6 +229,7 @@ def test_lan_chat_routes_are_explicit():
     assert _allowed("POST", "/dashboard/api/chat/codex/logout")
     assert _allowed("GET", f"/dashboard/api/chat/conversations/{cid}/agent")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/agent/approval")
+    assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/agent/command")
     assert not _allowed("GET", "/v1/chat/completions")
     assert not _allowed("POST", "/dashboard/api/chat/admin")
 
@@ -221,7 +243,10 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
         def __init__(self):
             self.workspaces = [workspace]
             self.calls = []
+            self.images = []
             self.deleted = []
+            self.gate = threading.Event()
+            self.gate.set()
         def workspace(self, value):
             if value != str(workspace):
                 raise ValueError("unknown workspace")
@@ -232,10 +257,12 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
             return {"verification_url": "https://auth.openai.com/codex/device", "user_code": "TEST-1234"}
         async def logout(self):
             return None
-        async def turn(self, thread_id, prompt, cwd, on_thread):
+        async def turn(self, thread_id, prompt, cwd, on_thread, images=None, model=None):
             tid = thread_id or f"thread-{len(self.calls) + 1}"
             await on_thread(tid)
+            await asyncio.to_thread(self.gate.wait)
             self.calls.append((tid, prompt, cwd))
+            self.images.append(images or [])
             return tid, "Codex answer: " + prompt
         def status(self, thread_id):
             return {"events": [], "approvals": []}
@@ -243,6 +270,10 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
             return None
         async def delete_thread(self, thread_id):
             self.deleted.append(thread_id)
+        async def compact(self, thread_id):
+            self.compacted = thread_id
+        async def models(self):
+            return [{"model": "test-codex", "displayName": "Test Codex"}]
 
     class Profiles:
         def all(self):
@@ -262,12 +293,43 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
         second = client.post("/dashboard/api/chat/conversations",
                              json={"model": "Codex", "cwd": str(workspace)}).json()
         assert first["provider"] == second["provider"] == "codex"
-        for cid, message in ((first["id"], "first"), (second["id"], "second"), (first["id"], "follow up")):
+        image = {"name": "screen.png", "type": "image/png", "data_url": "data:image/png;base64,iVBORw0KGgo="}
+        for index, (cid, message) in enumerate(((first["id"], "first"), (second["id"], "second"),
+                                                (first["id"], "follow up"))):
+            if index == 0:
+                cloud.gate.clear()
             response = client.post(f"/dashboard/api/chat/conversations/{cid}/turn",
-                                   json={"model": "Codex", "message": message})
+                                   json={"model": "Codex", "message": message,
+                                         "images": [image] if index == 0 else []})
             assert response.status_code == 200
+            assert response.json()["turn_id"]
+            if index == 0:
+                try:
+                    assert client.get(f"/dashboard/api/chat/conversations/{cid}").json()["last_turn"]["state"] == "running"
+                    assert client.post(f"/dashboard/api/chat/conversations/{cid}/turn",
+                                       json={"model": "Codex", "message": "duplicate"}).status_code == 409
+                finally:
+                    cloud.gate.set()
+            deadline = time.monotonic() + 3
+            while client.get(f"/dashboard/api/chat/conversations/{cid}").json()["last_turn"]["state"] == "running":
+                assert time.monotonic() < deadline
+                time.sleep(.01)
         assert [call[0] for call in cloud.calls] == ["thread-1", "thread-2", "thread-1"]
+        assert cloud.images[0] == [image]
+        assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["messages"][0]["attachments"] == [image]
+        assert "attachments" not in client.get(f"/dashboard/api/chat/conversations/{first['id']}/agent").json()["turn"]
         assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["thread_id"] == "thread-1"
         assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/prepare", json={}).status_code == 400
+        assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/agent/command",
+                           json={"command": "compact"}).status_code == 200
+        assert cloud.compacted == "thread-1"
+        models = client.post(f"/dashboard/api/chat/conversations/{first['id']}/agent/command",
+                             json={"command": "model"}).json()
+        assert "test-codex" in models["message"]
+        assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/agent/command",
+                           json={"command": "model", "value": "test-codex"}).status_code == 200
+        assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["codex_model"] == "test-codex"
+        assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/agent/command",
+                           json={"command": "delete"}).status_code == 400
         assert client.delete(f"/dashboard/api/chat/conversations/{second['id']}").status_code == 200
         assert cloud.deleted == ["thread-2"]

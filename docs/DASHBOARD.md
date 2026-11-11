@@ -57,6 +57,12 @@ upgraded independently; `/v1/orchestration` is the versioned cross-repo contract
 The model dropdown also offers **Codex (cloud coding agent)**. Selecting it and clicking New conversation
 opens a separate in-page chat tab. The selected Pi workspace is fixed for that conversation. Codex
 uses its own persisted app-server thread, so several Codex and local chats can run concurrently.
+Assistant replies render a safe Markdown subset (headings, lists, quotes, code, emphasis, and links).
+Web links open in a new tab; dashboard-style links to Pi-local files copy the path instead of exposing
+the filesystem through HTTP. Codex conversations accept up to three pasted or selected PNG, JPEG, or
+WebP images (5 MiB each, 10 MiB total). Images are shown before sending, passed to app-server as image
+inputs, and saved with the transcript. Local rig chats remain text-only until a profile explicitly
+advertises and implements vision input.
 The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
 operator's ChatGPT account; the browser receives only the verification URL and one-time code.
 Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access
@@ -68,11 +74,29 @@ harness repos. The service user needs a current `codex` executable and file acce
 The gateway starts app-server lazily and restarts it after a gateway restart; SQLite keeps the
 dashboard conversation-to-Codex-thread mapping. The sidebar lists every saved conversation, and
 reopening one restores its transcript and selected workspace. A Codex prompt is saved as a turn
-before execution; a successful reply and completed state are committed together. A gateway restart
+before execution. The send request returns with a turn ID while Codex works on the Pi; the browser
+polls saved turn state and agent activity, so switching tabs or closing the page does not cancel
+the turn. A successful reply and completed state are committed together. Failure details are saved
+with the turn and shown when the chat is reopened. Activity and approvals appear above the composer.
+A gateway restart
 marks any unfinished turn interrupted and shows its prompt when reopened. The gateway never
 automatically resends an interrupted prompt because the agent may already have performed actions.
 Check the workspace and service state before choosing whether to send a follow-up. This is turn
-recovery visibility, not durable streaming or automatic recovery of an in-flight agent run.
+recovery visibility; a gateway process restart still interrupts an in-flight agent run.
+
+Typing `/` in a Codex chat opens the browser command picker. `/new` opens a new Codex tab;
+`/resume` lists saved Codex chats and `/resume <ID or unique title>` opens one. `/status` shows
+the current thread, workspace, and saved turn state. `/compact` invokes app-server context
+compaction after a completed turn, `/diff` shows the selected workspace's changed files and
+tracked Git diff, and `/model` lists or selects a Codex model for future turns. `/help` lists these
+supported browser commands. Other Codex CLI slash commands
+are not yet mapped to the dashboard and are rejected visibly instead of sent to the agent as text.
+
+Verification on 2026-11-11: the Pi's focused dashboard/chat tests passed 18/18. A live dashboard
+Codex turn with a generated PNG returned a turn ID in 0.01 seconds, completed with a description
+of the image, and the temporary conversation was deleted. Live `/model` and `/diff` command
+routes returned 200. The gateway and LAN dashboard proxy were restarted; both remained active.
+
 Verification on 2026-11-09: the desktop chat and LAN contract selection passed 5/5; its full suite
 passed 147 tests with two existing Windows-only failures (Unix-domain socket support and POSIX
 directory mode assertions). The browser JavaScript passed `node --check`. On the Pi, the full

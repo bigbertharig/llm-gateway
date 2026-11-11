@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -27,6 +28,7 @@ class CodexBridge:
         self.recent: dict[str, deque] = {}
         self.approvals: dict[str, dict] = {}
         self.login_event: dict | None = None
+        self.account_state: dict | None = None
         self.next_id = 0
         self.write_lock = asyncio.Lock()
         self.start_lock = asyncio.Lock()
@@ -104,6 +106,7 @@ class CodexBridge:
                     message = json.loads(line)
                 except ValueError:
                     continue
+                message["_received_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 if "method" not in message and "id" in message and message["id"] in self.pending:
                     future = self.pending[message["id"]]
                     if not future.done():
@@ -112,6 +115,7 @@ class CodexBridge:
                 method, params = message.get("method"), message.get("params") or {}
                 if method == "account/login/completed":
                     self.login_event = params
+                    self.account_state = None
                 thread_id = params.get("threadId")
                 if thread_id in self.events:
                     self.events[thread_id].put_nowait(message)
@@ -134,11 +138,13 @@ class CodexBridge:
                 queue.put_nowait({"method": "bridge/exited", "params": {}})
 
     async def account(self) -> dict:
+        if self.account_state is not None:
+            return {**self.account_state, "login": self.login_event}
         result = await self._call("account/read", {"refreshToken": False})
         account = result.get("account") or {}
-        return {"connected": account.get("type") == "chatgpt",
-                "email": account.get("email"), "plan": account.get("planType"),
-                "login": self.login_event}
+        self.account_state = {"connected": account.get("type") == "chatgpt",
+                              "email": account.get("email"), "plan": account.get("planType")}
+        return {**self.account_state, "login": self.login_event}
 
     async def start_login(self) -> dict:
         self.login_event = None
@@ -149,12 +155,21 @@ class CodexBridge:
 
     async def logout(self) -> None:
         await self._call("account/logout")
+        self.account_state = None
 
     async def delete_thread(self, thread_id: str) -> None:
         await self._call("thread/delete", {"threadId": thread_id})
         self.recent.pop(thread_id, None)
 
+    async def compact(self, thread_id: str) -> None:
+        await self._call("thread/compact/start", {"threadId": thread_id})
+
+    async def models(self) -> list[dict]:
+        result = await self._call("model/list", {"includeHidden": False, "limit": 100})
+        return [item for item in result.get("data", []) if not item.get("hidden")]
+
     def status(self, thread_id: str) -> dict:
+        active = thread_id in self.events
         events = self.recent.get(thread_id, ())
         public_events = []
         pending = []
@@ -162,7 +177,7 @@ class CodexBridge:
             method, params = event.get("method"), event.get("params") or {}
             if method in ("item/started", "item/completed", "turn/completed"):
                 public_events.append({"method": method, "item": params.get("item"),
-                                      "turn": params.get("turn")})
+                                      "turn": params.get("turn"), "received_at": event.get("_received_at")})
         for approval in self.approvals.values():
             if approval["thread_id"] != thread_id:
                 continue
@@ -171,7 +186,7 @@ class CodexBridge:
                             if e.get("method") == "item/started"
                             and ((e.get("params") or {}).get("item") or {}).get("id") == item_id), None)
             pending.append({**approval, "preview": preview})
-        return {"events": public_events, "approvals": pending}
+        return {"events": public_events, "approvals": pending, "active": active}
 
     async def decide(self, thread_id: str, request_id: str, decision: str) -> None:
         if decision not in ("accept", "decline"):
@@ -182,30 +197,38 @@ class CodexBridge:
         await self._write({"id": int(request_id), "result": {"decision": decision}})
         self.approvals.pop(request_id, None)
 
-    async def turn(self, thread_id: str | None, prompt: str, cwd: str, on_thread=None) -> tuple[str, str]:
+    async def turn(self, thread_id: str | None, prompt: str, cwd: str, on_thread=None,
+                   images: list[dict] | None = None, model: str | None = None) -> tuple[str, str]:
         workspace = self.workspace(cwd)
-        account = await self.account()
-        if not account["connected"]:
-            raise CodexBridgeError("Connect a ChatGPT account first")
+        # Conversation creation already checks authentication. Avoid placing a
+        # second account/read behind another active app-server turn.
         if thread_id:
             result = await self._call("thread/resume", {"threadId": thread_id})
         else:
-            result = await self._call("thread/start", {
+            start_params = {
                 "cwd": str(workspace), "approvalPolicy": "on-request", "sandbox": "workspace-write",
                 "serviceName": "llm_gateway_chat",
-            })
+            }
+            if model:
+                start_params["model"] = model
+            result = await self._call("thread/start", start_params)
         thread_id = result["thread"]["id"]
         if on_thread:
             await on_thread(thread_id)
         queue = self.events.setdefault(thread_id, asyncio.Queue())
         answer = []
         try:
-            started = await self._call("turn/start", {"threadId": thread_id,
-                "input": [{"type": "text", "text": prompt}],
+            inputs = [{"type": "text", "text": prompt}]
+            inputs.extend({"type": "image", "url": image["data_url"]} for image in (images or []))
+            turn_params = {"threadId": thread_id,
+                "input": inputs,
                 "cwd": str(workspace), "approvalPolicy": "on-request",
                 "sandboxPolicy": {"type": "workspaceWrite", "writableRoots": [str(workspace)],
                                   "networkAccess": False},
-            })
+            }
+            if model:
+                turn_params["model"] = model
+            started = await self._call("turn/start", turn_params)
             turn_id = started["turn"]["id"]
             while True:
                 try:

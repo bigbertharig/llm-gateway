@@ -28,6 +28,7 @@ ORCHESTRATION_ACTIONS = frozenset({
     "batch_outputs", "cleanup_stale", "requeue_worker",
 })
 MAX_BODY = 1_048_576
+MAX_CHAT_TURN_BODY = 15 * 1024 * 1024
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -55,7 +56,7 @@ def _allowed(method: str, path: str) -> bool:
         return True
     if path in ("/dashboard/api/chat/codex/login", "/dashboard/api/chat/codex/logout"):
         return True
-    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith("/agent/approval"):
+    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith(("/agent/approval", "/agent/command")):
         return len(path.split("/")[-3]) == 32
     if path.startswith("/dashboard/api/chat/conversations/") and path.endswith(("/turn", "/model", "/prepare")):
         return len(path.split("/")[-2]) == 32
@@ -99,12 +100,13 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
                 declared_length = int(request.headers.get("content-length", "0"))
             except ValueError:
                 return JSONResponse({"error": "invalid length"}, status_code=400, headers=SECURITY_HEADERS)
-            if declared_length < 0 or declared_length > MAX_BODY:
+            body_limit = MAX_CHAT_TURN_BODY if route.endswith("/turn") else MAX_BODY
+            if declared_length < 0 or declared_length > body_limit:
                 return JSONResponse({"error": "request too large"}, status_code=413, headers=SECURITY_HEADERS)
             chunks = bytearray()
             async for chunk in request.stream():
                 chunks.extend(chunk)
-                if len(chunks) > MAX_BODY:
+                if len(chunks) > body_limit:
                     return JSONResponse({"error": "request too large"}, status_code=413,
                                         headers=SECURITY_HEADERS)
             body = bytes(chunks)

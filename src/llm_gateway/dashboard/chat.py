@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import threading
 import uuid
 from contextlib import contextmanager
@@ -22,6 +26,10 @@ from .codex_bridge import CodexBridge, CodexBridgeError
 
 MAX_MESSAGE = 8000
 HISTORY_MESSAGES = 16
+MAX_IMAGES = 3
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMAGE_TOTAL_BYTES = 10 * 1024 * 1024
+IMAGE_DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$")
 
 
 def _now() -> str:
@@ -43,6 +51,7 @@ class ChatStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('user','assistant')),
                     content TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL,
+                    attachments TEXT NOT NULL DEFAULT '[]',
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, id);
@@ -51,6 +60,7 @@ class ChatStore:
                     prompt TEXT NOT NULL, state TEXT NOT NULL
                         CHECK(state IN ('running','completed','failed','interrupted')),
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    attachments TEXT NOT NULL DEFAULT '[]',
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id, created_at);
@@ -60,10 +70,17 @@ class ChatStore:
                 if name not in columns:
                     db.execute(f"ALTER TABLE conversations ADD COLUMN {name} INTEGER")
             for name, definition in (("provider", "TEXT NOT NULL DEFAULT 'local'"),
-                                     ("thread_id", "TEXT"), ("cwd", "TEXT")):
+                                     ("thread_id", "TEXT"), ("cwd", "TEXT"),
+                                     ("codex_model", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE conversations ADD COLUMN {name} {definition}")
-            # A gateway restart cannot keep an HTTP turn alive. Preserve its prompt
+            for table in ("messages", "turns"):
+                table_columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+                if "attachments" not in table_columns:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            if "error" not in {row["name"] for row in db.execute("PRAGMA table_info(turns)")}:
+                db.execute("ALTER TABLE turns ADD COLUMN error TEXT")
+            # A gateway restart cannot keep an agent turn alive. Preserve its prompt
             # without silently resending a potentially consequential agent request.
             db.execute("UPDATE turns SET state='interrupted',updated_at=? WHERE state='running'", (_now(),))
         os.chmod(self.path, 0o600)
@@ -100,19 +117,39 @@ class ChatStore:
         with self._db() as db:
             db.execute("UPDATE conversations SET thread_id=? WHERE id=? AND thread_id IS NULL", (thread_id, cid))
 
+    def set_codex_model(self, cid: str, model: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE conversations SET codex_model=?,updated_at=? WHERE id=? AND provider='codex'",
+                       (model, _now(), cid))
+
     def get(self, cid: str) -> dict:
         with self._db() as db:
             row = db.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone()
             if row is None:
                 raise ManagerError(404, "conversation not found")
             messages = [dict(r) for r in db.execute(
-                "SELECT id, role, content, model, created_at FROM messages WHERE conversation_id=? ORDER BY id", (cid,))]
-            last_turn = db.execute("SELECT id,prompt,state,created_at,updated_at FROM turns "
+                "SELECT id, role, content, model, created_at, attachments FROM messages "
+                "WHERE conversation_id=? ORDER BY id", (cid,))]
+            last_turn = db.execute("SELECT id,prompt,state,created_at,updated_at,attachments,error FROM turns "
                                    "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (cid,)).fetchone()
-        return {**dict(row), "messages": messages,
-                "last_turn": dict(last_turn) if last_turn else None}
+        for message in messages:
+            message["attachments"] = json.loads(message["attachments"] or "[]")
+        turn = dict(last_turn) if last_turn else None
+        if turn:
+            turn["attachments"] = json.loads(turn["attachments"] or "[]")
+        return {**dict(row), "messages": messages, "last_turn": turn}
 
-    def begin_turn(self, cid: str, expected_count: int, model: str, prompt: str) -> str:
+    def agent_state(self, cid: str) -> dict:
+        with self._db() as db:
+            row = db.execute("SELECT provider,thread_id FROM conversations WHERE id=?", (cid,)).fetchone()
+            if row is None:
+                raise ManagerError(404, "conversation not found")
+            turn = db.execute("SELECT id,state,updated_at,error FROM turns WHERE conversation_id=? "
+                              "ORDER BY created_at DESC,rowid DESC LIMIT 1", (cid,)).fetchone()
+        return {**dict(row), "last_turn": dict(turn) if turn else None}
+
+    def begin_turn(self, cid: str, expected_count: int, model: str, prompt: str,
+                   attachments: list[dict] | None = None) -> str:
         turn_id, now = uuid.uuid4().hex, _now()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -126,18 +163,20 @@ class ChatStore:
                 raise ManagerError(409, "conversation changed in another tab; refresh before sending")
             if db.execute("SELECT 1 FROM turns WHERE conversation_id=? AND state='running'", (cid,)).fetchone():
                 raise ManagerError(409, "This conversation already has a running turn")
-            db.execute("INSERT INTO turns VALUES (?,?,?,?,?,?)", (turn_id, cid, prompt, "running", now, now))
+            db.execute("INSERT INTO turns (id,conversation_id,prompt,state,created_at,updated_at,attachments) "
+                       "VALUES (?,?,?,?,?,?,?)",
+                       (turn_id, cid, prompt, "running", now, now, json.dumps(attachments or [])))
             title = prompt.strip().replace("\n", " ")[:64]
             db.execute("UPDATE conversations SET updated_at=?,title=CASE WHEN title='New conversation' "
                        "THEN ? ELSE title END WHERE id=?", (now, title, cid))
         return turn_id
 
-    def set_turn_state(self, turn_id: str, state: str) -> None:
+    def set_turn_state(self, turn_id: str, state: str, error: str | None = None) -> None:
         if state not in ("failed", "interrupted"):
             raise ValueError("invalid turn state")
         with self._db() as db:
-            db.execute("UPDATE turns SET state=?,updated_at=? WHERE id=? AND state='running'",
-                       (state, _now(), turn_id))
+            db.execute("UPDATE turns SET state=?,updated_at=?,error=? WHERE id=? AND state='running'",
+                       (state, _now(), error[:500] if error else None, turn_id))
 
     def switch_model(self, cid: str, expected_model: str, new_model: str) -> dict:
         with self._db() as db:
@@ -161,7 +200,7 @@ class ChatStore:
     def append_exchange(self, cid: str, expected_count: int, model: str, user: str, answer: str,
                         context_length: int | None = None, prompt_tokens: int | None = None,
                         completion_tokens: int | None = None, total_tokens: int | None = None,
-                        turn_id: str | None = None) -> dict:
+                        turn_id: str | None = None, attachments: list[dict] | None = None) -> dict:
         now = _now()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -178,8 +217,10 @@ class ChatStore:
                                   (turn_id, cid)).fetchone()
                 if turn is None or turn["state"] != "running" or turn["prompt"] != user:
                     raise ManagerError(409, "turn state changed; refresh before sending")
-            db.executemany("INSERT INTO messages (conversation_id,role,content,model,created_at) VALUES (?,?,?,?,?)",
-                           [(cid, "user", user, model, now), (cid, "assistant", answer, model, now)])
+            db.executemany("INSERT INTO messages "
+                           "(conversation_id,role,content,model,created_at,attachments) VALUES (?,?,?,?,?,?)",
+                           [(cid, "user", user, model, now, json.dumps(attachments or [])),
+                            (cid, "assistant", answer, model, now, "[]")])
             title = user.strip().replace("\n", " ")[:64] if count == 0 else row["title"]
             db.execute(
                 "UPDATE conversations SET title=?,model=?,updated_at=?,context_length=?,"
@@ -200,6 +241,35 @@ async def _json_body(request: Request) -> dict:
     return body
 
 
+def _image_attachments(value: object) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_IMAGES:
+        raise ManagerError(400, f"images must be a list of at most {MAX_IMAGES} items")
+    result, total = [], 0
+    for item in value:
+        if not isinstance(item, dict):
+            raise ManagerError(400, "each image must be an object")
+        data_url = item.get("data_url")
+        match = IMAGE_DATA_URL.fullmatch(data_url) if isinstance(data_url, str) else None
+        if not match:
+            raise ManagerError(400, "images must be PNG, JPEG, or WebP data URLs")
+        try:
+            raw = base64.b64decode(match.group(2), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ManagerError(400, "image contains invalid base64 data") from exc
+        if not raw or len(raw) > MAX_IMAGE_BYTES:
+            raise ManagerError(413, f"each image must be at most {MAX_IMAGE_BYTES // (1024 * 1024)} MiB")
+        total += len(raw)
+        if total > MAX_IMAGE_TOTAL_BYTES:
+            raise ManagerError(413, f"images may total at most {MAX_IMAGE_TOTAL_BYTES // (1024 * 1024)} MiB")
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            name = "pasted-image"
+        result.append({"name": name.strip()[:160], "type": match.group(1), "data_url": data_url})
+    return result
+
+
 def router(manager: Manager, profiles: Profiles, forward_inference,
            codex: CodexBridge | None = None) -> APIRouter:
     root = Path(os.getenv("CHAT_DATA_ROOT") or (Path.home() / ".local/share/llm-gateway/chat"))
@@ -217,6 +287,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     r = APIRouter(prefix="/dashboard/api/chat")
     codex = codex or CodexBridge()
     active_codex: set[str] = set()
+    codex_tasks: set[asyncio.Task] = set()
 
     def offered() -> dict[str, dict]:
         published = profiles.all()
@@ -324,29 +395,41 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     async def turn(cid: str, request: Request):
         body = await _json_body(request)
         model, prompt = body.get("model"), body.get("message")
+        images = _image_attachments(body.get("images"))
         conversation = await asyncio.to_thread(get_store().get, cid)
         if conversation["provider"] == "codex":
             if model != "Codex":
                 raise ManagerError(409, "This conversation uses Codex")
-            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_MESSAGE:
-                raise ManagerError(400, f"message must be 1 to {MAX_MESSAGE} characters")
+            if not isinstance(prompt, str) or len(prompt) > MAX_MESSAGE or (not prompt.strip() and not images):
+                raise ManagerError(400, f"provide a message of up to {MAX_MESSAGE} characters or an image")
+            prompt = prompt.strip() or "Please analyze the attached image."
             if cid in active_codex:
                 raise ManagerError(409, "This Codex conversation already has a running turn")
             turn_id = await asyncio.to_thread(get_store().begin_turn, cid, len(conversation["messages"]),
-                                              "Codex", prompt.strip())
+                                              "Codex", prompt, images)
             active_codex.add(cid)
-            try:
+            async def run_codex_turn():
                 async def save_thread(thread_id):
                     await asyncio.to_thread(get_store().set_thread, cid, thread_id)
-                thread_id, answer = await codex.turn(conversation["thread_id"], prompt.strip(), conversation["cwd"], save_thread)
-                saved = await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
-                                                "Codex", prompt.strip(), answer, turn_id=turn_id)
-            except CodexBridgeError as exc:
-                raise ManagerError(502, str(exc)) from exc
-            finally:
-                active_codex.discard(cid)
-                await asyncio.to_thread(get_store().set_turn_state, turn_id, "failed")
-            return {"conversation": saved, "history_sent": 0, "history_limit": None}
+                try:
+                    _, answer = await codex.turn(conversation["thread_id"], prompt,
+                                                 conversation["cwd"], save_thread, images=images,
+                                                 model=conversation["codex_model"])
+                    await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
+                                            "Codex", prompt, answer, turn_id=turn_id, attachments=images)
+                except asyncio.CancelledError:
+                    await asyncio.to_thread(get_store().set_turn_state, turn_id, "interrupted")
+                    raise
+                except Exception as exc:
+                    await asyncio.to_thread(get_store().set_turn_state, turn_id, "failed", str(exc))
+                finally:
+                    active_codex.discard(cid)
+            task = asyncio.create_task(run_codex_turn())
+            codex_tasks.add(task)
+            task.add_done_callback(codex_tasks.discard)
+            return {"turn_id": turn_id, "conversation": await asyncio.to_thread(get_store().get, cid)}
+        if images:
+            raise ManagerError(400, "image attachments are currently available only for Codex conversations")
         choices = offered()
         if model not in choices:
             raise ManagerError(400, "choose a listed chat model")
@@ -391,11 +474,59 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
 
     @r.get("/conversations/{cid}/agent")
     async def agent_status(cid: str):
-        conversation = await asyncio.to_thread(get_store().get, cid)
+        conversation = await asyncio.to_thread(get_store().agent_state, cid)
         if conversation["provider"] != "codex":
             raise ManagerError(400, "Not a Codex conversation")
         thread_id = conversation["thread_id"]
-        return codex.status(thread_id) if thread_id else {"events": [], "approvals": []}
+        state = codex.status(thread_id) if thread_id else {"events": [], "approvals": [], "active": False}
+        return {**state, "turn": conversation["last_turn"]}
+
+    @r.post("/conversations/{cid}/agent/command")
+    async def agent_command(cid: str, request: Request):
+        conversation = await asyncio.to_thread(get_store().get, cid)
+        if conversation["provider"] != "codex":
+            raise ManagerError(400, "Commands are available only in Codex conversations")
+        body = await _json_body(request)
+        command = body.get("command")
+        if command not in ("compact", "diff", "model"):
+            raise ManagerError(400, "Unsupported Codex command")
+        if command == "model":
+            try:
+                models = await codex.models()
+            except CodexBridgeError as exc:
+                raise ManagerError(502, str(exc)) from exc
+            value = body.get("value")
+            if value is None or value == "":
+                return {"message": "Current model: " + (conversation["codex_model"] or "Codex default") +
+                        "\nAvailable models:\n" + "\n".join(m["model"] + " — " + m["displayName"] for m in models)}
+            if cid in active_codex or conversation["last_turn"] and conversation["last_turn"]["state"] == "running":
+                raise ManagerError(409, "Wait for the current Codex turn before changing models")
+            if not isinstance(value, str) or value not in {m["model"] for m in models}:
+                raise ManagerError(400, "Choose a model shown by /model")
+            await asyncio.to_thread(get_store().set_codex_model, cid, value)
+            return {"message": "Codex model set to " + value + " for future turns."}
+        if command == "compact":
+            if cid in active_codex or conversation["last_turn"] and conversation["last_turn"]["state"] == "running":
+                raise ManagerError(409, "Wait for the current Codex turn before compacting")
+            if not conversation["thread_id"]:
+                raise ManagerError(409, "Send a message before compacting this conversation")
+            try:
+                await codex.compact(conversation["thread_id"])
+            except CodexBridgeError as exc:
+                raise ManagerError(502, str(exc)) from exc
+            return {"message": "Codex context compaction started."}
+        cwd = str(codex.workspace(conversation["cwd"]))
+        def git_diff():
+            status = subprocess.run(["git", "-C", cwd, "status", "--short"],
+                                    capture_output=True, text=True, timeout=10, check=True)
+            diff = subprocess.run(["git", "-C", cwd, "diff", "--no-ext-diff", "HEAD"],
+                                  capture_output=True, text=True, timeout=10, check=True)
+            return ("Changed files:\n" + (status.stdout or "(none)\n") +
+                    "\nTracked diff:\n" + (diff.stdout or "(none)\n"))[:30000]
+        try:
+            return {"message": await asyncio.to_thread(git_diff)}
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise ManagerError(502, f"Could not read workspace diff: {exc}") from exc
 
     @r.post("/conversations/{cid}/agent/approval")
     async def agent_approval(cid: str, request: Request):

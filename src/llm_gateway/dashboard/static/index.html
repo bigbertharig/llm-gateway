@@ -73,10 +73,35 @@ textarea { width: 100%; min-height: 80px; }
 .chat-heading, .chat-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .chat-heading h2 { margin: 0 0 8px; }
 .chat-messages { flex: 1; min-height: 260px; max-height: 60vh; overflow: auto; padding: 8px 0; }
-.chat-message { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel2); border: 1px solid var(--line);
+.chat-message { overflow-wrap: anywhere; background: var(--panel2); border: 1px solid var(--line);
   border-radius: 6px; padding: 10px 12px; margin: 10px 0; max-width: 85%; }
 .chat-message.user { margin-left: auto; border-color: #3f5f7a; }
+.chat-message.assistant { max-width: 94%; }
 .chat-message .meta { color: var(--muted); font: 11px var(--mono); margin-bottom: 6px; }
+.chat-agent-events { max-height: 28vh; overflow: auto; padding: 4px 0; }
+.chat-agent-events[hidden] { display: none; }
+.chat-agent-events .chat-message { max-width: 100%; margin: 5px 0; border-color: var(--line); color: var(--muted); font: 12px var(--mono); }
+.chat-command-output { white-space: pre-wrap; overflow: auto; max-height: 35vh; padding: 8px 10px; color: var(--muted); font: 12px var(--mono); }
+.chat-slash-menu { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0; }
+.chat-slash-menu[hidden], .chat-command-output[hidden] { display: none; }
+.chat-body p { margin: .55em 0; }
+.chat-body p:first-child { margin-top: 0; } .chat-body p:last-child { margin-bottom: 0; }
+.chat-body ul, .chat-body ol { margin: .55em 0; padding-left: 1.5em; }
+.chat-body h1, .chat-body h2, .chat-body h3 { color: var(--text); letter-spacing: 0; text-transform: none; margin: .9em 0 .35em; }
+.chat-body h1 { font-size: 1.3em; } .chat-body h2 { font-size: 1.18em; } .chat-body h3 { font-size: 1.08em; }
+.chat-body blockquote { margin: .6em 0; padding-left: 10px; border-left: 3px solid var(--cool); color: var(--muted); }
+.chat-body pre { overflow: auto; padding: 10px; border-radius: 5px; background: #141b24; border: 1px solid var(--line); white-space: pre; }
+.chat-body code { font: 12.5px var(--mono); background: #141b24; border-radius: 3px; padding: 1px 4px; }
+.chat-body pre code { padding: 0; }
+.chat-body a, .chat-path-link { color: #8bd5ff; text-decoration: underline; text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px; font-weight: 600; }
+.chat-path-link { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.chat-attachments, .chat-pending-images { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 9px; }
+.chat-image { position: relative; display: inline-flex; flex-direction: column; gap: 3px; max-width: 220px; color: var(--muted); font: 11px var(--mono); }
+.chat-image img { display: block; max-width: 220px; max-height: 180px; object-fit: contain; border: 1px solid var(--line); border-radius: 5px; background: #111820; }
+.chat-image button { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); border-radius: 50%; background: #111c; color: white; cursor: pointer; }
+.chat-attach-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.chat-attach-row[hidden] { display: none; }
 #chat-form { border-top: 1px solid var(--line); padding-top: 10px; }
 #chat-form label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 #chat-input { min-height: 90px; resize: vertical; }
@@ -189,14 +214,23 @@ a { color: var(--cool); }
         <div class="chat-heading"><h2 id="chat-title">Choose a conversation</h2>
           <button class="act danger" id="chat-delete" type="button" hidden>Delete</button></div>
         <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+        <div id="chat-agent-events" class="chat-agent-events" role="log" aria-label="Codex activity" hidden></div>
+        <div id="chat-command-output" class="chat-command-output" role="status" hidden></div>
+        <div id="chat-progress" role="status" aria-live="polite" hidden></div>
         <div id="chat-approvals" class="chat-approval" hidden></div>
         <form id="chat-form">
           <label for="chat-input">Message</label>
-          <textarea id="chat-input" maxlength="8000" placeholder="Ask the selected model..." required></textarea>
+          <textarea id="chat-input" maxlength="8000" placeholder="Ask the selected model..."></textarea>
+          <div id="chat-slash-menu" class="chat-slash-menu" aria-label="Codex commands" hidden></div>
+          <div class="chat-attach-row" id="chat-attach-row" hidden>
+            <button class="act" id="chat-attach" type="button">Attach images</button>
+            <span class="line">or paste a screenshot (PNG, JPEG, WebP; Codex only)</span>
+            <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          </div>
+          <div id="chat-pending-images" class="chat-pending-images"></div>
           <div class="chat-actions"><span id="chat-status" class="line">Choose a model and send a message.</span>
             <button class="act" id="chat-retry" type="button" hidden>Retry model load</button>
             <button class="act" id="chat-send" type="submit">Send</button></div>
-          <div id="chat-progress" role="status" aria-live="polite" hidden></div>
         </form>
       </div>
     </div>
@@ -228,6 +262,66 @@ a { color: var(--cool); }
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+function appendChatInline(parent, text) {
+  const pattern = /(`[^`\n]+`|\[([^\]\n]+)\]\(([^)\n]+)\)|(https?:\/\/[^\s<]+)|\*\*[^*\n]+\*\*)/g;
+  let offset = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > offset) parent.append(document.createTextNode(text.slice(offset, match.index)));
+    if (match[0].startsWith("**")) {
+      const strong = document.createElement("strong"); strong.textContent = match[0].slice(2, -2); parent.append(strong);
+    } else if (match[0].startsWith("`")) {
+      const code = document.createElement("code"); code.textContent = match[0].slice(1, -1); parent.append(code);
+    } else {
+      const label = match[2] || match[0];
+      const href = (match[3] || match[0]).trim().replace(/^<|>$/g, "");
+      if (/^https?:\/\//i.test(href)) {
+        const link = document.createElement("a"); link.href = href; link.textContent = label;
+        link.target = "_blank"; link.rel = "noopener noreferrer"; parent.append(link);
+      } else {
+        const path = document.createElement("button"); path.type = "button"; path.className = "chat-path-link";
+        path.textContent = label; path.title = "Copy local path: " + href;
+        path.onclick = async () => { try { await navigator.clipboard.writeText(href); toast("Copied path: " + href, "good"); }
+          catch (e) { toast("Path: " + href); } };
+        parent.append(path);
+      }
+    }
+    offset = match.index + match[0].length;
+  }
+  if (offset < text.length) parent.append(document.createTextNode(text.slice(offset)));
+}
+function renderChatMarkdown(target, source) {
+  target.replaceChildren();
+  const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+  let paragraph = [], list = null, code = null;
+  const flushParagraph = () => { if (!paragraph.length) return;
+    const p = document.createElement("p"); appendChatInline(p, paragraph.join("\n")); target.append(p); paragraph = []; };
+  const flushList = () => { if (list) { target.append(list); list = null; } };
+  for (const line of lines) {
+    if (line.startsWith("```")) {
+      flushParagraph(); flushList();
+      if (code) { const pre = document.createElement("pre"), node = document.createElement("code");
+        node.textContent = code.join("\n"); pre.append(node); target.append(pre); code = null; }
+      else code = [];
+      continue;
+    }
+    if (code) { code.push(line); continue; }
+    if (!line.trim()) { flushParagraph(); flushList(); continue; }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) { flushParagraph(); flushList(); const h = document.createElement("h" + heading[1].length);
+      appendChatInline(h, heading[2]); target.append(h); continue; }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/), ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (bullet || ordered) { flushParagraph(); const tag = ordered ? "OL" : "UL";
+      if (!list || list.tagName !== tag) { flushList(); list = document.createElement(tag.toLowerCase()); }
+      const item = document.createElement("li"); appendChatInline(item, (bullet || ordered)[1]); list.append(item); continue; }
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) { flushParagraph(); flushList(); const block = document.createElement("blockquote");
+      appendChatInline(block, quote[1]); target.append(block); continue; }
+    paragraph.push(line);
+  }
+  if (code) { const pre = document.createElement("pre"), node = document.createElement("code");
+    node.textContent = code.join("\n"); pre.append(node); target.append(pre); }
+  flushParagraph(); flushList();
+}
 const fmt = (v, d = 0) => (v === null || v === undefined || v === "") ? "-" : Number(v).toFixed(d);
 const age = (s) => s == null ? "-" : s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 let toastTimer;
@@ -424,8 +518,98 @@ let chatBusy = false;
 let chatBoundModel = "";
 const busyChats = new Set();
 const chatDrafts = new Map();
+const chatImageDrafts = new Map();
+let chatImages = [];
 let openChatTabs = (() => { try { return JSON.parse(localStorage.getItem("dash-chat-tabs") || "[]"); } catch (e) { return []; } })();
 let codexConnected = false;
+const codexSlashCommands = [
+  ["help", "Show browser Codex commands"], ["new", "Open a new Codex chat"],
+  ["resume", "Open a saved Codex chat"], ["status", "Show this chat's state"],
+  ["compact", "Compact this Codex thread"], ["diff", "Show workspace changes"],
+  ["model", "List or select a Codex model"],
+];
+function showChatCommandOutput(message) {
+  const box = $("#chat-command-output");
+  box.textContent = message; box.hidden = !message;
+}
+function renderCodexSlashMenu() {
+  const input = $("#chat-input"), menu = $("#chat-slash-menu");
+  const match = input.value.match(/^\/([a-z]*)$/i);
+  const choices = $("#chat-model").value === "Codex" && match
+    ? codexSlashCommands.filter(([name]) => name.startsWith(match[1].toLowerCase())) : [];
+  menu.replaceChildren();
+  for (const [name, description] of choices) {
+    const button = document.createElement("button"); button.type = "button"; button.className = "act";
+    button.textContent = "/" + name + " — " + description;
+    button.onclick = () => { input.value = "/" + name + (name === "resume" || name === "model" ? " " : "");
+      menu.hidden = true; input.focus(); };
+    menu.append(button);
+  }
+  menu.hidden = !choices.length;
+}
+$("#chat-input").addEventListener("input", renderCodexSlashMenu);
+async function runCodexSlashCommand(prompt) {
+  const [raw, ...words] = prompt.slice(1).split(/\s+/), command = raw.toLowerCase();
+  const argument = words.join(" ").trim();
+  if (command === "help") {
+    showChatCommandOutput(codexSlashCommands.map(([name, detail]) => "/" + name + " — " + detail).join("\n"));
+  } else if (command === "new") {
+    $("#chat-model").value = "Codex"; await $("#chat-new").onclick();
+    showChatCommandOutput("");
+  } else if (command === "resume") {
+    const saved = (await api("chat/conversations")).conversations.filter((c) => c.provider === "codex");
+    if (!argument) showChatCommandOutput(saved.map((c) => c.title + " · " + c.id).join("\n") || "No saved Codex chats.");
+    else {
+      const matches = saved.filter((c) => c.id === argument || c.title.toLowerCase().includes(argument.toLowerCase()));
+      if (matches.length !== 1) throw new Error(matches.length ? "More than one chat matches; use its ID." : "No saved Codex chat matches.");
+      await openChat(matches[0].id); showChatCommandOutput("");
+    }
+  } else if (command === "status") {
+    if (!chatId || chatBoundModel !== "Codex") throw new Error("Open a Codex chat first.");
+    const c = await api("chat/conversations/" + encodeURIComponent(chatId));
+    showChatCommandOutput("Chat: " + c.title + "\nWorkspace: " + c.cwd + "\nThread: " + (c.thread_id || "not started") +
+      "\nModel: " + (c.codex_model || "Codex default") +
+      "\nLast turn: " + (c.last_turn?.state || "none") + (c.last_turn?.error ? "\nError: " + c.last_turn.error : ""));
+  } else if (command === "compact" || command === "diff" || command === "model") {
+    if (!chatId || chatBoundModel !== "Codex") throw new Error("Open a Codex chat first.");
+    const result = await api("chat/conversations/" + encodeURIComponent(chatId) + "/agent/command",
+      {command, value: argument});
+    showChatCommandOutput(result.message);
+  } else throw new Error("Unknown command. Type /help to see supported browser commands.");
+}
+function renderChatImages(target, images, removable = false) {
+  target.replaceChildren();
+  for (const [index, image] of (images || []).entries()) {
+    const figure = document.createElement("div"); figure.className = "chat-image";
+    const preview = document.createElement("img"); preview.src = image.data_url; preview.alt = image.name || "Attached image";
+    preview.loading = "lazy"; const caption = document.createElement("span"); caption.textContent = image.name || "image";
+    figure.append(preview, caption);
+    if (removable) { const remove = document.createElement("button"); remove.type = "button";
+      remove.setAttribute("aria-label", "Remove " + caption.textContent); remove.textContent = "×";
+      remove.onclick = () => { chatImages.splice(index, 1); renderPendingChatImages(); }; figure.append(remove); }
+    target.append(figure);
+  }
+}
+function renderPendingChatImages() {
+  const box = $("#chat-pending-images");
+  box.hidden = $("#chat-model").value !== "Codex" || !chatImages.length;
+  renderChatImages(box, chatImages, true);
+}
+async function addChatImages(files) {
+  const supported = new Set(["image/png", "image/jpeg", "image/webp"]);
+  for (const file of files) {
+    if (!supported.has(file.type)) { toast(file.name + " is not a supported image type.", "bad"); continue; }
+    if (file.size > 5 * 1024 * 1024) { toast(file.name + " is larger than 5 MiB.", "bad"); continue; }
+    if (chatImages.length >= 3) { toast("You can attach at most 3 images.", "bad"); break; }
+    if (chatImages.reduce((sum, item) => sum + (item.size || 0), 0) + file.size > 10 * 1024 * 1024) {
+      toast("Attached images may total at most 10 MiB.", "bad"); break;
+    }
+    const data_url = await new Promise((resolve, reject) => { const reader = new FileReader();
+      reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+    chatImages.push({name: file.name || "pasted-image.png", type: file.type, data_url, size: file.size});
+  }
+  renderPendingChatImages();
+}
 function saveChatTabs() { try { localStorage.setItem("dash-chat-tabs", JSON.stringify(openChatTabs)); } catch (e) {} }
 function renderChatTabs(conversations) {
   const known = new Map(conversations.map((c) => [c.id, c]));
@@ -452,7 +636,9 @@ function chatProviderChanged() {
   $("#chat-workspace-label").hidden = !cloud;
   $("#chat-account").hidden = !cloud;
   $("#chat-model-note").hidden = cloud;
-  if (cloud) loadCodexAccount();
+  $("#chat-attach-row").hidden = !cloud;
+  renderPendingChatImages();
+  if (cloud && !codexConnected) loadCodexAccount();
 }
 async function loadCodexAccount() {
   try {
@@ -489,8 +675,26 @@ $("#chat-disconnect").onclick = async () => {
   try { await api("chat/codex/logout", {}); await loadCodexAccount(); }
   catch (e) { toast("Sign-out failed: " + e.message, "bad"); }
 };
+$("#chat-attach").onclick = () => $("#chat-image-input").click();
+$("#chat-image-input").onchange = async (event) => {
+  try { await addChatImages([...event.target.files]); }
+  catch (e) { toast("Could not read image: " + e.message, "bad"); }
+  event.target.value = "";
+};
+$("#chat-input").addEventListener("paste", async (event) => {
+  const files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (!files.length) return;
+  try { await addChatImages(files); toast(files.length === 1 ? "Image pasted." : files.length + " images pasted.", "good"); }
+  catch (e) { toast("Could not paste image: " + e.message, "bad"); }
+});
 async function loadChat() {
   const [opts, saved] = await Promise.all([api("chat/options"), api("chat/conversations")]);
+  for (const c of saved.conversations) {
+    if (c.provider === "codex") {
+      if (c.last_turn_state === "running") busyChats.add(c.id);
+      else busyChats.delete(c.id);
+    }
+  }
   const select = $("#chat-model"), old = select.value;
   select.innerHTML = '<option value="">Choose a model...</option>' + opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)}) ${m.ready ? "ready" : "cold"}</option>`).join("") + '<option value="Codex">Codex (cloud coding agent)</option>';
   if (old && (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
@@ -509,15 +713,19 @@ async function loadChat() {
   else { chatId = ""; chatBoundModel = ""; $("#chat-title").textContent = "New conversation"; $("#chat-messages").replaceChildren(); $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
 }
 async function openChat(id, reloadList = true, preserveSelection = false) {
-  if (chatId) chatDrafts.set(chatId, $("#chat-input").value);
+  if (chatId !== id) showChatCommandOutput("");
+  if (chatId) { chatDrafts.set(chatId, $("#chat-input").value); chatImageDrafts.set(chatId, chatImages); }
   const pendingModel = preserveSelection ? $("#chat-model").value : "";
   const c = await api("chat/conversations/" + encodeURIComponent(id));
   chatId = c.id;
+  chatImages = chatImageDrafts.get(id) || [];
   $("#chat-input").value = chatDrafts.get(id) || "";
   if (!openChatTabs.includes(id)) { openChatTabs.push(id); saveChatTabs(); }
   chatBoundModel = c.model;
   try { localStorage.setItem("dash-chat-id", id); } catch (e) { /* private window */ }
   $("#chat-retry").hidden = true;
+  if (c.provider === "codex" && c.last_turn?.state === "running") busyChats.add(id);
+  else if (c.provider === "codex") busyChats.delete(id);
   chatBusy = busyChats.has(id);
   $("#chat-progress").hidden = !chatBusy;
   $("#chat-send").disabled = chatBusy || (c.provider === "codex" && !codexConnected);
@@ -526,6 +734,8 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-delete").hidden = false;
   const box = $("#chat-messages");
   box.replaceChildren();
+  $("#chat-agent-events").replaceChildren();
+  $("#chat-agent-events").hidden = true;
   for (const m of c.messages) {
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
@@ -533,24 +743,34 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     meta.className = "meta";
     meta.textContent = m.role + " ? " + m.model;
     const content = document.createElement("div");
-    content.textContent = m.content;
+    content.className = "chat-body";
+    renderChatMarkdown(content, m.content);
     item.append(meta, content);
+    if ((m.attachments || []).length) {
+      const attachments = document.createElement("div"); attachments.className = "chat-attachments";
+      renderChatImages(attachments, m.attachments); item.append(attachments);
+    }
     box.append(item);
   }
   if (c.last_turn && c.last_turn.state !== "completed") {
     const notice = document.createElement("div");
     notice.className = "line";
     notice.textContent = c.last_turn.state === "running"
-      ? "Turn in progress. Reopen this chat to check for its reply."
-      : "Last turn " + c.last_turn.state + ". Its prompt was saved below; check the Codex workspace and thread before resending it.";
+      ? "Codex is working. You can switch tabs and return to this chat."
+      : "Last turn " + c.last_turn.state + (c.last_turn.error ? ": " + c.last_turn.error : "") +
+        ". Its prompt was saved below; check the Codex workspace and thread before resending it.";
     const prompt = document.createElement("div");
     prompt.className = "chat-message user";
-    prompt.textContent = "Unfinished prompt:\n" + c.last_turn.prompt;
+    const promptBody = document.createElement("div"); promptBody.className = "chat-body";
+    renderChatMarkdown(promptBody, "Unfinished prompt:\n" + c.last_turn.prompt); prompt.append(promptBody);
+    if ((c.last_turn.attachments || []).length) { const attachments = document.createElement("div");
+      attachments.className = "chat-attachments"; renderChatImages(attachments, c.last_turn.attachments); prompt.append(attachments); }
     box.append(notice, prompt);
   }
   box.scrollTop = box.scrollHeight;
   $("#chat-model").value = pendingModel && pendingModel !== c.model ? pendingModel : c.model;
   chatProviderChanged();
+  renderPendingChatImages();
   $("#chat-switch").hidden = c.provider === "codex" || $("#chat-model").value === c.model;
   $("#chat-status").textContent = $("#chat-switch").hidden
     ? chatContextStatus(c)
@@ -651,7 +871,14 @@ $("#chat-form").onsubmit = async (event) => {
   const input = $("#chat-input"), prompt = input.value.trim();
   const cloud = $("#chat-model").value === "Codex";
   const model = cloud ? "Codex" : $("#chat-model").value;
-  if (!prompt || (!model && !cloud)) return;
+  const turnImages = cloud ? chatImages.map(({name, type, data_url}) => ({name, type, data_url})) : [];
+  if (cloud && prompt.startsWith("/")) {
+    input.value = ""; renderCodexSlashMenu();
+    try { await runCodexSlashCommand(prompt); }
+    catch (e) { showChatCommandOutput(e.message); }
+    return;
+  }
+  if ((!prompt && !turnImages.length) || (!model && !cloud)) return;
   if (cloud && !codexConnected) { toast("Connect a ChatGPT account first.", "bad"); return; }
   if (chatId && model !== chatBoundModel) {
     $("#chat-status").textContent = "Choose Continue with selected model or New conversation first.";
@@ -671,6 +898,7 @@ $("#chat-form").onsubmit = async (event) => {
   }, 5000);
   $("#chat-status").textContent = cloud ? "Codex is working in the selected workspace..." : "Preparing model and waiting for a reply...";
   let sendingId = chatId;
+  let codexAccepted = false;
   try {
     if (!chatId) {
       const c = cloud ? await api("chat/conversations", {model: "Codex", cwd: $("#chat-workspace").value})
@@ -681,15 +909,19 @@ $("#chat-form").onsubmit = async (event) => {
     }
     sendingId = chatId; busyChats.add(sendingId); chatBusy = true;
     if (cloud) refreshCodexApprovals(sendingId);
-    const out = await api("chat/conversations/" + encodeURIComponent(sendingId) + "/turn", {model, message: prompt});
+    const out = await api("chat/conversations/" + encodeURIComponent(sendingId) + "/turn",
+      {model, message: prompt, images: turnImages});
+    codexAccepted = cloud && !!out.turn_id;
     chatDrafts.delete(sendingId);
+    chatImageDrafts.delete(sendingId);
+    if (chatId === sendingId) { chatImages = []; renderPendingChatImages(); }
     if (chatId === sendingId) { input.value = ""; await openChat(out.conversation.id);
-      $("#chat-status").textContent = chatContextStatus(out.conversation); }
+      $("#chat-status").textContent = codexAccepted ? "Codex is working in the selected workspace..." : chatContextStatus(out.conversation); }
     else await loadChat();
   } catch (e) { if (chatId === sendingId) $("#chat-status").textContent = e.message;
     toast("Chat failed: " + e.message, "bad"); }
-  finally { clearInterval(timer); busyChats.delete(sendingId); chatBusy = busyChats.has(chatId);
-    if (chatId === sendingId) { progress.hidden = true; $("#chat-send").disabled = false; $("#chat-model").disabled = false; }
+  finally { clearInterval(timer); if (!codexAccepted) busyChats.delete(sendingId); chatBusy = busyChats.has(chatId);
+    if (chatId === sendingId && !codexAccepted) { progress.hidden = true; $("#chat-send").disabled = false; $("#chat-model").disabled = false; }
     loadChat(); }
 };
 
@@ -697,6 +929,28 @@ async function refreshCodexApprovals(id) {
   if (!id || chatId !== id || chatBoundModel !== "Codex") return;
   try {
     const state = await api("chat/conversations/" + encodeURIComponent(id) + "/agent");
+    if (busyChats.has(id) && state.turn && state.turn.state !== "running") {
+      busyChats.delete(id);
+      chatBusy = false;
+      await openChat(id, false, true);
+      await loadChat();
+      return;
+    }
+    const activity = $("#chat-agent-events");
+    activity.replaceChildren();
+    for (const event of (state.events || []).slice(-8)) {
+      const item = event.item || {}, turn = event.turn || {};
+      const detail = item.command || item.text ||
+        (Array.isArray(item.changes) ? item.changes : []).map((change) => change.path).join(", ") ||
+        (event.method === "turn/completed" ? "Turn " + (turn.status || "completed") : item.type || "Working");
+      const entry = document.createElement("div");
+      entry.className = "chat-message";
+      const when = event.received_at ? new Date(event.received_at).toLocaleTimeString() + " · " : "";
+      entry.textContent = when + "Codex " + event.method.replace("/", " ") + ": " + String(detail).slice(0, 800);
+      activity.append(entry);
+    }
+    activity.hidden = !activity.childElementCount;
+    activity.scrollTop = activity.scrollHeight;
     const box = $("#chat-approvals"); box.replaceChildren();
     box.hidden = !(state.approvals || []).length;
     for (const approval of state.approvals || []) {
