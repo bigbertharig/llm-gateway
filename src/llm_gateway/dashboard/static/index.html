@@ -502,7 +502,7 @@ async function loadChat() {
     ? "Rig busy: " + opts.busy_reason + ". New chat loads are paused; an existing ready chat may continue."
     : "Rig unavailable. Saved conversations are still readable.";
   const list = $("#chat-conversations");
-  list.innerHTML = saved.conversations.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)} ? ${esc(c.updated_at)}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
+  list.innerHTML = saved.conversations.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)} ? ${esc(c.updated_at)}${c.last_turn_state && c.last_turn_state !== "completed" ? " ? " + esc(c.last_turn_state) : ""}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
   list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openChat(b.dataset.chatId));
   renderChatTabs(saved.conversations);
   if (chatId && saved.conversations.some((c) => c.id === chatId)) await openChat(chatId, false, true);
@@ -536,6 +536,17 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     content.textContent = m.content;
     item.append(meta, content);
     box.append(item);
+  }
+  if (c.last_turn && c.last_turn.state !== "completed") {
+    const notice = document.createElement("div");
+    notice.className = "line";
+    notice.textContent = c.last_turn.state === "running"
+      ? "Turn in progress. Reopen this chat to check for its reply."
+      : "Last turn " + c.last_turn.state + ". Its prompt was saved below; check the Codex workspace and thread before resending it.";
+    const prompt = document.createElement("div");
+    prompt.className = "chat-message user";
+    prompt.textContent = "Unfinished prompt:\n" + c.last_turn.prompt;
+    box.append(notice, prompt);
   }
   box.scrollTop = box.scrollHeight;
   $("#chat-model").value = pendingModel && pendingModel !== c.model ? pendingModel : c.model;

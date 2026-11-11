@@ -66,9 +66,13 @@ app-server interaction types are currently rejected. The workspace allowlist com
 `CODEX_CHAT_WORKSPACES` (colon-delimited); its default is the Pi gateway, orchestration, and
 harness repos. The service user needs a current `codex` executable and file access to these repos.
 The gateway starts app-server lazily and restarts it after a gateway restart; SQLite keeps the
-dashboard conversation-to-Codex-thread mapping. A running turn may be interrupted if the gateway
-service restarts, including when Codex upgrades the gateway itself. Reopen the conversation to
-continue from the saved thread after checking the repo and service state.
+dashboard conversation-to-Codex-thread mapping. The sidebar lists every saved conversation, and
+reopening one restores its transcript and selected workspace. A Codex prompt is saved as a turn
+before execution; a successful reply and completed state are committed together. A gateway restart
+marks any unfinished turn interrupted and shows its prompt when reopened. The gateway never
+automatically resends an interrupted prompt because the agent may already have performed actions.
+Check the workspace and service state before choosing whether to send a follow-up. This is turn
+recovery visibility, not durable streaming or automatic recovery of an in-flight agent run.
 Verification on 2026-11-09: the desktop chat and LAN contract selection passed 5/5; its full suite
 passed 147 tests with two existing Windows-only failures (Unix-domain socket support and POSIX
 directory mode assertions). The browser JavaScript passed `node --check`. On the Pi, the full
