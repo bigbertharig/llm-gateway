@@ -17,6 +17,7 @@ server {
         proxy_request_buffering on;
         proxy_read_timeout 3700s;
         proxy_send_timeout 930s;
-        client_max_body_size 1m;
+        # The dashboard chat proxy enforces 15 MiB only on /turn; other POSTs stay at 1 MiB.
+        client_max_body_size 15m;
     }
 }

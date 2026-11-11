@@ -62,7 +62,9 @@ Web links open in a new tab; dashboard-style links to Pi-local files copy the pa
 the filesystem through HTTP. Codex conversations accept up to three pasted or selected PNG, JPEG, or
 WebP images (5 MiB each, 10 MiB total). Images are shown before sending, passed to app-server as image
 inputs, and saved with the transcript. Local rig chats remain text-only until a profile explicitly
-advertises and implements vision input.
+advertises and implements vision input. The HTTPS proxy permits a 15 MiB request body so base64
+image uploads reach the dashboard; the dashboard proxy applies that size only to chat turns and
+keeps its 1 MiB limit for other POST routes.
 The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
 operator's ChatGPT account; the browser receives only the verification URL and one-time code.
 Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access
