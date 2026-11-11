@@ -65,6 +65,10 @@ inputs, and saved with the transcript. Local rig chats remain text-only until a 
 advertises and implements vision input. The HTTPS proxy permits a 15 MiB request body so base64
 image uploads reach the dashboard; the dashboard proxy applies that size only to chat turns and
 keeps its 1 MiB limit for other POST routes.
+The composer has a browser-local **Enter sends** preference. It defaults on: Enter submits and
+Shift+Enter adds a line. Turn it off to make Enter add lines and submit only with the Send button.
+Completed agent answers and turn-completed notices are excluded from the activity panel because the
+same answer is already rendered in the saved transcript; command and file-change activity remains.
 The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
 operator's ChatGPT account; the browser receives only the verification URL and one-time code.
 Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access

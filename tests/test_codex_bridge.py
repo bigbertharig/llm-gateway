@@ -61,9 +61,14 @@ def test_account_state_is_cached_after_first_read():
 
 def test_agent_status_includes_recent_activity_with_idle_state():
     bridge = CodexBridge()
-    bridge.recent["saved-thread"] = [{"method": "item/started", "params": {
-        "item": {"type": "commandExecution", "command": "old command"}},
-        "_received_at": "2026-11-11T11:47:00+00:00"}]
+    bridge.recent["saved-thread"] = [
+        {"method": "item/started", "params": {
+            "item": {"type": "commandExecution", "command": "old command"}},
+            "_received_at": "2026-11-11T11:47:00+00:00"},
+        {"method": "item/completed", "params": {
+            "item": {"type": "agentMessage", "text": "already in the transcript"}}},
+        {"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
+    ]
     assert bridge.status("saved-thread") == {"events": [{
         "method": "item/started", "item": {"type": "commandExecution", "command": "old command"},
         "turn": None, "received_at": "2026-11-11T11:47:00+00:00",

@@ -175,7 +175,12 @@ class CodexBridge:
         pending = []
         for event in list(events)[-30:]:
             method, params = event.get("method"), event.get("params") or {}
-            if method in ("item/started", "item/completed", "turn/completed"):
+            item = params.get("item") or {}
+            # The final agent message is already persisted and rendered in the
+            # transcript. Completion notices add noise below that same answer.
+            if method == "turn/completed" or (method == "item/completed" and item.get("type") == "agentMessage"):
+                continue
+            if method in ("item/started", "item/completed"):
                 public_events.append({"method": method, "item": params.get("item"),
                                       "turn": params.get("turn"), "received_at": event.get("_received_at")})
         for approval in self.approvals.values():

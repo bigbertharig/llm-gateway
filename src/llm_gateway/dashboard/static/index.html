@@ -102,6 +102,9 @@ textarea { width: 100%; min-height: 80px; }
 .chat-image button { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); border-radius: 50%; background: #111c; color: white; cursor: pointer; }
 .chat-attach-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .chat-attach-row[hidden] { display: none; }
+.chat-enter-setting { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 5px;
+  margin: 0 4px 0 auto !important; white-space: nowrap; color: var(--muted); font: 12px var(--sans); cursor: pointer; }
+.chat-enter-setting input { margin: 0; }
 #chat-form { border-top: 1px solid var(--line); padding-top: 10px; }
 #chat-form label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 #chat-input { min-height: 90px; resize: vertical; }
@@ -230,6 +233,9 @@ a { color: var(--cool); }
           <div id="chat-pending-images" class="chat-pending-images"></div>
           <div class="chat-actions"><span id="chat-status" class="line">Choose a model and send a message.</span>
             <button class="act" id="chat-retry" type="button" hidden>Retry model load</button>
+            <label class="chat-enter-setting" title="When enabled, use Shift+Enter for a new line">
+              <input id="chat-enter-send" type="checkbox"> Enter sends
+            </label>
             <button class="act" id="chat-send" type="submit">Send</button></div>
         </form>
       </div>
@@ -522,6 +528,13 @@ const chatImageDrafts = new Map();
 let chatImages = [];
 let openChatTabs = (() => { try { return JSON.parse(localStorage.getItem("dash-chat-tabs") || "[]"); } catch (e) { return []; } })();
 let codexConnected = false;
+let chatEnterSends = (() => { try { return localStorage.getItem("dash-chat-enter-sends") !== "false"; }
+  catch (e) { return true; } })();
+$("#chat-enter-send").checked = chatEnterSends;
+$("#chat-enter-send").onchange = (event) => {
+  chatEnterSends = event.target.checked;
+  try { localStorage.setItem("dash-chat-enter-sends", String(chatEnterSends)); } catch (e) { /* private window */ }
+};
 const codexSlashCommands = [
   ["help", "Show browser Codex commands"], ["new", "Open a new Codex chat"],
   ["resume", "Open a saved Codex chat"], ["status", "Show this chat's state"],
@@ -548,6 +561,12 @@ function renderCodexSlashMenu() {
   menu.hidden = !choices.length;
 }
 $("#chat-input").addEventListener("input", renderCodexSlashMenu);
+$("#chat-input").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !chatEnterSends || event.shiftKey || event.ctrlKey || event.altKey ||
+      event.metaKey || event.isComposing || $("#chat-send").disabled) return;
+  event.preventDefault();
+  $("#chat-form").requestSubmit();
+});
 async function runCodexSlashCommand(prompt) {
   const [raw, ...words] = prompt.slice(1).split(/\s+/), command = raw.toLowerCase();
   const argument = words.join(" ").trim();
