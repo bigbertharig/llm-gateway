@@ -957,7 +957,11 @@ async function refreshCodexApprovals(id) {
     }
     const activity = $("#chat-agent-events");
     activity.replaceChildren();
-    for (const event of (state.events || []).slice(-8)) {
+    const visibleEvents = (state.events || []).filter((event) => {
+      const item = event.item || {};
+      return event.method !== "turn/completed" && !(event.method === "item/completed" && item.type === "agentMessage");
+    });
+    for (const event of visibleEvents.slice(-8)) {
       const item = event.item || {}, turn = event.turn || {};
       const detail = item.command || item.text ||
         (Array.isArray(item.changes) ? item.changes : []).map((change) => change.path).join(", ") ||
