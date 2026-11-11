@@ -34,6 +34,10 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: v
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
   padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.sort-header { border: 0; background: none; color: inherit; cursor: pointer; padding: 0; font: inherit;
+  text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
+.sort-header:hover, .sort-header:focus-visible { color: var(--text); }
+.sort-header span { color: var(--cool); margin-left: 3px; }
 td { padding: 6px 8px; border-bottom: 1px solid var(--panel2); vertical-align: top; }
 td.num, .num { font-family: var(--mono); font-size: 13px; text-align: right; white-space: nowrap; }
 td.mono { font-family: var(--mono); font-size: 12.5px; }
@@ -472,18 +476,59 @@ function brackets(claims, gpus) {
 
 // ---------------------------------------------------------------- models
 let modelsData = null;
+let modelSort = {column: null, direction: 1};
+function modelSortValue(model, column) {
+  if (column.startsWith("test:")) return model.scores?.[column.slice(5)]?.score ?? null;
+  if (column === "pipeline") return model.pipeline;
+  if (column === "tok/s") return model.runtime?.decode_tps ?? null;
+  if (column === "ctx") return model.runtime?.ctx ?? null;
+  if (column === "roles") return (model.roles || []).join(", ");
+  if (column === "source") return model.source_url || null;
+  return model[column] ?? null;
+}
+function modelHeader(label, column, numeric = false) {
+  const selected = modelSort.column === column;
+  const order = selected ? (modelSort.direction === 1 ? "ascending" : "descending") : "none";
+  const arrow = selected ? (modelSort.direction === 1 ? "▲" : "▼") : "↕";
+  return `<th${numeric ? ' class="num"' : ""} aria-sort="${order}">` +
+    `<button type="button" class="sort-header" data-model-sort="${esc(column)}" aria-label="Sort by ${esc(label)}">` +
+    `${esc(label)}<span aria-hidden="true">${arrow}</span></button></th>`;
+}
+function sortedModels(models) {
+  if (!modelSort.column) return models;
+  const {column, direction} = modelSort;
+  return [...models].sort((a, b) => {
+    const left = modelSortValue(a, column), right = modelSortValue(b, column);
+    if (left == null || left === "") return right == null || right === "" ?
+      String(a.model).localeCompare(String(b.model), undefined, {numeric: true}) : 1;
+    if (right == null || right === "") return -1;
+    const comparison = typeof left === "number" && typeof right === "number" ? left - right :
+      String(left).localeCompare(String(right), undefined, {numeric: true, sensitivity: "base"});
+    return comparison * direction || String(a.model).localeCompare(String(b.model), undefined, {numeric: true});
+  });
+}
 function renderModels(d) {
   modelsData = d;
   const cols = d.key_tests || [];
-  $("#models").innerHTML = `<table><tr><th>Model</th><th>Status</th><th>Placement</th><th>Roles</th>` +
-    cols.map((c) => `<th class="num">${esc(c)}</th>`).join("") + `<th class="num">pipeline</th><th class="num">tok/s</th><th class="num">ctx</th><th>Source</th></tr>` +
-    d.models.map((m) => `<tr><td><b>${esc(m.model)}</b>${m.profiles.length > 1 ? "<br>" + m.profiles.map((p) => `<span class="tag">${esc(p)}</span>`).join("") : ""}</td>
+  $("#models").innerHTML = `<table><tr>` +
+    modelHeader("Model", "model") + modelHeader("Status", "status") +
+    modelHeader("Placement", "placement") + modelHeader("Roles", "roles") +
+    cols.map((c) => modelHeader(c, "test:" + c, true)).join("") +
+    modelHeader("pipeline", "pipeline", true) + modelHeader("tok/s", "tok/s", true) +
+    modelHeader("ctx", "ctx", true) + modelHeader("Source", "source") + `</tr>` +
+    sortedModels(d.models).map((m) => `<tr><td><b>${esc(m.model)}</b>${m.profiles.length > 1 ? "<br>" + m.profiles.map((p) => `<span class="tag">${esc(p)}</span>`).join("") : ""}</td>
       <td>${esc(m.status)}</td><td>${esc(m.placement || "")}</td>
       <td>${m.roles.map((r) => `<span class="tag role">${esc(r)}</span>`).join("")}</td>` +
       cols.map((c) => { const s = m.scores[c]; return `<td class="score num">${s ? fmt(s.score, 2) + `<small>${s.run_class === "smoke" ? "S" : "V"}</small>` + (s.unreadable ? `<small class="unread" title="${s.unreadable} of ${s.n} answers unreadable">u${s.unreadable}</small>` : "") : "-"}</td>`; }).join("") +
       `<td class="score num">${m.pipeline == null ? "-" : fmt(m.pipeline, 2)}</td>
       <td class="num">${m.runtime ? fmt(m.runtime.decode_tps, 1) : "-"}</td><td class="num">${m.runtime ? esc(m.runtime.ctx || "") : "-"}</td>
       <td>${m.source_url ? `<a href="${esc(m.source_url)}" rel="noopener" target="_blank">HF</a>` : ""}</td></tr>`).join("") + "</table>";
+  $("#models").querySelectorAll("[data-model-sort]").forEach((button) => button.onclick = () => {
+    const column = button.dataset.modelSort;
+    const numeric = column.startsWith("test:") || ["pipeline", "tok/s", "ctx"].includes(column);
+    modelSort = {column, direction: modelSort.column === column ? -modelSort.direction : numeric ? -1 : 1};
+    renderModels(modelsData);
+  });
   const sel = $("#load-model"), cur = sel.value;
   sel.innerHTML = d.models.filter((m) => ["active", "candidate"].includes(m.status)).map((m) => `<option>${esc(m.model)}</option>`).join("");
   if (cur) sel.value = cur;
@@ -793,7 +838,7 @@ function renderChatTabs(conversations) {
     button.type = "button"; button.className = "chat-tab" + (busyChats.has(id) ? " busy" : "");
     button.setAttribute("role", "tab"); button.setAttribute("aria-selected", id === chatId ? "true" : "false");
     button.textContent = (c.provider === "codex" ? "Codex: " : "Local: ") + c.title;
-    button.onclick = () => openChat(id, false);
+    button.onclick = () => openSavedChat(id, false);
     tabs.append(button);
     const close = document.createElement("button"); close.type = "button"; close.className = "chat-tab";
     close.setAttribute("aria-label", "Close " + c.title + " tab"); close.textContent = "×";
@@ -899,7 +944,7 @@ async function loadChat() {
     : "Rig unavailable. Saved conversations are still readable.";
   const list = $("#chat-conversations");
   list.innerHTML = saved.conversations.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)} ? ${esc(c.updated_at)}${c.last_turn_state && c.last_turn_state !== "completed" ? " ? " + esc(c.last_turn_state) : ""}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
-  list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openChat(b.dataset.chatId));
+  list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openSavedChat(b.dataset.chatId));
   renderChatTabs(saved.conversations);
   if (current && displayedChatId !== chatId && openingAtStart === chatOpening) await openChat(chatId, false);
   else if (!current && openingAtStart === chatOpening) { chatId = ""; displayedChatId = "";
@@ -908,6 +953,9 @@ async function loadChat() {
     $("#chat-agent-events").hidden = true; $("#chat-progress").hidden = true;
     $("#chat-approvals").hidden = true; syncChatLive();
     $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
+}
+function openSavedChat(id, reloadList = true) {
+  openChat(id, reloadList).catch((error) => toast("Could not open saved chat: " + error.message, "bad"));
 }
 async function openChat(id, reloadList = true, preserveSelection = false) {
   const opening = ++chatOpening;
@@ -942,12 +990,12 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-delete").hidden = false;
   const box = $("#chat-messages");
   const live = $("#chat-live");
-  box.replaceChildren();
   $("#chat-agent-events").replaceChildren();
   $("#chat-agent-events").dataset.signature = "";
   $("#chat-agent-events").hidden = true;
   $("#chat-approvals").hidden = true;
   $("#chat-approvals").dataset.signature = "";
+  box.replaceChildren();
   for (const m of c.messages) {
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
