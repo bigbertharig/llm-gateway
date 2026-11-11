@@ -46,6 +46,14 @@ class ChatStore:
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, id);
+                CREATE TABLE IF NOT EXISTS turns (
+                    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                    prompt TEXT NOT NULL, state TEXT NOT NULL
+                        CHECK(state IN ('running','completed','failed','interrupted')),
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id, created_at);
             """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(conversations)")}
             for name in ("context_length", "last_prompt_tokens", "last_completion_tokens", "last_total_tokens"):
@@ -55,6 +63,9 @@ class ChatStore:
                                      ("thread_id", "TEXT"), ("cwd", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE conversations ADD COLUMN {name} {definition}")
+            # A gateway restart cannot keep an HTTP turn alive. Preserve its prompt
+            # without silently resending a potentially consequential agent request.
+            db.execute("UPDATE turns SET state='interrupted',updated_at=? WHERE state='running'", (_now(),))
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -74,7 +85,9 @@ class ChatStore:
     def list(self) -> list[dict]:
         with self._db() as db:
             return [dict(r) for r in db.execute(
-                "SELECT * FROM conversations ORDER BY updated_at DESC, id DESC LIMIT 200")]
+                "SELECT conversations.*, (SELECT state FROM turns WHERE conversation_id=conversations.id "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1) AS last_turn_state "
+                "FROM conversations ORDER BY updated_at DESC, id DESC")]
 
     def create(self, model: str, provider: str = "local", cwd: str | None = None) -> dict:
         now, cid = _now(), uuid.uuid4().hex
@@ -94,7 +107,37 @@ class ChatStore:
                 raise ManagerError(404, "conversation not found")
             messages = [dict(r) for r in db.execute(
                 "SELECT id, role, content, model, created_at FROM messages WHERE conversation_id=? ORDER BY id", (cid,))]
-        return {**dict(row), "messages": messages}
+            last_turn = db.execute("SELECT id,prompt,state,created_at,updated_at FROM turns "
+                                   "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (cid,)).fetchone()
+        return {**dict(row), "messages": messages,
+                "last_turn": dict(last_turn) if last_turn else None}
+
+    def begin_turn(self, cid: str, expected_count: int, model: str, prompt: str) -> str:
+        turn_id, now = uuid.uuid4().hex, _now()
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT model FROM conversations WHERE id=?", (cid,)).fetchone()
+            if row is None:
+                raise ManagerError(404, "conversation not found")
+            if row["model"] != model:
+                raise ManagerError(409, "conversation model changed while the turn was starting")
+            count = db.execute("SELECT COUNT(*) FROM messages WHERE conversation_id=?", (cid,)).fetchone()[0]
+            if count != expected_count:
+                raise ManagerError(409, "conversation changed in another tab; refresh before sending")
+            if db.execute("SELECT 1 FROM turns WHERE conversation_id=? AND state='running'", (cid,)).fetchone():
+                raise ManagerError(409, "This conversation already has a running turn")
+            db.execute("INSERT INTO turns VALUES (?,?,?,?,?,?)", (turn_id, cid, prompt, "running", now, now))
+            title = prompt.strip().replace("\n", " ")[:64]
+            db.execute("UPDATE conversations SET updated_at=?,title=CASE WHEN title='New conversation' "
+                       "THEN ? ELSE title END WHERE id=?", (now, title, cid))
+        return turn_id
+
+    def set_turn_state(self, turn_id: str, state: str) -> None:
+        if state not in ("failed", "interrupted"):
+            raise ValueError("invalid turn state")
+        with self._db() as db:
+            db.execute("UPDATE turns SET state=?,updated_at=? WHERE id=? AND state='running'",
+                       (state, _now(), turn_id))
 
     def switch_model(self, cid: str, expected_model: str, new_model: str) -> dict:
         with self._db() as db:
@@ -117,7 +160,8 @@ class ChatStore:
 
     def append_exchange(self, cid: str, expected_count: int, model: str, user: str, answer: str,
                         context_length: int | None = None, prompt_tokens: int | None = None,
-                        completion_tokens: int | None = None, total_tokens: int | None = None) -> dict:
+                        completion_tokens: int | None = None, total_tokens: int | None = None,
+                        turn_id: str | None = None) -> dict:
         now = _now()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -129,6 +173,11 @@ class ChatStore:
             count = db.execute("SELECT COUNT(*) FROM messages WHERE conversation_id=?", (cid,)).fetchone()[0]
             if count != expected_count:
                 raise ManagerError(409, "conversation changed in another tab; refresh before sending")
+            if turn_id is not None:
+                turn = db.execute("SELECT prompt,state FROM turns WHERE id=? AND conversation_id=?",
+                                  (turn_id, cid)).fetchone()
+                if turn is None or turn["state"] != "running" or turn["prompt"] != user:
+                    raise ManagerError(409, "turn state changed; refresh before sending")
             db.executemany("INSERT INTO messages (conversation_id,role,content,model,created_at) VALUES (?,?,?,?,?)",
                            [(cid, "user", user, model, now), (cid, "assistant", answer, model, now)])
             title = user.strip().replace("\n", " ")[:64] if count == 0 else row["title"]
@@ -136,6 +185,8 @@ class ChatStore:
                 "UPDATE conversations SET title=?,model=?,updated_at=?,context_length=?,"
                 "last_prompt_tokens=?,last_completion_tokens=?,last_total_tokens=? WHERE id=?",
                 (title, model, now, context_length, prompt_tokens, completion_tokens, total_tokens, cid))
+            if turn_id is not None:
+                db.execute("UPDATE turns SET state='completed',updated_at=? WHERE id=?", (now, turn_id))
         return self.get(cid)
 
 
@@ -281,17 +332,20 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 raise ManagerError(400, f"message must be 1 to {MAX_MESSAGE} characters")
             if cid in active_codex:
                 raise ManagerError(409, "This Codex conversation already has a running turn")
+            turn_id = await asyncio.to_thread(get_store().begin_turn, cid, len(conversation["messages"]),
+                                              "Codex", prompt.strip())
             active_codex.add(cid)
             try:
                 async def save_thread(thread_id):
                     await asyncio.to_thread(get_store().set_thread, cid, thread_id)
                 thread_id, answer = await codex.turn(conversation["thread_id"], prompt.strip(), conversation["cwd"], save_thread)
+                saved = await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
+                                                "Codex", prompt.strip(), answer, turn_id=turn_id)
             except CodexBridgeError as exc:
                 raise ManagerError(502, str(exc)) from exc
             finally:
                 active_codex.discard(cid)
-            saved = await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
-                                            "Codex", prompt.strip(), answer)
+                await asyncio.to_thread(get_store().set_turn_state, turn_id, "failed")
             return {"conversation": saved, "history_sent": 0, "history_limit": None}
         choices = offered()
         if model not in choices:

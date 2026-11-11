@@ -70,6 +70,37 @@ def test_chat_store_migrates_existing_conversations(tmp_path):
     assert (saved["context_length"], saved["last_total_tokens"]) == (16384, 16)
 
 
+def test_codex_prompt_survives_restart_without_replaying_turn(tmp_path):
+    root = tmp_path / "chat"
+    store = ChatStore(root)
+    cid = store.create("Codex", "codex", str(tmp_path))["id"]
+    pending = store.begin_turn(cid, 0, "Codex", "change the gateway")
+    assert store.get(cid)["last_turn"]["state"] == "running"
+    assert store.list()[0]["last_turn_state"] == "running"
+    try:
+        store.begin_turn(cid, 0, "Codex", "duplicate")
+    except ManagerError as exc:
+        assert exc.status == 409
+    else:
+        raise AssertionError("concurrent turn accepted")
+    reopened = ChatStore(root)
+    assert reopened.get(cid)["last_turn"]["prompt"] == "change the gateway"
+    assert reopened.get(cid)["last_turn"]["state"] == "interrupted"
+    assert reopened.get(cid)["messages"] == []
+    next_turn = reopened.begin_turn(cid, 0, "Codex", "follow up")
+    saved = reopened.append_exchange(cid, 0, "Codex", "follow up", "done", turn_id=next_turn)
+    assert saved["last_turn"]["state"] == "completed"
+    assert [m["content"] for m in saved["messages"]] == ["follow up", "done"]
+    assert reopened.get(cid)["last_turn"]["id"] != pending
+
+
+def test_all_saved_conversations_remain_in_sidebar_list(tmp_path):
+    store = ChatStore(tmp_path / "chat")
+    for _ in range(201):
+        store.create("Codex", "codex", str(tmp_path))
+    assert len(store.list()) == 201
+
+
 def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
     profile = {"id": "harness-gemma4-e4b-64k", "model": "gemma-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
