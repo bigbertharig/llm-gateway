@@ -72,8 +72,14 @@ same answer is already rendered in the saved transcript; command and file-change
 The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
 operator's ChatGPT account; the browser receives only the verification URL and one-time code.
 Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access
-to its selected workspace, `networkAccess: false`, and on-request approvals. The dashboard shows
-pending command or file-change approvals and only offers one-time Approve or Decline. Other
+to its selected workspace, `networkAccess: false`, and on-request approvals. The sidebar keeps the
+top-level local/Codex choice. Within a Codex chat, the composer lists the available Codex models
+and each model's supported reasoning efforts from app-server. The approval selector offers
+**Ask for approval** or **Approve for me**; the latter sets Codex's `approvals_reviewer` to
+`auto_review` without expanding the workspace sandbox. Full access is shown as unavailable in
+the gateway dashboard. These settings are saved per conversation and affect future turns.
+The dashboard shows pending command or file-change approvals in the conversation and offers
+one-time Approve or Decline when manual approval is needed. Other
 app-server interaction types are currently rejected. The workspace allowlist comes from
 `CODEX_CHAT_WORKSPACES` (colon-delimited); its default is the Pi gateway, orchestration, and
 harness repos. The service user needs a current `codex` executable and file access to these repos.
@@ -83,7 +89,8 @@ reopening one restores its transcript and selected workspace. A Codex prompt is 
 before execution. The send request returns with a turn ID while Codex works on the Pi; the browser
 polls saved turn state and agent activity, so switching tabs or closing the page does not cancel
 the turn. A successful reply and completed state are committed together. Failure details are saved
-with the turn and shown when the chat is reopened. Activity and approvals appear above the composer.
+with the turn and shown when the chat is reopened. Live activity and approvals share the transcript's
+single scroll area; completed activity is saved beside its answer in an expandable group.
 A gateway restart
 marks any unfinished turn interrupted and shows its prompt when reopened. The gateway never
 automatically resends an interrupted prompt because the agent may already have performed actions.

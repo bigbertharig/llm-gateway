@@ -78,10 +78,14 @@ textarea { width: 100%; min-height: 80px; }
 .chat-message.user { margin-left: auto; border-color: #3f5f7a; }
 .chat-message.assistant { max-width: 94%; }
 .chat-message .meta { color: var(--muted); font: 11px var(--mono); margin-bottom: 6px; }
-.chat-agent-events { max-height: 28vh; overflow: auto; padding: 4px 0; }
-.chat-agent-events[hidden] { display: none; }
-.chat-agent-events .chat-message { max-width: 100%; margin: 5px 0; border-color: var(--line); color: var(--muted); font: 12px var(--mono); }
-.chat-command-output { white-space: pre-wrap; overflow: auto; max-height: 35vh; padding: 8px 10px; color: var(--muted); font: 12px var(--mono); }
+.chat-activity { margin: 10px 0; padding: 8px 11px; border-left: 2px solid var(--cool); color: var(--muted); font: 12px var(--mono); }
+.chat-activity summary { cursor: pointer; color: var(--text); }
+.chat-activity-item { margin: 6px 0 0 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat-live[hidden], .chat-agent-events[hidden] { display: none; }
+.chat-agent-events { padding: 4px 0; }
+.chat-approval { margin: 8px 0; padding: 10px; border: 1px solid var(--warm); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-approval[hidden] { display: none; }
+.chat-command-output { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px; color: var(--muted); font: 12px var(--mono); }
 .chat-slash-menu { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0; }
 .chat-slash-menu[hidden], .chat-command-output[hidden] { display: none; }
 .chat-body p { margin: .55em 0; }
@@ -105,9 +109,24 @@ textarea { width: 100%; min-height: 80px; }
 .chat-enter-setting { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 5px;
   margin: 0 4px 0 auto !important; white-space: nowrap; color: var(--muted); font: 12px var(--sans); cursor: pointer; }
 .chat-enter-setting input { margin: 0; }
-#chat-form { border-top: 1px solid var(--line); padding-top: 10px; }
+#chat-form { border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; background: var(--bg); }
 #chat-form label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
-#chat-input { min-height: 90px; resize: vertical; }
+#chat-input { min-height: 56px; max-height: 35vh; resize: vertical; border: 0; padding: 4px; background: transparent; }
+#chat-input:focus-visible { outline: 0; }
+.chat-composer-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.chat-composer-controls[hidden] { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.chat-picker { position: relative; }
+.chat-picker summary { cursor: pointer; list-style: none; border: 1px solid var(--line); border-radius: 18px; padding: 5px 9px; color: var(--muted); font: 12px var(--mono); }
+.chat-picker summary::-webkit-details-marker { display: none; }
+.chat-picker[open] summary, .chat-picker summary:hover { color: var(--text); border-color: var(--cool); }
+.chat-picker-menu { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 10; min-width: 220px; max-width: min(330px, 85vw); max-height: 45vh; overflow-y: auto; padding: 7px; background: #1b1d20; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 30px #0008; }
+.chat-picker-menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 7px; padding: 8px; background: transparent; color: var(--text); cursor: pointer; font: 13px var(--sans); }
+.chat-picker-menu button:hover, .chat-picker-menu button[aria-checked="true"] { background: var(--panel2); }
+.chat-picker-menu button:disabled { color: var(--muted); cursor: not-allowed; }
+.chat-picker-menu small { display: block; color: var(--muted); font: 11px var(--mono); }
+.chat-controls-spacer { flex: 1; }
+#chat-send { border-radius: 50%; width: 32px; height: 32px; padding: 0; font-size: 18px; }
 #chat-rig-busy { padding: 9px 11px; margin: 8px 0; border: 1px solid var(--warm);
   border-radius: 6px; color: var(--warm); background: var(--panel2); font: 12px var(--mono); }
 #chat-rig-busy[hidden] { display: none; }
@@ -216,13 +235,16 @@ a { color: var(--cool); }
         <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Open conversations"></div>
         <div class="chat-heading"><h2 id="chat-title">Choose a conversation</h2>
           <button class="act danger" id="chat-delete" type="button" hidden>Delete</button></div>
-        <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
-        <div id="chat-agent-events" class="chat-agent-events" role="log" aria-label="Codex activity" hidden></div>
-        <div id="chat-command-output" class="chat-command-output" role="status" hidden></div>
-        <div id="chat-progress" role="status" aria-live="polite" hidden></div>
-        <div id="chat-approvals" class="chat-approval" hidden></div>
+        <div id="chat-messages" class="chat-messages" aria-live="polite">
+          <div id="chat-live" class="chat-live" hidden>
+            <details id="chat-agent-events" class="chat-activity chat-agent-events" aria-label="Codex activity" hidden></details>
+            <div id="chat-command-output" class="chat-command-output" role="status" hidden></div>
+            <div id="chat-progress" role="status" aria-live="polite" hidden></div>
+            <div id="chat-approvals" class="chat-approval" hidden></div>
+          </div>
+        </div>
         <form id="chat-form">
-          <label for="chat-input">Message</label>
+          <label for="chat-input" class="sr-only">Message</label>
           <textarea id="chat-input" maxlength="8000" placeholder="Ask the selected model..."></textarea>
           <div id="chat-slash-menu" class="chat-slash-menu" aria-label="Codex commands" hidden></div>
           <div class="chat-attach-row" id="chat-attach-row" hidden>
@@ -231,12 +253,25 @@ a { color: var(--cool); }
             <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
           </div>
           <div id="chat-pending-images" class="chat-pending-images"></div>
+          <div class="chat-composer-controls" id="chat-codex-controls" hidden>
+            <details id="chat-permission-picker" class="chat-picker"><summary id="chat-permission-summary">Ask for approval</summary>
+              <div class="chat-picker-menu" id="chat-permission-menu" role="group" aria-label="Codex approval mode">
+                <button type="button" data-reviewer="user">Ask for approval<small>Ask before actions outside the workspace</small></button>
+                <button type="button" data-reviewer="auto_review">Approve for me<small>Automatically review eligible requests</small></button>
+                <button type="button" disabled>Full access<small>Unavailable from the gateway dashboard</small></button>
+              </div></details>
+            <span class="chat-controls-spacer"></span>
+            <details id="chat-codex-model-picker" class="chat-picker"><summary id="chat-codex-model-summary">Codex default</summary>
+              <div class="chat-picker-menu" id="chat-codex-model-menu" role="group" aria-label="Codex model"></div></details>
+            <details id="chat-codex-effort-picker" class="chat-picker"><summary id="chat-codex-effort-summary">Default effort</summary>
+              <div class="chat-picker-menu" id="chat-codex-effort-menu" role="group" aria-label="Codex reasoning effort"></div></details>
+          </div>
           <div class="chat-actions"><span id="chat-status" class="line">Choose a model and send a message.</span>
             <button class="act" id="chat-retry" type="button" hidden>Retry model load</button>
             <label class="chat-enter-setting" title="When enabled, use Shift+Enter for a new line">
               <input id="chat-enter-send" type="checkbox"> Enter sends
             </label>
-            <button class="act" id="chat-send" type="submit">Send</button></div>
+            <button class="act" id="chat-send" type="submit" aria-label="Send message" title="Send message">↑</button></div>
         </form>
       </div>
     </div>
@@ -535,6 +570,123 @@ $("#chat-enter-send").onchange = (event) => {
   chatEnterSends = event.target.checked;
   try { localStorage.setItem("dash-chat-enter-sends", String(chatEnterSends)); } catch (e) { /* private window */ }
 };
+let codexModels = [], codexModelsLoading = null;
+let codexModelChoice = null, codexEffortChoice = null, codexReviewerChoice = "user";
+let codexSettingsPending = Promise.resolve();
+let codexSettingSaving = false;
+function selectedCodexModel() {
+  if (codexModelChoice) return codexModels.find((item) => item.model === codexModelChoice);
+  return codexModels.find((item) => item.isDefault) || codexModels[0];
+}
+function pickerButton(menu, label, detail, checked, disabled, action) {
+  const button = document.createElement("button"); button.type = "button";
+  button.textContent = label; button.setAttribute("aria-checked", checked ? "true" : "false");
+  button.disabled = !!disabled;
+  if (detail) { const small = document.createElement("small"); small.textContent = detail; button.append(small); }
+  button.onclick = action; menu.append(button);
+}
+function renderCodexControls() {
+  const cloud = $("#chat-model").value === "Codex";
+  $("#chat-codex-controls").hidden = !cloud;
+  if (!cloud) return;
+  const chosen = selectedCodexModel();
+  $("#chat-permission-summary").textContent = codexReviewerChoice === "auto_review" ? "Approve for me" : "Ask for approval";
+  $("#chat-permission-menu").querySelectorAll("[data-reviewer]").forEach((button) =>
+    { button.setAttribute("aria-checked", button.dataset.reviewer === codexReviewerChoice ? "true" : "false");
+      button.disabled = chatBusy || codexSettingSaving; });
+  $("#chat-codex-model-summary").textContent = chosen?.displayName ||
+    (codexModelChoice ? codexModelChoice + " (unavailable)" : "Codex default");
+  const effort = codexEffortChoice || chosen?.defaultReasoningEffort;
+  $("#chat-codex-effort-summary").textContent = effort ? effort[0].toUpperCase() + effort.slice(1) : "Default effort";
+  const modelMenu = $("#chat-codex-model-menu"); modelMenu.replaceChildren();
+  if (!codexModels.length) pickerButton(modelMenu, "Loading Codex models...", "", false, true, null);
+  for (const item of codexModels) pickerButton(modelMenu, item.displayName || item.model,
+    item.model + (item.isDefault ? " · recommended" : ""), item.model === chosen?.model,
+    chatBusy || codexSettingSaving,
+    () => selectCodexSetting("model", item.model));
+  const effortMenu = $("#chat-codex-effort-menu"); effortMenu.replaceChildren();
+  for (const option of chosen?.supportedReasoningEfforts || []) {
+    const value = option.reasoningEffort;
+    pickerButton(effortMenu, value[0].toUpperCase() + value.slice(1), option.description,
+      value === effort, chatBusy || codexSettingSaving, () => selectCodexSetting("effort", value));
+  }
+  if (!effortMenu.childElementCount) pickerButton(effortMenu, "No effort options", "", false, true, null);
+}
+async function loadCodexModels() {
+  if (codexModels.length || codexModelsLoading) return codexModelsLoading;
+  codexModelsLoading = api("chat/codex/models").then((result) => {
+    codexModels = result.models || []; renderCodexControls();
+  }).catch((error) => { toast("Codex models unavailable: " + error.message, "bad"); })
+    .finally(() => { codexModelsLoading = null; });
+  return codexModelsLoading;
+}
+function saveCodexSettings(id) {
+  return api("chat/conversations/" + encodeURIComponent(id) + "/codex/settings",
+    {model: codexModelChoice, effort: codexEffortChoice, reviewer: codexReviewerChoice});
+}
+async function selectCodexSetting(kind, value) {
+  if (codexSettingSaving || chatBusy) return;
+  const before = [codexModelChoice, codexEffortChoice, codexReviewerChoice];
+  if (kind === "model") {
+    codexModelChoice = value;
+    const selected = selectedCodexModel();
+    if (!selected?.supportedReasoningEfforts?.some((option) => option.reasoningEffort === codexEffortChoice))
+      codexEffortChoice = selected?.defaultReasoningEffort || null;
+  } else if (kind === "effort") codexEffortChoice = value;
+  else codexReviewerChoice = value;
+  document.querySelectorAll("#chat-codex-controls details").forEach((picker) => { picker.open = false; });
+  renderCodexControls();
+  if (!chatId || chatBoundModel !== "Codex") return;
+  codexSettingSaving = true; renderCodexControls();
+  try {
+    codexSettingsPending = saveCodexSettings(chatId);
+    await codexSettingsPending;
+  } catch (error) {
+    [codexModelChoice, codexEffortChoice, codexReviewerChoice] = before;
+    renderCodexControls(); toast("Codex settings failed: " + error.message, "bad");
+  } finally { codexSettingsPending = Promise.resolve(); codexSettingSaving = false; renderCodexControls(); }
+}
+$("#chat-permission-menu").querySelectorAll("[data-reviewer]").forEach((button) => {
+  button.onclick = () => selectCodexSetting("reviewer", button.dataset.reviewer);
+});
+function renderChatActivity(target, events, active = false) {
+  const byId = new Map();
+  for (const event of events || []) {
+    const item = event.item || {};
+    if (item.type === "agentMessage" && item.phase === "final_answer") continue;
+    const key = item.id || event.method + ":" + event.received_at;
+    byId.set(key, event);
+  }
+  const items = [...byId.values()], signature = JSON.stringify(items);
+  if (target.dataset.signature === signature && target.dataset.active === String(active)) return;
+  const wasOpen = target.open, firstUpdate = !target.dataset.signature;
+  target.replaceChildren(); target.dataset.signature = signature; target.dataset.active = String(active);
+  target.hidden = !items.length;
+  if (!items.length) return;
+  const summary = document.createElement("summary");
+  summary.textContent = (active ? "Codex working" : "Codex activity") + " · " + items.length + " steps";
+  target.append(summary);
+  for (const event of items) {
+    const item = event.item || {}, turn = event.turn || {};
+    const detail = item.command || item.text ||
+      (Array.isArray(item.changes) ? item.changes : []).map((change) => change.path).join(", ") ||
+      (event.method === "turn/completed" ? "Turn " + (turn.status || "completed") : item.type || "Working");
+    const row = document.createElement("div"); row.className = "chat-activity-item";
+    row.textContent = (event.method === "item/started" ? "Working: " : "Done: ") + String(detail).slice(0, 800);
+    target.append(row);
+  }
+  if (items.some((event) => event.item?.type === "fileChange" || event.item?.changes?.length)) {
+    const review = document.createElement("button"); review.type = "button"; review.className = "act";
+    review.textContent = "View current workspace diff";
+    review.onclick = () => runCodexSlashCommand("/diff").catch((error) => showChatCommandOutput(error.message));
+    target.append(review);
+  }
+  target.open = wasOpen || (active && firstUpdate);
+}
+function syncChatLive() {
+  $("#chat-live").hidden = ["chat-agent-events", "chat-command-output", "chat-progress", "chat-approvals"]
+    .every((id) => $("#" + id).hidden);
+}
 const codexSlashCommands = [
   ["help", "Show browser Codex commands"], ["new", "Open a new Codex chat"],
   ["resume", "Open a saved Codex chat"], ["status", "Show this chat's state"],
@@ -543,7 +695,7 @@ const codexSlashCommands = [
 ];
 function showChatCommandOutput(message) {
   const box = $("#chat-command-output");
-  box.textContent = message; box.hidden = !message;
+  box.textContent = message; box.hidden = !message; syncChatLive();
 }
 function renderCodexSlashMenu() {
   const input = $("#chat-input"), menu = $("#chat-slash-menu");
@@ -594,6 +746,7 @@ async function runCodexSlashCommand(prompt) {
     const result = await api("chat/conversations/" + encodeURIComponent(chatId) + "/agent/command",
       {command, value: argument});
     showChatCommandOutput(result.message);
+    if (command === "model" && argument) await openChat(chatId, false);
   } else throw new Error("Unknown command. Type /help to see supported browser commands.");
 }
 function renderChatImages(target, images, removable = false) {
@@ -656,13 +809,16 @@ function chatProviderChanged() {
   $("#chat-account").hidden = !cloud;
   $("#chat-model-note").hidden = cloud;
   $("#chat-attach-row").hidden = !cloud;
+  renderCodexControls();
   renderPendingChatImages();
   if (cloud && !codexConnected) loadCodexAccount();
+  if (cloud && codexConnected) loadCodexModels();
 }
 async function loadCodexAccount() {
   try {
     const state = await api("chat/codex/account");
     codexConnected = !!state.connected;
+    if (codexConnected && $("#chat-model").value === "Codex") loadCodexModels();
     $("#chat-account-state").textContent = state.error || (state.connected
       ? "Connected: " + (state.email || "ChatGPT account") + (state.plan ? " (" + state.plan + ")" : "")
       : "No ChatGPT account connected on the Pi.");
@@ -729,9 +885,16 @@ async function loadChat() {
   list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openChat(b.dataset.chatId));
   renderChatTabs(saved.conversations);
   if (chatId && saved.conversations.some((c) => c.id === chatId)) await openChat(chatId, false, true);
-  else { chatId = ""; chatBoundModel = ""; $("#chat-title").textContent = "New conversation"; $("#chat-messages").replaceChildren(); $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
+  else { chatId = ""; chatBoundModel = ""; $("#chat-title").textContent = "New conversation";
+    const live = $("#chat-live"); $("#chat-messages").replaceChildren(live);
+    $("#chat-agent-events").hidden = true; $("#chat-progress").hidden = true;
+    $("#chat-approvals").hidden = true; syncChatLive();
+    $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
 }
 async function openChat(id, reloadList = true, preserveSelection = false) {
+  const sameChat = chatId === id;
+  const transcript = $("#chat-messages");
+  const distanceFromBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
   if (chatId !== id) showChatCommandOutput("");
   if (chatId) { chatDrafts.set(chatId, $("#chat-input").value); chatImageDrafts.set(chatId, chatImages); }
   const pendingModel = preserveSelection ? $("#chat-model").value : "";
@@ -741,6 +904,11 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-input").value = chatDrafts.get(id) || "";
   if (!openChatTabs.includes(id)) { openChatTabs.push(id); saveChatTabs(); }
   chatBoundModel = c.model;
+  if (c.provider === "codex") {
+    codexModelChoice = c.codex_model || null;
+    codexEffortChoice = c.codex_effort || null;
+    codexReviewerChoice = c.codex_reviewer || "user";
+  }
   try { localStorage.setItem("dash-chat-id", id); } catch (e) { /* private window */ }
   $("#chat-retry").hidden = true;
   if (c.provider === "codex" && c.last_turn?.state === "running") busyChats.add(id);
@@ -752,9 +920,13 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-title").textContent = c.title;
   $("#chat-delete").hidden = false;
   const box = $("#chat-messages");
+  const live = $("#chat-live");
   box.replaceChildren();
   $("#chat-agent-events").replaceChildren();
+  $("#chat-agent-events").dataset.signature = "";
   $("#chat-agent-events").hidden = true;
+  $("#chat-approvals").hidden = true;
+  $("#chat-approvals").dataset.signature = "";
   for (const m of c.messages) {
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
@@ -768,6 +940,10 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     if ((m.attachments || []).length) {
       const attachments = document.createElement("div"); attachments.className = "chat-attachments";
       renderChatImages(attachments, m.attachments); item.append(attachments);
+    }
+    if (m.role === "assistant" && (m.activity || []).length) {
+      const activity = document.createElement("details"); activity.className = "chat-activity";
+      renderChatActivity(activity, m.activity); box.append(activity);
     }
     box.append(item);
   }
@@ -784,9 +960,16 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     renderChatMarkdown(promptBody, "Unfinished prompt:\n" + c.last_turn.prompt); prompt.append(promptBody);
     if ((c.last_turn.attachments || []).length) { const attachments = document.createElement("div");
       attachments.className = "chat-attachments"; renderChatImages(attachments, c.last_turn.attachments); prompt.append(attachments); }
-    box.append(notice, prompt);
+    box.append(prompt, notice);
+    if (c.last_turn.state !== "running" && (c.last_turn.activity || []).length) {
+      const activity = document.createElement("details"); activity.className = "chat-activity";
+      renderChatActivity(activity, c.last_turn.activity); box.append(activity);
+    }
   }
-  box.scrollTop = box.scrollHeight;
+  box.append(live);
+  syncChatLive();
+  box.scrollTop = sameChat && distanceFromBottom > 90
+    ? Math.max(0, box.scrollHeight - box.clientHeight - distanceFromBottom) : box.scrollHeight;
   $("#chat-model").value = pendingModel && pendingModel !== c.model ? pendingModel : c.model;
   chatProviderChanged();
   renderPendingChatImages();
@@ -829,6 +1012,7 @@ async function prepareChat(id, model) {
   $("#chat-retry").hidden = true;
   const started = Date.now(), progress = $("#chat-progress");
   progress.hidden = false;
+  syncChatLive();
   progress.textContent = "Loading " + model + "...";
   if (chatId === id) $("#chat-status").textContent = "Waiting for the manager to make " + model + " ready...";
   const timer = setInterval(() => {
@@ -850,6 +1034,7 @@ async function prepareChat(id, model) {
   } finally {
     clearInterval(timer);
     if (chatId === id) progress.hidden = true;
+    syncChatLive();
     busyChats.delete(id); chatBusy = busyChats.has(chatId);
     if (chatId === id) { $("#chat-model").disabled = false; $("#chat-send").disabled = !ready; }
     loadChat();
@@ -863,6 +1048,7 @@ $("#chat-new").onclick = async () => {
       const cwd = $("#chat-workspace").value;
       if (!cwd) { toast("Choose an agent workspace first.", "bad"); return; }
       const c = await api("chat/conversations", {model: "Codex", cwd});
+      await saveCodexSettings(c.id);
       await openChat(c.id); $("#chat-input").focus(); return;
     }
     if (!$("#chat-model").value) { toast("Choose a chat model first.", "bad"); return; }
@@ -906,6 +1092,7 @@ $("#chat-form").onsubmit = async (event) => {
   $("#chat-send").disabled = true; $("#chat-model").disabled = true;
   const started = Date.now(), progress = $("#chat-progress");
   progress.hidden = false;
+  syncChatLive();
   progress.textContent = cloud ? "Starting Codex agent..." : "Preparing " + model + "...";
   let phase = cloud ? "Working" : "Loading";
   const timer = setInterval(async () => {
@@ -922,10 +1109,12 @@ $("#chat-form").onsubmit = async (event) => {
     if (!chatId) {
       const c = cloud ? await api("chat/conversations", {model: "Codex", cwd: $("#chat-workspace").value})
         : await api("chat/conversations", {model});
+      if (cloud) await saveCodexSettings(c.id);
       chatId = c.id;
       chatBoundModel = c.model;
       try { localStorage.setItem("dash-chat-id", c.id); } catch (e) { /* private window */ }
     }
+    if (cloud) await codexSettingsPending;
     sendingId = chatId; busyChats.add(sendingId); chatBusy = true;
     if (cloud) refreshCodexApprovals(sendingId);
     const out = await api("chat/conversations/" + encodeURIComponent(sendingId) + "/turn",
@@ -940,7 +1129,8 @@ $("#chat-form").onsubmit = async (event) => {
   } catch (e) { if (chatId === sendingId) $("#chat-status").textContent = e.message;
     toast("Chat failed: " + e.message, "bad"); }
   finally { clearInterval(timer); if (!codexAccepted) busyChats.delete(sendingId); chatBusy = busyChats.has(chatId);
-    if (chatId === sendingId && !codexAccepted) { progress.hidden = true; $("#chat-send").disabled = false; $("#chat-model").disabled = false; }
+    if (chatId === sendingId && !codexAccepted) { progress.hidden = true; syncChatLive();
+      $("#chat-send").disabled = false; $("#chat-model").disabled = false; }
     loadChat(); }
 };
 
@@ -955,27 +1145,15 @@ async function refreshCodexApprovals(id) {
       await loadChat();
       return;
     }
-    const activity = $("#chat-agent-events");
-    activity.replaceChildren();
-    const visibleEvents = (state.events || []).filter((event) => {
-      const item = event.item || {};
-      return event.method !== "turn/completed" && !(event.method === "item/completed" && item.type === "agentMessage");
-    });
-    for (const event of visibleEvents.slice(-8)) {
-      const item = event.item || {}, turn = event.turn || {};
-      const detail = item.command || item.text ||
-        (Array.isArray(item.changes) ? item.changes : []).map((change) => change.path).join(", ") ||
-        (event.method === "turn/completed" ? "Turn " + (turn.status || "completed") : item.type || "Working");
-      const entry = document.createElement("div");
-      entry.className = "chat-message";
-      const when = event.received_at ? new Date(event.received_at).toLocaleTimeString() + " · " : "";
-      entry.textContent = when + "Codex " + event.method.replace("/", " ") + ": " + String(detail).slice(0, 800);
-      activity.append(entry);
-    }
-    activity.hidden = !activity.childElementCount;
-    activity.scrollTop = activity.scrollHeight;
-    const box = $("#chat-approvals"); box.replaceChildren();
-    box.hidden = !(state.approvals || []).length;
+    const transcript = $("#chat-messages");
+    const follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
+    renderChatActivity($("#chat-agent-events"), state.turn?.state === "running" ? state.events || [] : [],
+      busyChats.has(id));
+    const box = $("#chat-approvals");
+    const approvalSignature = JSON.stringify(state.approvals || []);
+    if (box.dataset.signature !== approvalSignature) {
+      box.replaceChildren(); box.dataset.signature = approvalSignature;
+      box.hidden = !(state.approvals || []).length;
     for (const approval of state.approvals || []) {
       const detail = document.createElement("div"), p = approval.params || {};
       detail.textContent = (p.reason || "Codex requests approval") + "\n" +
@@ -992,9 +1170,12 @@ async function refreshCodexApprovals(id) {
         box.append(button);
       }
     }
+    }
     const last = (state.events || []).at(-1);
     if (busyChats.has(id) && last && last.item && chatId === id)
       $("#chat-progress").textContent = "Codex: " + last.item.type + (last.item.command ? " — " + last.item.command : "");
+    syncChatLive();
+    if (follow) transcript.scrollTop = transcript.scrollHeight;
   } catch (e) { /* A turn request reports failures. */ }
 }
 setInterval(() => { if (chatId && chatBoundModel === "Codex") refreshCodexApprovals(chatId); }, 3000);
@@ -1036,6 +1217,7 @@ async function refresh(now) {
     if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
     if (tab === "orchestration" && due("orchestration")) { renderOrch(await api("orchestration")); last.orchestration = Date.now(); if (!orchOptions) loadOrchOptions(); }
     if (tab === "chat" && due("chat") && !chatBusy) { await loadChat(); last.chat = Date.now(); }
+    if (tab !== "rig" && last[tab]) $("#stamp").textContent = "updated " + new Date(last[tab]).toLocaleTimeString();
   } catch (e) {
     $("#stamp").textContent = "refresh failed: " + e.message;
   }

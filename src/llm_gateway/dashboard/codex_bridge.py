@@ -173,16 +173,29 @@ class CodexBridge:
         events = self.recent.get(thread_id, ())
         public_events = []
         pending = []
-        for event in list(events)[-30:]:
+        for event in list(events):
             method, params = event.get("method"), event.get("params") or {}
             item = params.get("item") or {}
-            # The final agent message is already persisted and rendered in the
-            # transcript. Completion notices add noise below that same answer.
-            if method == "turn/completed" or (method == "item/completed" and item.get("type") == "agentMessage"):
+            # Final answers are already rendered in the transcript.
+            if method == "turn/completed" or (method == "item/completed" and isinstance(item, dict) and item.get("type") == "agentMessage"):
                 continue
-            if method in ("item/started", "item/completed"):
-                public_events.append({"method": method, "item": params.get("item"),
-                                      "turn": params.get("turn"), "received_at": event.get("_received_at")})
+            if method in ("item/started", "item/completed", "turn/completed"):
+                item = params.get("item") or {}
+                if not isinstance(item, dict):
+                    item = {}
+                public_item = {key: item[key] for key in ("id", "type", "phase") if key in item}
+                for key in ("command", "text"):
+                    if isinstance(item.get(key), str):
+                        public_item[key] = item[key][:800]
+                if isinstance(item.get("changes"), list):
+                    public_item["changes"] = [{"path": str(change.get("path") or "")[:300]}
+                                              for change in item["changes"][:20] if isinstance(change, dict)]
+                turn = params.get("turn") or {}
+                if not isinstance(turn, dict):
+                    turn = {}
+                public_events.append({"method": method, "item": public_item or None,
+                                      "turn": {key: turn[key] for key in ("id", "status") if key in turn} or None,
+                                      "received_at": event.get("_received_at")})
         for approval in self.approvals.values():
             if approval["thread_id"] != thread_id:
                 continue
@@ -203,16 +216,20 @@ class CodexBridge:
         self.approvals.pop(request_id, None)
 
     async def turn(self, thread_id: str | None, prompt: str, cwd: str, on_thread=None,
-                   images: list[dict] | None = None, model: str | None = None) -> tuple[str, str]:
+                   images: list[dict] | None = None, model: str | None = None,
+                   effort: str | None = None, reviewer: str = "user") -> tuple[str, str]:
         workspace = self.workspace(cwd)
+        if reviewer not in ("user", "auto_review"):
+            raise CodexBridgeError("Invalid Codex reviewer")
+        config = {"approvals_reviewer": reviewer}
         # Conversation creation already checks authentication. Avoid placing a
         # second account/read behind another active app-server turn.
         if thread_id:
-            result = await self._call("thread/resume", {"threadId": thread_id})
+            result = await self._call("thread/resume", {"threadId": thread_id, "config": config})
         else:
             start_params = {
                 "cwd": str(workspace), "approvalPolicy": "on-request", "sandbox": "workspace-write",
-                "serviceName": "llm_gateway_chat",
+                "serviceName": "llm_gateway_chat", "config": config,
             }
             if model:
                 start_params["model"] = model
@@ -221,6 +238,7 @@ class CodexBridge:
         if on_thread:
             await on_thread(thread_id)
         queue = self.events.setdefault(thread_id, asyncio.Queue())
+        self.recent[thread_id] = deque(maxlen=80)
         answer = []
         try:
             inputs = [{"type": "text", "text": prompt}]
@@ -233,6 +251,8 @@ class CodexBridge:
             }
             if model:
                 turn_params["model"] = model
+            if effort:
+                turn_params["effort"] = effort
             started = await self._call("turn/start", turn_params)
             turn_id = started["turn"]["id"]
             while True:

@@ -52,6 +52,7 @@ class ChatStore:
                     role TEXT NOT NULL CHECK(role IN ('user','assistant')),
                     content TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL,
                     attachments TEXT NOT NULL DEFAULT '[]',
+                    activity TEXT NOT NULL DEFAULT '[]',
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, id);
@@ -71,13 +72,17 @@ class ChatStore:
                     db.execute(f"ALTER TABLE conversations ADD COLUMN {name} INTEGER")
             for name, definition in (("provider", "TEXT NOT NULL DEFAULT 'local'"),
                                      ("thread_id", "TEXT"), ("cwd", "TEXT"),
-                                     ("codex_model", "TEXT")):
+                                     ("codex_model", "TEXT"),
+                                     ("codex_effort", "TEXT"),
+                                     ("codex_reviewer", "TEXT NOT NULL DEFAULT 'user'")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE conversations ADD COLUMN {name} {definition}")
             for table in ("messages", "turns"):
                 table_columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
                 if "attachments" not in table_columns:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+                if "activity" not in table_columns:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN activity TEXT NOT NULL DEFAULT '[]'")
             if "error" not in {row["name"] for row in db.execute("PRAGMA table_info(turns)")}:
                 db.execute("ALTER TABLE turns ADD COLUMN error TEXT")
             # A gateway restart cannot keep an agent turn alive. Preserve its prompt
@@ -119,8 +124,16 @@ class ChatStore:
 
     def set_codex_model(self, cid: str, model: str) -> None:
         with self._db() as db:
-            db.execute("UPDATE conversations SET codex_model=?,updated_at=? WHERE id=? AND provider='codex'",
+            db.execute("UPDATE conversations SET codex_model=?,codex_effort=NULL,updated_at=? "
+                       "WHERE id=? AND provider='codex'",
                        (model, _now(), cid))
+
+    def set_codex_settings(self, cid: str, model: str | None, effort: str | None,
+                           reviewer: str) -> dict:
+        with self._db() as db:
+            db.execute("UPDATE conversations SET codex_model=?,codex_effort=?,codex_reviewer=?,updated_at=? "
+                       "WHERE id=? AND provider='codex'", (model, effort, reviewer, _now(), cid))
+        return self.get(cid)
 
     def get(self, cid: str) -> dict:
         with self._db() as db:
@@ -128,15 +141,17 @@ class ChatStore:
             if row is None:
                 raise ManagerError(404, "conversation not found")
             messages = [dict(r) for r in db.execute(
-                "SELECT id, role, content, model, created_at, attachments FROM messages "
+                "SELECT id, role, content, model, created_at, attachments, activity FROM messages "
                 "WHERE conversation_id=? ORDER BY id", (cid,))]
-            last_turn = db.execute("SELECT id,prompt,state,created_at,updated_at,attachments,error FROM turns "
+            last_turn = db.execute("SELECT id,prompt,state,created_at,updated_at,attachments,activity,error FROM turns "
                                    "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (cid,)).fetchone()
         for message in messages:
             message["attachments"] = json.loads(message["attachments"] or "[]")
+            message["activity"] = json.loads(message["activity"] or "[]")
         turn = dict(last_turn) if last_turn else None
         if turn:
             turn["attachments"] = json.loads(turn["attachments"] or "[]")
+            turn["activity"] = json.loads(turn["activity"] or "[]")
         return {**dict(row), "messages": messages, "last_turn": turn}
 
     def agent_state(self, cid: str) -> dict:
@@ -171,12 +186,13 @@ class ChatStore:
                        "THEN ? ELSE title END WHERE id=?", (now, title, cid))
         return turn_id
 
-    def set_turn_state(self, turn_id: str, state: str, error: str | None = None) -> None:
+    def set_turn_state(self, turn_id: str, state: str, error: str | None = None,
+                       activity: list[dict] | None = None) -> None:
         if state not in ("failed", "interrupted"):
             raise ValueError("invalid turn state")
         with self._db() as db:
-            db.execute("UPDATE turns SET state=?,updated_at=?,error=? WHERE id=? AND state='running'",
-                       (state, _now(), error[:500] if error else None, turn_id))
+            db.execute("UPDATE turns SET state=?,updated_at=?,error=?,activity=? WHERE id=? AND state='running'",
+                       (state, _now(), error[:500] if error else None, json.dumps(activity or []), turn_id))
 
     def switch_model(self, cid: str, expected_model: str, new_model: str) -> dict:
         with self._db() as db:
@@ -200,7 +216,8 @@ class ChatStore:
     def append_exchange(self, cid: str, expected_count: int, model: str, user: str, answer: str,
                         context_length: int | None = None, prompt_tokens: int | None = None,
                         completion_tokens: int | None = None, total_tokens: int | None = None,
-                        turn_id: str | None = None, attachments: list[dict] | None = None) -> dict:
+                        turn_id: str | None = None, attachments: list[dict] | None = None,
+                        activity: list[dict] | None = None) -> dict:
         now = _now()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -218,9 +235,9 @@ class ChatStore:
                 if turn is None or turn["state"] != "running" or turn["prompt"] != user:
                     raise ManagerError(409, "turn state changed; refresh before sending")
             db.executemany("INSERT INTO messages "
-                           "(conversation_id,role,content,model,created_at,attachments) VALUES (?,?,?,?,?,?)",
-                           [(cid, "user", user, model, now, json.dumps(attachments or [])),
-                            (cid, "assistant", answer, model, now, "[]")])
+                           "(conversation_id,role,content,model,created_at,attachments,activity) VALUES (?,?,?,?,?,?,?)",
+                           [(cid, "user", user, model, now, json.dumps(attachments or []), "[]"),
+                            (cid, "assistant", answer, model, now, "[]", json.dumps(activity or []))])
             title = user.strip().replace("\n", " ")[:64] if count == 0 else row["title"]
             db.execute(
                 "UPDATE conversations SET title=?,model=?,updated_at=?,context_length=?,"
@@ -315,6 +332,13 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         except CodexBridgeError as exc:
             return {"connected": False, "error": str(exc), "workspaces": []}
 
+    @r.get("/codex/models")
+    async def codex_models():
+        try:
+            return {"models": await codex.models()}
+        except CodexBridgeError as exc:
+            raise ManagerError(502, str(exc)) from exc
+
     @r.post("/codex/login")
     async def codex_login():
         try:
@@ -354,6 +378,34 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.get("/conversations/{cid}")
     async def get(cid: str):
         return await asyncio.to_thread(get_store().get, cid)
+
+    @r.post("/conversations/{cid}/codex/settings")
+    async def codex_settings(cid: str, request: Request):
+        conversation = await asyncio.to_thread(get_store().get, cid)
+        if conversation["provider"] != "codex":
+            raise ManagerError(400, "Settings are available only in Codex conversations")
+        if cid in active_codex or (conversation["last_turn"] and conversation["last_turn"]["state"] == "running"):
+            raise ManagerError(409, "Wait for the current Codex turn before changing settings")
+        body = await _json_body(request)
+        model, effort, reviewer = body.get("model"), body.get("effort"), body.get("reviewer")
+        if reviewer not in ("user", "auto_review"):
+            raise ManagerError(400, "Choose Ask for approval or Approve for me")
+        if model is not None and (not isinstance(model, str) or not model):
+            raise ManagerError(400, "Choose a Codex model")
+        if effort is not None and (not isinstance(effort, str) or not effort):
+            raise ManagerError(400, "Choose a reasoning effort")
+        try:
+            models = await codex.models()
+        except CodexBridgeError as exc:
+            raise ManagerError(502, str(exc)) from exc
+        selected = next((item for item in models if item.get("model") == model), None) if model else next(
+            (item for item in models if item.get("isDefault")), None)
+        if model and selected is None:
+            raise ManagerError(400, "Model is not available for this Codex account")
+        supported = {option.get("reasoningEffort") for option in (selected or {}).get("supportedReasoningEfforts", [])}
+        if effort and effort not in supported:
+            raise ManagerError(400, "Reasoning effort is not available for this model")
+        return await asyncio.to_thread(get_store().set_codex_settings, cid, model, effort, reviewer)
 
     @r.delete("/conversations/{cid}")
     async def delete(cid: str):
@@ -412,16 +464,21 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 async def save_thread(thread_id):
                     await asyncio.to_thread(get_store().set_thread, cid, thread_id)
                 try:
-                    _, answer = await codex.turn(conversation["thread_id"], prompt,
+                    thread_id, answer = await codex.turn(conversation["thread_id"], prompt,
                                                  conversation["cwd"], save_thread, images=images,
-                                                 model=conversation["codex_model"])
+                                                 model=conversation["codex_model"],
+                                                 effort=conversation["codex_effort"],
+                                                 reviewer=conversation["codex_reviewer"])
                     await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
-                                            "Codex", prompt, answer, turn_id=turn_id, attachments=images)
+                                            "Codex", prompt, answer, turn_id=turn_id, attachments=images,
+                                            activity=codex.status(thread_id)["events"])
                 except asyncio.CancelledError:
                     await asyncio.to_thread(get_store().set_turn_state, turn_id, "interrupted")
                     raise
                 except Exception as exc:
-                    await asyncio.to_thread(get_store().set_turn_state, turn_id, "failed", str(exc))
+                    thread_id = (await asyncio.to_thread(get_store().get, cid))["thread_id"]
+                    activity = codex.status(thread_id)["events"] if thread_id else []
+                    await asyncio.to_thread(get_store().set_turn_state, turn_id, "failed", str(exc), activity)
                 finally:
                     active_codex.discard(cid)
             task = asyncio.create_task(run_codex_turn())
