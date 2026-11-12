@@ -2,6 +2,12 @@
 
 Status: research and evolving design, 2026-11-06. The direct home-Wi-Fi dashboard phase is operational and documented in [Local dashboard access](LOCAL_DASHBOARD_ACCESS.md). Harness session UI and access away from home remain design only. Owning repo: `llm-gateway`. Companion: `llm-harness/docs/REMOTE_SESSIONS_DESIGN.md`.
 
+## Pi Tailscale package preparation (2026-11-11)
+
+The official Tailscale Debian Trixie repository and package tailscale 1.104.6 are installed on the Pi. The tailscaled service is stopped and disabled; the Pi has not been authenticated into a tailnet. No Serve or Funnel configuration, advertised subnet route, exit node, router port forward, or remote dashboard listener was added. Post-install checks found no tailscaled process, tailscale0 interface, or UDP 41641 listener. IPv4 and IPv6 forwarding both remained 0. The existing loopback dashboard returned HTTP 200, with listeners still on 127.0.0.1:8080 and the existing home-Wi-Fi HTTPS address.
+
+The next activation step is to establish restrictive tailnet grants and device enrollment policy, then connect only the Pi to the tailnet for a denied-by-default network test. A remote session front door must remain separate from the existing broad administrative dashboard. The phone and remote service exposure are later steps. The Pi's GitHub CLI apt keyring was malformed during this installation, so the first full apt-get update failed. On 2026-11-11 it was replaced with GitHub's current official keyring after SHA-256 and signing-fingerprint checks; a full apt-get update then exited successfully. No packages were upgraded.
+
 ## Goal and boundary
 
 The Pi gateway presents a small conversation UI and authenticated API for harness sessions. A phone or local browser can attach to a running Pi session while model inference remains on the isolated rig. The gateway handles network reachability, identity, authorization, and event relay. The harness handles the agent's prompts, context, tools, child agents, approvals, and durable session state. The manager handles model readiness and GPU claims. No browser or phone receives a direct rig route.
