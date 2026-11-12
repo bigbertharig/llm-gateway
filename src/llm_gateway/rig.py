@@ -76,6 +76,23 @@ class Rig:
             raise RigUnavailable(502, f"rig unreachable over ssh: {text[-500:] or 'no output'}")
         return proc.returncode, text
 
+    async def shared_kv(self, action: str, *, chat_id: str | None = None,
+                        message: str | None = None, max_tokens: int | None = None) -> dict:
+        if action not in ("status", "attach", "detach", "turn"):
+            raise ValueError("unsupported shared chat action")
+        args = ["shared-kv", action]
+        if chat_id is not None: args += ["--chat-id", chat_id]
+        if message is not None: args += ["--message", message]
+        if max_tokens is not None: args += ["--max-tokens", str(max_tokens)]
+        code, out = await self._run(*args, timeout=900 if action == "turn" else 120)
+        if code != RIG_OK:
+            raise RigUnavailable(503 if action == "attach" else 502,
+                                 f"shared chat {action} failed: {out[-500:]}")
+        try:
+            return json.loads(out.splitlines()[-1])
+        except (ValueError, IndexError) as exc:
+            raise RigUnavailable(502, f"shared chat {action} returned invalid JSON") from exc
+
     async def status(self) -> dict:
         code, out = await self._run("status", "--json", timeout=30)
         if code != RIG_OK:

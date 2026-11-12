@@ -4,6 +4,8 @@ import asyncio
 import hmac
 import json
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 import httpx
@@ -219,6 +221,90 @@ def create_app(
     async def health():
         return {"status": "ok"}
 
+    def shared_ready(status: dict) -> list[dict]:
+        service = status.get("shared_kv_service") or {}
+        if service.get("status") != "ready" or service.get("model") != "qwen3.6:35b-a3b-xl":
+            return []
+        rows = []
+        for chat in service.get("chats") or []:
+            if not isinstance(chat, dict) or not isinstance(chat.get("chat_id"), str):
+                continue
+            gpu, cap = chat.get("gpu"), chat.get("context_cap")
+            if type(gpu) is int and gpu in range(6) and type(cap) is int and cap > 0:
+                rows.append({"id": f"{s.model_prefix}/shared-35b-{chat['chat_id']}",
+                             "model": service["model"], "state": "ready",
+                             "gpu_ids": [gpu], "context_length": cap,
+                             "used_tokens": chat.get("used_tokens", 0)})
+        return rows
+
+    async def shared_completion(pid: str, body: dict) -> Response:
+        if body.get("stream"):
+            raise GatewayError(501, "shared chat streaming is not implemented", "unsupported")
+        route = f"{s.model_prefix}/{pid}"
+        ready = next((row for row in shared_ready(await rig.status()) if row["id"] == route), None)
+        if not ready:
+            raise GatewayError(409, f"model {route} is not ready", "model_not_ready")
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages or any(not isinstance(m, dict) for m in messages):
+            raise GatewayError(400, "messages must be a nonempty list", "invalid_request")
+        latest = messages[-1]
+        if latest.get("role") not in ("user", "tool") or not isinstance(latest.get("content"), str):
+            raise GatewayError(400, "shared chat expects a user or tool message last", "invalid_request")
+        tools = body.get("tools") or []
+        if not isinstance(tools, list):
+            raise GatewayError(400, "tools must be a list", "invalid_request")
+        allowed = {}
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+                fn = tool["function"]
+                if isinstance(fn.get("name"), str):
+                    allowed[fn["name"]] = fn
+        prompt = latest["content"]
+        if ready["used_tokens"] == 0:
+            system = "\n".join(str(m.get("content", "")) for m in messages if m.get("role") == "system")
+            if system:
+                prompt = "System instructions:\n" + system + "\n\nUser request:\n" + prompt
+        if allowed and latest["role"] == "user":
+            advertised = [{"name": name, "description": fn.get("description", ""),
+                           "parameters": fn.get("parameters", {})} for name, fn in allowed.items()]
+            prompt += ("\n\nAvailable tools: " + json.dumps(advertised) +
+                       "\nIf a tool is needed, return exactly one JSON object with keys name and arguments. "
+                       "Use an advertised tool name and valid arguments. Otherwise answer normally.")
+        elif latest["role"] == "tool":
+            prompt = ("Tool result for " + str(latest.get("tool_call_id") or "previous call") + ":\n" + prompt +
+                      "\nContinue the original request using this result. Answer directly.")
+        limit = body.get("max_tokens", 256)
+        if type(limit) is not int or limit < 1:
+            raise GatewayError(400, "max_tokens must be positive", "invalid_request")
+        limit = min(limit, 512)
+        result = await rig.shared_kv("turn", chat_id=pid.removeprefix("shared-35b-"),
+                                     message=prompt, max_tokens=limit)
+        content = result.get("content")
+        if not isinstance(content, str):
+            raise GatewayError(502, "shared chat returned no content", "upstream_error")
+        message = {"role": "assistant", "content": content}
+        finish = result.get("finish_reason", "stop")
+        if allowed and latest["role"] == "user":
+            try:
+                proposed = json.loads(content.strip())
+            except ValueError:
+                proposed = None
+            if isinstance(proposed, dict) and proposed.get("name") in allowed and isinstance(proposed.get("arguments"), dict):
+                message = {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "call_" + uuid.uuid4().hex, "type": "function",
+                    "function": {"name": proposed["name"],
+                                 "arguments": json.dumps(proposed["arguments"], separators=(",", ":"))}}]}
+                finish = "tool_calls"
+        generated = result.get("generated_tokens", 0)
+        used = result.get("used_tokens", 0)
+        usage = {"prompt_tokens": max(0, used-ready["used_tokens"]-generated),
+                 "completion_tokens": generated,
+                 "total_tokens": max(0, used-ready["used_tokens"])}
+        return JSONResponse({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion",
+                             "created": int(time.time()), "model": route,
+                             "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                             "usage": usage})
+
     @app.get("/v1/models")
     async def models():
         data = [
@@ -241,6 +327,10 @@ def create_app(
                          "created": 0, "owned_by": s.model_prefix,
                          "description": f"managed Strata load: {loaded['model']}",
                          "context_length": loaded["ctx_size"]})
+        for row in shared_ready(status):
+            data.append({"id": row["id"], "object": "model", "created": 0,
+                         "owned_by": s.model_prefix, "description": "35B shared-weight chat",
+                         "context_length": row["context_length"]})
         return {"object": "list", "data": data}
 
     @app.get("/v1/rig/status")
@@ -302,6 +392,11 @@ def create_app(
                          "gpu_ids": sorted(loaded.get("gpus") or []),
                          "context_length": loaded["ctx_size"], "output_limit": None,
                          "tool_call_format": None, "tokenizer_path": None})
+        for row in shared_ready(status):
+            data.append({"id": row["id"], "model": row["model"], "registry_profile": None,
+                         "state": "ready", "gpu_ids": row["gpu_ids"],
+                         "context_length": row["context_length"], "output_limit": 512,
+                         "tool_call_format": "strict_json_bridge", "tokenizer_path": None})
         return {"object": "ready_roster", "version": 1, "data": data}
 
     async def dynamic_strata_route(pid: str) -> dict:
@@ -326,6 +421,10 @@ def create_app(
     async def completions(request: Request):
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
+        if pid.startswith("shared-35b-"):
+            if request.url.path != "/v1/chat/completions":
+                raise GatewayError(501, "shared chats support Chat Completions only", "unsupported")
+            return await shared_completion(pid, body)
         if pid in profiles.all():
             port = await route_port(request, pid)
         else:

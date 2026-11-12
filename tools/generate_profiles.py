@@ -186,9 +186,33 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
     return doc, problems
 
 
+def load_subagent_catalog(root: Path, registry: dict[str, Any]) -> dict[str, Any]:
+    """Copy reviewed child identities, never readiness or a rig command."""
+    doc = json.loads((root / "subagent_catalog.json").read_text(encoding="utf-8"))
+    if doc.get("schema_version") != 1 or not isinstance(doc.get("candidates"), dict):
+        raise ValueError("subagent_catalog.json: expected schema_version 1 and candidates")
+    for name, row in doc["candidates"].items():
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or not isinstance(row, dict):
+            raise ValueError(f"subagent_catalog.json: invalid candidate {name!r}")
+        if row.get("provider") not in ("rig_shared_chat", "codex") or not isinstance(row.get("model"), str):
+            raise ValueError(f"subagent_catalog.json: invalid provider or model for {name}")
+        if not isinstance(row.get("agent_types"), list) or not row["agent_types"] or any(
+                role not in ("coding", "research") for role in row["agent_types"]):
+            raise ValueError(f"subagent_catalog.json: invalid agent_types for {name}")
+        if row["provider"] == "rig_shared_chat":
+            if row["model"] not in registry["models"] or row.get("mode") != "gpu1060-chat-q4" or                     row.get("requires") != {"model": row["model"], "mode": "gpu0-main-q4"}:
+                raise ValueError(f"subagent_catalog.json: invalid shared chat mode for {name}")
+            if type(row.get("context_cap")) is not int or row["context_cap"] <= 0:
+                raise ValueError(f"subagent_catalog.json: invalid context cap for {name}")
+        elif not row["model"].startswith("gpt-") or row.get("availability") != "check_codex_model_list":
+            raise ValueError(f"subagent_catalog.json: invalid Codex candidate {name}")
+    return doc
+
+
 def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] | None,
                   summary: dict[str, Any] | None,
-                  load_recipes: dict[str, Any] | None = None) -> dict[str, Any]:
+                  load_recipes: dict[str, Any] | None = None,
+                  subagent_catalog: dict[str, Any] | None = None) -> dict[str, Any]:
     """The gateway's copy of the model library: every model with its resolved profiles, the roles, the image,
     and the dashboard's model summary."""
     models = {}
@@ -220,7 +244,8 @@ def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] 
     return {"_comment": CATALOG_NOTE, "registry_updated": registry.get("updated"),
             "roles_updated": (roles or {}).get("updated"), "image": library.runtime_image(registry),
             "models": models, "roles": role_rows, "summary": summary,
-            "load_recipes": load_recipes or {"schema_version": 1, "recipes": {}}}
+            "load_recipes": load_recipes or {"schema_version": 1, "recipes": {}},
+            "subagent_catalog": subagent_catalog or {"schema_version": 1, "candidates": {}}}
 
 
 def render(doc: dict[str, Any]) -> str:
@@ -250,7 +275,12 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         problems.append(str(exc))
         recipes = None
-    catalog = build_catalog(library, registry, roles, _summary(root), recipes)
+    try:
+        subagents = load_subagent_catalog(root, registry)
+    except (OSError, ValueError) as exc:
+        problems.append(str(exc))
+        subagents = None
+    catalog = build_catalog(library, registry, roles, _summary(root), recipes, subagents)
     for p in problems:
         print(f"problem: {p}")
     outputs = {OUTPUT_PATH: render(doc), CATALOG_PATH: render(catalog)}
