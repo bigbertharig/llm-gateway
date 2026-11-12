@@ -69,6 +69,17 @@ def test_shared_route_is_ready_and_translates_tool_call(tmp_path):
         assert choice["message"]["tool_calls"][0]["function"]["name"] == "delegate_task"
         assert "Be concise" in rig.calls[0][2]
         assert rig.calls[0][3] == 96
+        streamed = client.post("/v1/chat/completions", json={"model": route, "stream": True,
+            "messages": [{"role": "user", "content": "Ask a child"}], "max_tokens": 96})
+        assert streamed.status_code == 200, streamed.text
+        assert "data: [DONE]" in streamed.text
+        assert '"object":"chat.completion.chunk"' in streamed.text
+        responses = client.post("/v1/responses", json={"model": route, "stream": True,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Ask a child"}]}],
+            "tools": [{"type": "function", "name": "delegate_task", "parameters": {"type": "object"}}]})
+        assert responses.status_code == 200, responses.text
+        assert "response.function_call_arguments.done" in responses.text
+        assert "response.completed" in responses.text
         assert client.post("/v1/chat/completions", json={"model": "gpu-rig/shared-35b-missing",
                    "messages": [{"role": "user", "content": "hi"}]}).status_code == 409
 
@@ -97,3 +108,40 @@ def test_manager_attaches_and_releases_cataloged_child(monkeypatch):
             "parent_route": "gpu-rig/shared-35b-main", "route": child["route"]})
         assert released.status_code == 200, released.text
         assert len(rig.chats) == 1
+
+
+def test_fenced_tool_request_gets_one_strict_repair(tmp_path):
+    class RepairRig(SharedRig):
+        async def shared_kv(self, action, **kwargs):
+            result = await super().shared_kv(action, **kwargs)
+            if action == "turn":
+                prefix = 'I will use the tool.\n' if len([call for call in self.calls if call[0] == "turn"]) == 1 else ''
+                result["content"] = prefix + '```json\n' + result["content"] + '\n```'
+            return result
+    rig = RepairRig()
+    with TestClient(create_app(settings(tmp_path), rig=rig)) as client:
+        response = client.post("/v1/chat/completions", json={"model": "gpu-rig/shared-35b-main",
+            "messages": [{"role": "user", "content": "Delegate this"}],
+            "tools": [{"type": "function", "function": {"name": "delegate_task",
+                      "parameters": {"type": "object"}}}]})
+        assert response.status_code == 200, response.text
+        assert response.json()["choices"][0]["finish_reason"] == "tool_calls"
+        assert len([call for call in rig.calls if call[0] == "turn"]) == 2
+
+
+def test_single_call_wrapper_is_translated(tmp_path):
+    class WrapperRig(SharedRig):
+        async def shared_kv(self, action, **kwargs):
+            result = await super().shared_kv(action, **kwargs)
+            if action == "turn":
+                inner = json.loads(result["content"])
+                result["content"] = json.dumps({"name": "tool_call", "arguments": {"calls": [inner]}})
+            return result
+    rig = WrapperRig()
+    with TestClient(create_app(settings(tmp_path), rig=rig)) as client:
+        response = client.post("/v1/chat/completions", json={"model": "gpu-rig/shared-35b-main",
+            "messages": [{"role": "user", "content": "Delegate"}],
+            "tools": [{"type": "function", "function": {"name": "delegate_task",
+                       "parameters": {"type": "object"}}}]})
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["finish_reason"] == "tool_calls"

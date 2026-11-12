@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -238,8 +239,6 @@ def create_app(
         return rows
 
     async def shared_completion(pid: str, body: dict) -> Response:
-        if body.get("stream"):
-            raise GatewayError(501, "shared chat streaming is not implemented", "unsupported")
         route = f"{s.model_prefix}/{pid}"
         ready = next((row for row in shared_ready(await rig.status()) if row["id"] == route), None)
         if not ready:
@@ -247,9 +246,17 @@ def create_app(
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages or any(not isinstance(m, dict) for m in messages):
             raise GatewayError(400, "messages must be a nonempty list", "invalid_request")
+        def message_text(value):
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list) and all(isinstance(item, dict) and
+                    item.get("type") == "text" and isinstance(item.get("text"), str) for item in value):
+                return "\n".join(item["text"] for item in value)
+            raise GatewayError(400, "shared chat supports text messages only", "invalid_request")
         latest = messages[-1]
-        if latest.get("role") not in ("user", "tool") or not isinstance(latest.get("content"), str):
+        if latest.get("role") not in ("user", "tool"):
             raise GatewayError(400, "shared chat expects a user or tool message last", "invalid_request")
+        latest_text = message_text(latest.get("content"))
         tools = body.get("tools") or []
         if not isinstance(tools, list):
             raise GatewayError(400, "tools must be a list", "invalid_request")
@@ -259,9 +266,9 @@ def create_app(
                 fn = tool["function"]
                 if isinstance(fn.get("name"), str):
                     allowed[fn["name"]] = fn
-        prompt = latest["content"]
+        prompt = latest_text
         if ready["used_tokens"] == 0:
-            system = "\n".join(str(m.get("content", "")) for m in messages if m.get("role") == "system")
+            system = "\n".join(message_text(m.get("content")) for m in messages if m.get("role") == "system")
             if system:
                 prompt = "System instructions:\n" + system + "\n\nUser request:\n" + prompt
         if allowed and latest["role"] == "user":
@@ -284,26 +291,170 @@ def create_app(
             raise GatewayError(502, "shared chat returned no content", "upstream_error")
         message = {"role": "assistant", "content": content}
         finish = result.get("finish_reason", "stop")
+        total_generated = result.get("generated_tokens", 0)
         if allowed and latest["role"] == "user":
-            try:
-                proposed = json.loads(content.strip())
-            except ValueError:
-                proposed = None
-            if isinstance(proposed, dict) and proposed.get("name") in allowed and isinstance(proposed.get("arguments"), dict):
+            def strict_proposal(value):
+                candidate = value.strip()
+                fenced = re.fullmatch(r"```(?:json)?\s*\n(\{[\s\S]*\})\s*\n```", candidate)
+                if fenced:
+                    candidate = fenced.group(1)
+                try:
+                    proposed = json.loads(candidate)
+                except ValueError:
+                    return None
+                if isinstance(proposed, dict) and proposed.get("name") == "tool_call":
+                    wrapper = proposed.get("arguments")
+                    calls = wrapper.get("calls") if isinstance(wrapper, dict) else None
+                    proposed = calls[0] if isinstance(calls, list) and len(calls) == 1 else None
+                return proposed if (isinstance(proposed, dict) and proposed.get("name") in allowed
+                                    and isinstance(proposed.get("arguments"), dict)) else None
+            proposed = strict_proposal(content)
+            if proposed is None and '"name"' in content and any(name in content for name in allowed):
+                log.info("shared tool format repair route=%s", route)
+                repair = await rig.shared_kv("turn", chat_id=pid.removeprefix("shared-35b-"),
+                    message=("Your previous reply attempted a tool call but was not a valid call. "
+                             "If you intend to call a tool, reply with exactly one raw JSON object "
+                             "with name and arguments using the advertised schema. "
+                             "No prose, markdown fence, or explanation."), max_tokens=min(limit, 128))
+                repaired_content = repair.get("content")
+                if isinstance(repaired_content, str):
+                    content = repaired_content
+                    result = repair
+                    total_generated += repair.get("generated_tokens", 0)
+                    proposed = strict_proposal(content)
+                    message = {"role": "assistant", "content": content}
+                    finish = repair.get("finish_reason", "stop")
+            if proposed is not None:
                 message = {"role": "assistant", "content": None, "tool_calls": [{
                     "id": "call_" + uuid.uuid4().hex, "type": "function",
                     "function": {"name": proposed["name"],
                                  "arguments": json.dumps(proposed["arguments"], separators=(",", ":"))}}]}
                 finish = "tool_calls"
-        generated = result.get("generated_tokens", 0)
+        generated = total_generated
         used = result.get("used_tokens", 0)
         usage = {"prompt_tokens": max(0, used-ready["used_tokens"]-generated),
                  "completion_tokens": generated,
                  "total_tokens": max(0, used-ready["used_tokens"])}
-        return JSONResponse({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion",
-                             "created": int(time.time()), "model": route,
+        completion_id = "chatcmpl-" + uuid.uuid4().hex
+        created = int(time.time())
+        if body.get("stream"):
+            async def chunks():
+                def event(delta: dict, reason=None, *, usage_row=None):
+                    payload = {"id": completion_id, "object": "chat.completion.chunk",
+                               "created": created, "model": route,
+                               "choices": [] if usage_row is not None else [
+                                   {"index": 0, "delta": delta, "finish_reason": reason}]}
+                    if usage_row is not None:
+                        payload["usage"] = usage_row
+                    return ("data: " + json.dumps(payload, separators=(",", ":")) + "\n\n").encode()
+                yield event({"role": "assistant"})
+                if "tool_calls" in message:
+                    yield event({"tool_calls": [{"index": 0, **message["tool_calls"][0]}]})
+                elif content:
+                    yield event({"content": content})
+                yield event({}, finish)
+                if (body.get("stream_options") or {}).get("include_usage"):
+                    yield event({}, usage_row=usage)
+                yield b"data: [DONE]\n\n"
+            return StreamingResponse(chunks(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache"})
+        return JSONResponse({"id": completion_id, "object": "chat.completion",
+                             "created": created, "model": route,
                              "choices": [{"index": 0, "message": message, "finish_reason": finish}],
                              "usage": usage})
+
+    async def shared_responses(pid: str, body: dict) -> Response:
+        """Responses API envelope for the same ready, resident shared chat."""
+        request_input = body.get("input")
+        if isinstance(request_input, str):
+            last_role, last_text = "user", request_input
+        elif isinstance(request_input, list) and request_input:
+            last = request_input[-1]
+            if not isinstance(last, dict):
+                raise GatewayError(400, "shared Responses input must contain message objects", "invalid_request")
+            if last.get("type") == "function_call_output":
+                last_role, last_text = "tool", last.get("output")
+            else:
+                last_role, last_text = last.get("role"), last.get("content")
+        else:
+            raise GatewayError(400, "shared Responses input is required", "invalid_request")
+        if last_role not in ("user", "tool"):
+            raise GatewayError(400, "shared Responses expects a user or tool input last", "invalid_request")
+        if isinstance(last_text, list):
+            parts = []
+            for part in last_text:
+                if not isinstance(part, dict) or part.get("type") not in ("input_text", "text") \
+                        or not isinstance(part.get("text"), str):
+                    raise GatewayError(400, "shared Responses supports text input only", "invalid_request")
+                parts.append(part["text"])
+            last_text = "\n".join(parts)
+        if not isinstance(last_text, str):
+            raise GatewayError(400, "shared Responses supports text input only", "invalid_request")
+        instruction = body.get("instructions")
+        messages = ([{"role": "system", "content": instruction}] if isinstance(instruction, str) else [])
+        messages.append({"role": last_role, "content": last_text})
+        tools = []
+        for item in body.get("tools") or []:
+            if isinstance(item, dict) and item.get("type") == "function" and isinstance(item.get("name"), str):
+                tools.append({"type": "function", "function": {"name": item["name"],
+                              "description": item.get("description", ""),
+                              "parameters": item.get("parameters", {})}})
+        forwarded = {"model": f"{s.model_prefix}/{pid}", "messages": messages, "tools": tools,
+                     "max_tokens": body.get("max_output_tokens") or 256, "stream": False}
+        completion = json.loads((await shared_completion(pid, forwarded)).body)
+        answer = completion["choices"][0]["message"]
+        if answer.get("tool_calls"):
+            call = answer["tool_calls"][0]
+            item = {"id": "fc_" + uuid.uuid4().hex, "type": "function_call", "status": "completed",
+                    "call_id": call["id"], "name": call["function"]["name"],
+                    "arguments": call["function"]["arguments"]}
+        else:
+            item = {"id": "msg_" + uuid.uuid4().hex, "type": "message", "status": "completed",
+                    "role": "assistant", "content": [{"type": "output_text",
+                    "text": answer.get("content") or "", "annotations": []}]}
+        usage = completion["usage"]
+        response = {"id": "resp_" + uuid.uuid4().hex, "object": "response",
+                    "created_at": int(time.time()), "status": "completed", "model": forwarded["model"],
+                    "output": [item], "error": None, "incomplete_details": None,
+                    "usage": {"input_tokens": usage["prompt_tokens"],
+                              "output_tokens": usage["completion_tokens"],
+                              "total_tokens": usage["total_tokens"],
+                              "input_tokens_details": {"cached_tokens": 0},
+                              "output_tokens_details": {"reasoning_tokens": 0}},
+                    "parallel_tool_calls": False, "tool_choice": body.get("tool_choice", "auto"),
+                    "tools": body.get("tools") or [], "store": False}
+        if not body.get("stream"):
+            return JSONResponse(response)
+        async def events():
+            sequence = 0
+            def event(kind, **fields):
+                nonlocal sequence
+                sequence += 1
+                payload = {"type": kind, "sequence_number": sequence, **fields}
+                return ("event: " + kind + "\ndata: " + json.dumps(payload, separators=(",", ":")) + "\n\n").encode()
+            yield event("response.created", response={**response, "status": "in_progress", "output": [], "usage": None})
+            yield event("response.output_item.added", output_index=0,
+                        item={**item, "status": "in_progress",
+                              **({"arguments": ""} if item["type"] == "function_call" else {"content": []})})
+            if item["type"] == "function_call":
+                yield event("response.function_call_arguments.delta", item_id=item["id"], output_index=0,
+                            delta=item["arguments"])
+                yield event("response.function_call_arguments.done", item_id=item["id"], output_index=0,
+                            arguments=item["arguments"])
+            else:
+                part = {"type": "output_text", "text": "", "annotations": []}
+                yield event("response.content_part.added", item_id=item["id"], output_index=0,
+                            content_index=0, part=part)
+                yield event("response.output_text.delta", item_id=item["id"], output_index=0,
+                            content_index=0, delta=item["content"][0]["text"])
+                yield event("response.output_text.done", item_id=item["id"], output_index=0,
+                            content_index=0, text=item["content"][0]["text"])
+                yield event("response.content_part.done", item_id=item["id"], output_index=0,
+                            content_index=0, part=item["content"][0])
+            yield event("response.output_item.done", output_index=0, item=item)
+            yield event("response.completed", response=response)
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache"})
 
     @app.get("/v1/models")
     async def models():
@@ -422,9 +573,11 @@ def create_app(
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
         if pid.startswith("shared-35b-"):
-            if request.url.path != "/v1/chat/completions":
-                raise GatewayError(501, "shared chats support Chat Completions only", "unsupported")
-            return await shared_completion(pid, body)
+            if request.url.path == "/v1/chat/completions":
+                return await shared_completion(pid, body)
+            if request.url.path == "/v1/responses":
+                return await shared_responses(pid, body)
+            raise GatewayError(501, "shared chats support Chat Completions and Responses", "unsupported")
         if pid in profiles.all():
             port = await route_port(request, pid)
         else:
