@@ -11,8 +11,9 @@ the home LAN is an administrative surface, not the remote harness session UI.
   allowances. Its forwarding policy drops all transit traffic. There is no
   `tailscale0` allowance yet. Outbound connections remain available.
 - Pi SSH uses keys only, disables root login and agent/X11 forwarding, and keeps
-  TCP forwarding for the operator tunnel fallback. The NFS export is limited to
-  the current rig host.
+  TCP forwarding for the operator tunnel fallback. The NFS export and eth0
+  TCP/2049 ingress admit the isolated 10.0.0.0/24 rig and Orange Pi worker
+  network, as approved on 2026-11-14. Wi-Fi and Tailscale do not admit NFS.
 - The gateway and harness session front door is still a design. Tailscale
   enrollment alone must not publish the existing broad dashboard.
 
