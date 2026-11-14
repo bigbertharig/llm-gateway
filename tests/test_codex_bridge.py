@@ -92,6 +92,34 @@ def test_new_codex_thread_uses_selected_reviewer_without_expanding_sandbox(tmp_p
     assert calls[1][1]["sandboxPolicy"]["networkAccess"] is False
 
 
+def test_codex_thread_registers_local_agent_mcp_when_configured(tmp_path, monkeypatch):
+    script = tmp_path / "local_agent_mcp.py"
+    script.write_text("# fixture\n")
+    receipts = tmp_path / "receipts"
+    monkeypatch.setenv("CODEX_LOCAL_AGENT_MCP_SCRIPT", str(script))
+    monkeypatch.setenv("CODEX_LOCAL_AGENT_RECEIPTS", str(receipts))
+    bridge = CodexBridge()
+    bridge.workspaces = [tmp_path]
+    calls = []
+
+    async def call(method, params):
+        calls.append((method, params))
+        if method == "thread/start":
+            return {"thread": {"id": "new-thread"}}
+        bridge.events["new-thread"].put_nowait({"method": "item/completed", "params": {
+            "turnId": "turn-1", "item": {"type": "agentMessage", "phase": "final_answer", "text": "Done."}}})
+        bridge.events["new-thread"].put_nowait({"method": "turn/completed", "params": {
+            "turnId": "turn-1", "turn": {"id": "turn-1", "status": "completed"}}})
+        return {"turn": {"id": "turn-1"}}
+
+    bridge._call = call
+    asyncio.run(bridge.turn(None, "Work", str(tmp_path)))
+    server = calls[0][1]["config"]["mcp_servers"]["local_agents"]
+    assert server["args"] == [str(script), "--cloud-parent", "--receipt-dir", str(receipts)]
+    assert server["enabled_tools"] == ["delegate_local_task"]
+    assert receipts.is_dir()
+
+
 def test_agent_status_includes_recent_activity_with_idle_state():
     bridge = CodexBridge()
     bridge.recent["saved-thread"] = [

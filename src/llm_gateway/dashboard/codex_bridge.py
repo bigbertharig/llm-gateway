@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,24 @@ class CodexBridge:
             raise CodexBridgeError("Choose an available coding workspace")
         return selected
 
+    def local_agent_config(self) -> dict:
+        """Optional harness MCP adapter for bounded local children of a Codex session."""
+        configured = os.getenv("CODEX_LOCAL_AGENT_MCP_SCRIPT")
+        if not configured:
+            return {}
+        script = Path(configured).resolve()
+        if not script.is_file():
+            raise CodexBridgeError("Local agent MCP script is unavailable")
+        receipts = Path(os.getenv("CODEX_LOCAL_AGENT_RECEIPTS") or
+                        (Path.home() / ".local/share/llm-gateway/local-agent-receipts"))
+        receipts.mkdir(parents=True, exist_ok=True)
+        return {"mcp_servers": {"local_agents": {
+            "command": sys.executable,
+            "args": [str(script), "--cloud-parent", "--receipt-dir", str(receipts)],
+            "enabled_tools": ["delegate_local_task"],
+            "tool_timeout_sec": 480,
+        }}}
+
     async def start(self) -> None:
         async with self.start_lock:
             if self.process and self.process.returncode is None:
@@ -51,6 +70,7 @@ class CodexBridge:
                     self.command, "app-server", "--listen", "stdio://",
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
+                    limit=4 * 1024 * 1024,
                 )
             except OSError as exc:
                 raise CodexBridgeError("Codex app-server is not installed on the gateway host") from exc
@@ -221,7 +241,7 @@ class CodexBridge:
         workspace = self.workspace(cwd)
         if reviewer not in ("user", "auto_review"):
             raise CodexBridgeError("Invalid Codex reviewer")
-        config = {"approvals_reviewer": reviewer}
+        config = {"approvals_reviewer": reviewer, **self.local_agent_config()}
         # Conversation creation already checks authentication. Avoid placing a
         # second account/read behind another active app-server turn.
         if thread_id:

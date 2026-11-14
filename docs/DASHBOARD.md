@@ -54,6 +54,17 @@ upgraded independently; `/v1/orchestration` is the versioned cross-repo contract
 
 ### Codex coding sessions (live 2026-11-09)
 
+The gateway can register the harness's `delegate_local_task` MCP tool for Codex dashboard threads when
+`CODEX_LOCAL_AGENT_MCP_SCRIPT` points to the harness adapter. The Pi service unit also sets
+`CODEX_LOCAL_AGENT_RECEIPTS` for per-child receipts. The tool asks the manager for a reviewed local
+`coding` or `research` child route; Codex does not select GPUs. On 2026-11-13 the focused Pi tests
+passed (gateway 46/46, harness 7/7), and an isolated Codex app-server thread discovered
+`local_agents.delegate_local_task` through its per-thread MCP configuration. The service has not yet
+been restarted and a live cloud-parent/local-child inference turn remains to be checked. The child
+currently has no file tools,
+so it is suitable for bounded analysis and review rather than editing the workspace. See
+[Powerful gateway and local agents](POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md).
+
 The model dropdown also offers **Codex (cloud coding agent)**. Selecting it and clicking New conversation
 opens a separate in-page chat tab. The selected Pi workspace is fixed for that conversation. Codex
 uses its own persisted app-server thread, so several Codex and local chats can run concurrently.

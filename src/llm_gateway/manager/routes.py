@@ -123,8 +123,9 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         if agent_type not in AGENT_ROLE_ORDER or not isinstance(parent_id, str):
             raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_ROLE_ORDER)} and parent_route is required")
         prefix = model_prefix + "/"
-        if not parent_id.startswith(prefix):
-            raise ManagerError(400, "parent_route must be a gateway route")
+        cloud_parent = parent_id == "cloud/codex"
+        if not cloud_parent and not parent_id.startswith(prefix):
+            raise ManagerError(400, "parent_route must be a gateway route or cloud/codex")
         min_context = b.get("min_context", 4096)
         if type(min_context) is not int or min_context < 1:
             raise ManagerError(400, "min_context must be a positive integer")
@@ -163,10 +164,10 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         loaded = observed.get("profiles") or {}
         if isinstance(loaded, list):
             loaded = {row.get("id"): row for row in loaded if isinstance(row, dict)}
-        parent = loaded.get(parent_id[len(prefix):])
-        if not parent or parent.get("state") != "ready" or not parent.get("gpus"):
+        parent = None if cloud_parent else loaded.get(parent_id[len(prefix):])
+        if not cloud_parent and (not parent or parent.get("state") != "ready" or not parent.get("gpus")):
             raise ManagerError(409, "parent route is not ready with known GPU placement")
-        parent_gpus = set(parent["gpus"])
+        parent_gpus = set() if cloud_parent else set(parent["gpus"])
         published = profiles()
         for pid in _agent_profile_order(agent_type, published):
             row, spec = loaded.get(pid), published.get(pid)
@@ -199,10 +200,11 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 rows = refreshed.get("profiles") or {}
                 if isinstance(rows, list):
                     rows = {row.get("id"): row for row in rows if isinstance(row, dict)}
-                parent_now, row = rows.get(parent_id[len(prefix):]), rows.get(pid)
-                if (parent_now and parent_now.get("state") == "ready" and row and row.get("state") == "ready"
+                parent_now, row = (None if cloud_parent else rows.get(parent_id[len(prefix):])), rows.get(pid)
+                if ((cloud_parent or (parent_now and parent_now.get("state") == "ready"))
+                        and row and row.get("state") == "ready"
                         and row.get("model") == spec.get("model") and row.get("gpus")
-                        and set(parent_now.get("gpus") or []).isdisjoint(row["gpus"])
+                        and (cloud_parent or set(parent_now.get("gpus") or []).isdisjoint(row["gpus"]))
                         and type(row.get("ctx_size")) is int and row["ctx_size"] >= min_context):
                     return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
                             "gpu_ids": sorted(row["gpus"]), "context_length": row["ctx_size"], "state": "ready"}
