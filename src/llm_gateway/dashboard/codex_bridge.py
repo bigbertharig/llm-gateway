@@ -14,6 +14,7 @@ import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,28 @@ class CodexBridge:
             "args": [str(script), "--cloud-parent", "--receipt-dir", str(receipts)],
             "enabled_tools": ["delegate_local_task"],
             "tool_timeout_sec": 480,
+        }}}
+
+    def search_config(self) -> dict:
+        """Optional Pi-local research tools for Codex sessions."""
+        configured = os.getenv("CODEX_SEARCH_MCP_SCRIPT")
+        if not configured:
+            return {}
+        script = Path(configured).resolve()
+        if not script.is_file():
+            raise CodexBridgeError("Search MCP script is unavailable")
+        env_file = os.getenv("CODEX_SEARCH_MCP_ENV_FILE")
+        if not env_file or not Path(env_file).is_file():
+            raise CodexBridgeError("Search MCP provider config is unavailable")
+        endpoint = os.getenv("CODEX_SEARCH_MCP_ENDPOINT", "http://127.0.0.1:8888")
+        parsed = urlsplit(endpoint)
+        if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
+            raise CodexBridgeError("Search MCP endpoint must be Pi loopback HTTP")
+        return {"mcp_servers": {"rig_search": {
+            "command": sys.executable,
+            "args": [str(script), "--env-file", env_file, "--endpoint", endpoint],
+            "enabled_tools": ["search_web", "fetch_page"],
+            "tool_timeout_sec": 60,
         }}}
 
     async def start(self) -> None:
@@ -152,6 +175,13 @@ class CodexBridge:
                           and params.get("serverName") == "local_agents"
                           and params.get("mode") == "form"
                           and params.get("message") == 'Allow the local_agents MCP server to run tool "delegate_local_task"?'):
+                        await self._write({"id": message["id"], "result": {"action": "accept", "content": {}}})
+                    elif (method == "mcpServer/elicitation/request"
+                          and params.get("serverName") == "rig_search"
+                          and params.get("mode") == "form"
+                          and params.get("message") in (
+                              'Allow the rig_search MCP server to run tool "search_web"?',
+                              'Allow the rig_search MCP server to run tool "fetch_page"?')):
                         await self._write({"id": message["id"], "result": {"action": "accept", "content": {}}})
                     else:
                         log.warning("unsupported Codex app-server request: %s", method)
@@ -251,6 +281,9 @@ class CodexBridge:
         if reviewer not in ("user", "auto_review"):
             raise CodexBridgeError("Invalid Codex reviewer")
         config = {"approvals_reviewer": reviewer, **self.local_agent_config()}
+        search = self.search_config()
+        if search:
+            config.setdefault("mcp_servers", {}).update(search["mcp_servers"])
         # Conversation creation already checks authentication. Avoid placing a
         # second account/read behind another active app-server turn.
         if thread_id:

@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from llm_gateway.dashboard.codex_bridge import CodexBridge
+from llm_gateway.dashboard.codex_bridge import CodexBridge, CodexBridgeError
 from llm_gateway.dashboard.chat import ChatStore, router
 from llm_gateway.manager.errors import ManagerError
 
@@ -121,6 +121,47 @@ def test_codex_thread_registers_local_agent_mcp_when_configured(tmp_path, monkey
     assert server["enabled_tools"] == ["delegate_local_task"]
     assert "default_tools_approval_mode" not in server
     assert receipts.is_dir()
+
+
+def test_codex_search_mcp_uses_configured_router_and_cpu_reader(tmp_path, monkeypatch):
+    script = tmp_path / "mcp_server.py"
+    script.write_text("# fixture\n")
+    env_file = tmp_path / "search.env"
+    env_file.write_text("RIG_SEARCH_PROVIDERS=searxng,exa\n")
+    monkeypatch.setenv("CODEX_SEARCH_MCP_SCRIPT", str(script))
+    monkeypatch.setenv("CODEX_SEARCH_MCP_ENV_FILE", str(env_file))
+    bridge = CodexBridge()
+    server = bridge.search_config()["mcp_servers"]["rig_search"]
+    assert server["args"] == [str(script), "--env-file", str(env_file),
+                              "--endpoint", "http://127.0.0.1:8888"]
+    assert server["enabled_tools"] == ["search_web", "fetch_page"]
+    monkeypatch.setenv("CODEX_SEARCH_MCP_ENDPOINT", "https://example.com/search")
+    with pytest.raises(CodexBridgeError, match="loopback"):
+        bridge.search_config()
+
+
+def test_search_elicitation_is_allowlisted():
+    bridge = CodexBridge()
+    writes = []
+
+    async def write(message):
+        writes.append(message)
+
+    async def check():
+        reader = asyncio.StreamReader()
+        bridge.process = SimpleNamespace(stdout=reader)
+        bridge.events["thread-1"] = asyncio.Queue()
+        bridge._write = write
+        reader.feed_data((json.dumps({"id": 9, "method": "mcpServer/elicitation/request", "params": {
+            "threadId": "thread-1", "serverName": "rig_search", "mode": "form",
+            "message": 'Allow the rig_search MCP server to run tool "search_web"?',
+            "requestedSchema": {"type": "object", "properties": {}}}}) + "\n").encode())
+        reader.feed_eof()
+        await bridge._read()
+        assert bridge.status("thread-1")["approvals"] == []
+
+    asyncio.run(check())
+    assert writes == [{"id": 9, "result": {"action": "accept", "content": {}}}]
 
 
 def test_allowlisted_local_agent_elicitation_is_accepted_once():

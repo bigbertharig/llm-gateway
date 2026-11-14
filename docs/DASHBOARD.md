@@ -66,6 +66,16 @@ configured local-agent MCP tool request. The child currently has no file tools, 
 for bounded analysis and review rather than editing the workspace. See
 [Powerful gateway and local agents](POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md).
 
+Dashboard Codex sessions register the harness's `rig-search` MCP when
+`CODEX_SEARCH_MCP_SCRIPT` and `CODEX_SEARCH_MCP_ENV_FILE` point to its entry
+point and private provider configuration. `search_web` uses the configured
+six-provider router, including its per-provider caps and direct-egress switch.
+`fetch_page` reads one selected public HTTPS page on the Pi CPU, with DNS and
+redirect checks plus byte and text limits. Orange Pi dispatch is not active;
+those workers must be reachable before it can be tested. Search snippets and
+fetched page text are untrusted evidence candidates. The bridge accepts only
+the exact `rig_search.search_web` and `rig_search.fetch_page` tool requests.
+
 The model dropdown also offers **Codex (cloud coding agent)**. Selecting it and clicking New conversation
 opens a separate in-page chat tab. The selected Pi workspace is fixed for that conversation. Codex
 uses its own persisted app-server thread, so several Codex and local chats can run concurrently.
