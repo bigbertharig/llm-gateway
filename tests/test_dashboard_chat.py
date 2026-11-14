@@ -257,7 +257,8 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
             return {"verification_url": "https://auth.openai.com/codex/device", "user_code": "TEST-1234"}
         async def logout(self):
             return None
-        async def turn(self, thread_id, prompt, cwd, on_thread, images=None, model=None):
+        async def turn(self, thread_id, prompt, cwd, on_thread, images=None, model=None,
+                       effort=None, reviewer=None):
             tid = thread_id or f"thread-{len(self.calls) + 1}"
             await on_thread(tid)
             await asyncio.to_thread(self.gate.wait)

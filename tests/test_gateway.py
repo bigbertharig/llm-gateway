@@ -317,6 +317,50 @@ def test_agent_type_resolves_disjoint_ready_route_without_loading(env):
     assert env["starts"]() == []
 
 
+def test_cloud_codex_parent_resolves_ready_local_child_without_loading(env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"mode": "interactive", "profiles": [
+        {"id": "coder-7b", "model": "qwen2.5-coder:7b", "ctx_size": 8192,
+         "port": UPSTREAM_PORT, "state": "ready", "gpus": [2]},
+    ]}))
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama), run_reconciler=False)
+    async def observed():
+        return {"profiles": json.loads(state.read_text())["profiles"]}
+    app.state.manager.status = observed
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "coding", "parent_route": "cloud/codex"})
+    assert response.status_code == 200
+    assert response.json()["route"] == "gpu-rig/coder-7b"
+    assert response.json()["gpu_ids"] == [2]
+    assert env["starts"]() == []
+
+
+def test_cloud_codex_parent_prepares_cold_local_child(env):
+    settings = dataclasses.replace(env["settings"], manager_enabled=True)
+    app = create_app(settings, upstream_transport=httpx.MockTransport(fake_llama), run_reconciler=False)
+    rows = []
+    async def observed():
+        return {"profiles": rows}
+    async def load_profile(pid, spec):
+        assert pid == "coder-7b"
+        rows.append({"id": pid, "model": spec["model"], "ctx_size": 8192,
+                     "port": UPSTREAM_PORT, "state": "ready", "gpus": [2]})
+    async def ensure_ready(pid, start):
+        await start()
+        return UPSTREAM_PORT
+    app.state.manager.status = observed
+    app.state.manager.load_profile = load_profile
+    app.state.manager.rig.ensure_ready = ensure_ready
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "agent_type": "coding", "parent_route": "cloud/codex"})
+    assert response.status_code == 200
+    assert response.json()["route"] == "gpu-rig/coder-7b"
+    assert response.json()["gpu_ids"] == [2]
+
+
 def test_agent_type_rejects_missing_separate_ready_route(env):
     state = Path(os.environ["FAKE_RIG_STATE"])
     state.write_text(json.dumps({"mode": "interactive", "profiles": [

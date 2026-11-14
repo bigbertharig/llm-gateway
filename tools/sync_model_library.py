@@ -104,7 +104,12 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"problem: {exc}", file=sys.stderr)
         return 2
-    catalog = gen.build_catalog(library, registry, roles, gen._summary(root), recipes)
+    try:
+        subagents = gen.load_subagent_catalog(root, registry)
+    except (OSError, ValueError) as exc:
+        print(f"problem: {exc}", file=sys.stderr)
+        return 2
+    catalog = gen.build_catalog(library, registry, roles, gen._summary(root), recipes, subagents)
     report = inspect(root, catalog, offer)
     pending = report["catalog_stale"] or report["offers_stale"]
     if pending and not (args.dry_run or args.check):

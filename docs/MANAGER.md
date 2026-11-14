@@ -97,7 +97,7 @@ build) results fall back to local storage when the shared drive is gone and sync
 
 ### Shared child serving and concurrent agents (design, 2026-11-06)
 
-The current agent-routes/resolve only offers a child route on GPUs disjoint from its parent, then may cold-load a published profile. Registry runtimes currently specify parallel: 1, so this path does not establish safe same-server concurrent child execution. Treat same-model multi-agent work as a separate manager capacity policy, not as a harness choice of GPUs or a second model load.
+For a local parent, agent-routes/resolve offers a child route on GPUs disjoint from its parent, then may cold-load a published profile. A `cloud/codex` parent has no local GPU reservation, so the same reviewed child policy can use any eligible ready or free local cards. Registry runtimes currently specify parallel: 1, so this path does not establish safe same-server concurrent child execution. Treat same-model multi-agent work as a separate manager capacity policy, not as a harness choice of GPUs or a second model load.
 
 The manager should evaluate three modes for a child request: admit another isolated session into an already-ready model server when it has measured free serving slots; start a separate instance of the same model on disjoint free GPUs when isolation or throughput requires it; or prepare a different eligible model on disjoint GPUs. A shared server keeps one weight load, but each active request needs its own context and KV capacity and may lower throughput. A duplicate instance needs its own lease, port, fit, and ready receipt. The manager chooses or queues/refuses according to current claims, active requests, context per slot, memory, and measured throughput; it never evicts the parent or unrelated work implicitly. Return route, instance/slot admission, served per-request context, readiness, expiry, and a typed busy/load-failure reason. A model preference may constrain the offer, but the harness cannot force a placement. Preserve the five-minute cold-load bound separately from queue and child-turn deadlines.
 
@@ -106,6 +106,11 @@ First measure one ready route with two bounded concurrent requests, including co
 ### Capability requests for child agents (2026-11-04)
 
 `POST /v1/manager/agent-routes/resolve` accepts `{"agent_type":"coding|research", "parent_route":"gpu-rig/<id>"}`. The parent route is supplied by its controller; the model-facing delegation tool takes only `agent_type` and `task`. The manager chooses a published profile by its ordered capability policy in `manager/routes.py`. It first offers a ready route on GPUs disjoint from the parent's. If none is ready, it asks the manager to fit, lease, and load a cold profile on available cards. It returns only after the route is observed ready, with route ID, model, context, and GPU IDs. A five-minute preparation deadline returns HTTP 504; no capacity or eligible route returns 503, and a load failure is reported through the manager error response. A timed-out rig plan may continue under manager ownership; operators should inspect status before retrying or unloading.
+
+For a Codex dashboard parent, pass `parent_route: "cloud/codex"`. The manager uses the same reviewed
+coding/research role order and readiness checks without requiring a local parent profile or reserving
+parent GPUs. The harness MCP adapter exposes this as `delegate_local_task` and records a child receipt.
+This route does not make the child a file-editing agent; its current runtime has no tools.
 
 The harness never chooses a GPU or calls a profile load endpoint. It uses the returned route with `X-Require-Ready: true` and checks the ready roster before and after the child run. The first live control used `chat-27b` on GPU 0 and a cold `coding` request, which the manager placed as `coder-7b` on GPU 1. The native child and parent MCP handoff both returned `42`; receipts are in `/home/bryan/llm-harness/results/subagent_gateway_parent_mcp_2026-11-04_v1/` and `subagent_gateway_live_2026-11-04_v3/`. Gateway contract tests passed 33/33. This is one bounded Pi-harness integration, not yet a six-harness delegation comparison. Manager policy and child model quality still need broader evaluation.
 
@@ -498,3 +503,11 @@ that owner when they end. Both start as runs (`rigctl run-start`). Open: drop
 - Audit first (log loads without a lease for a while), then refuse.
 
 **Rig guards (in progress 2026-10-17):** always-on `rig-guard.service` on the rig, see `hw_guard.py`.
+
+## Experimental shared 35B child route (2026-11-12)
+
+The benchmark [subagent catalog](/media/bryan/shared/plans/shoulders/benchmarking/subagent_catalog.json) is imported into `model_catalog.json`. `GET /v1/manager/subagent-candidates` lists the stable candidate IDs. `POST /v1/manager/agent-routes/resolve` accepts an optional `candidate_id`; for `qwen35_shared_1060` with a shared 35B parent, the manager attaches a fresh 1060 chat to the resident GPU0 weights and returns a ready route and `ephemeral: true`. `POST /v1/manager/agent-routes/release` detaches that child after the harness finishes. The local harness checks the ready roster after attachment and releases in a cleanup path. The parent route and model remain loaded.
+
+Ready shared chats are exposed as `gpu-rig/shared-35b-<chat_id>` through `/v1/models`, `/v1/rig/ready-roster`, `/v1/chat/completions`, and a bounded `/v1/responses` adapter. Requests and tool calls use OpenAI-shaped JSON so the existing six harnesses can use the route. The adapter buffers generation before emitting SSE, accepts text and function calls, and caps a runtime turn at 512 output tokens. It is experimental: each chat is stateful on the rig, so clients must keep a stable route and aligned conversation history; it is not a stateless general OpenAI proxy. Long-running and arbitrary multimodal Responses operations are outside this contract. Codex Terra/Luna are separate online candidates selected by the harness through the live Codex model list, not rig routes.
+
+See the harness [shared 35B subagent matrix](/home/bryan/llm-harness/docs/research/shared35_subagent_matrix_2026-11-12.md) for scored outcomes and limitations.

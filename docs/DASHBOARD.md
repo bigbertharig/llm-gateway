@@ -16,7 +16,7 @@ operator devices for direct access.
 | Tab | Shows | Actions | Source |
 |---|---|---|---|
 | Rig | every card in board order (verdict, holder, temperature, fan, power against its limit, VRAM, load); claims drawn as brackets over the cards they reserve; loaded models; the rig plan; manager events | kill a card, unclaim, unload a model, cancel a plan item, load a model (cards, use, wait for busy cards, force) | the manager (`/v1/manager/status`, `docs/MANAGER.md`); actions are the manager's overrides, the same as `rigctl` |
-| Models | every registry model: status, placement, roles, profiles, the best result per key test (a limit-50 run over a smoke run, then the newest), pipeline mean, decode speed and context from the latest runtime characterization, download link | none | benchmarking `model_registry.json`, `model_roles.json`, `results/model_benchmark_records.jsonl`, `results/runtime_experiments/` |
+| Models | every registry model: status, placement, roles, profiles, the best result per key test (a limit-50 run over a smoke run, then the newest), pipeline mean, decode speed and context from the latest runtime characterization, download link | click any column header to sort; click again to reverse the order | benchmarking `model_registry.json`, `model_roles.json`, `results/model_benchmark_records.jsonl`, `results/runtime_experiments/` |
 | Benchmarks | lane runs (running while the lane holds its `lane-<cards>` claim) and campaign runs with their block states | none (start runs as before) | `logs/benchmarks/worker_lanes_*`, `logs/benchmarks/campaigns/history/*/*/status.json` on the drive |
 | Orchestration | task counts, alerts, workers, active batches | start a plan, resume, kill, show outputs, kill all active plans, clean up stale task files, requeue a worker's tasks | llm_orchestration `GET /v1/orchestration/status`, `GET /v1/orchestration/options`, and `POST /v1/orchestration/actions/{action}` over `/run/llm-orchestration/api.sock` |
 
@@ -54,6 +54,28 @@ upgraded independently; `/v1/orchestration` is the versioned cross-repo contract
 
 ### Codex coding sessions (live 2026-11-09)
 
+The gateway can register the harness's `delegate_local_task` MCP tool for Codex dashboard threads when
+`CODEX_LOCAL_AGENT_MCP_SCRIPT` points to the harness adapter. The Pi service unit also sets
+`CODEX_LOCAL_AGENT_RECEIPTS` for per-child receipts. The tool asks the manager for a reviewed local
+`coding` or `research` child route; Codex does not select GPUs. On 2026-11-13 the focused Pi tests
+passed (gateway 47/47, harness 7/7), an isolated Codex app-server thread discovered
+`local_agents.delegate_local_task`, and a live dashboard Codex turn delegated a task to route
+`gpu-rig/harness-ornith-9b`. The local child returned `42` with a successful receipt, and Codex
+returned `42` without an operator approval prompt. The bridge automatically accepts only the
+configured local-agent MCP tool request. The child currently has no file tools, so it is suitable
+for bounded analysis and review rather than editing the workspace. See
+[Powerful gateway and local agents](POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md).
+
+Dashboard Codex sessions register the harness's `rig-search` MCP when
+`CODEX_SEARCH_MCP_SCRIPT` and `CODEX_SEARCH_MCP_ENV_FILE` point to its entry
+point and private provider configuration. `search_web` uses the configured
+six-provider router, including its per-provider caps and direct-egress switch.
+`fetch_page` reads one selected public HTTPS page on the Pi CPU, with DNS and
+redirect checks plus byte and text limits. Orange Pi dispatch is not active;
+those workers must be reachable before it can be tested. Search snippets and
+fetched page text are untrusted evidence candidates. The bridge accepts only
+the exact `rig_search.search_web` and `rig_search.fetch_page` tool requests.
+
 The model dropdown also offers **Codex (cloud coding agent)**. Selecting it and clicking New conversation
 opens a separate in-page chat tab. The selected Pi workspace is fixed for that conversation. Codex
 uses its own persisted app-server thread, so several Codex and local chats can run concurrently.
@@ -65,6 +87,10 @@ inputs, and saved with the transcript. Local rig chats remain text-only until a 
 advertises and implements vision input. The HTTPS proxy permits a 15 MiB request body so base64
 image uploads reach the dashboard; the dashboard proxy applies that size only to chat turns and
 keeps its 1 MiB limit for other POST routes.
+The composer has a browser-local **Enter sends** preference. It defaults on: Enter submits and
+Shift+Enter adds a line. Turn it off to make Enter add lines and submit only with the Send button.
+Completed agent answers and turn-completed notices are excluded from the activity panel because the
+same answer is already rendered in the saved transcript; command and file-change activity remains.
 The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
 operator's ChatGPT account; the browser receives only the verification URL and one-time code.
 Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access
@@ -74,6 +100,8 @@ and each model's supported reasoning efforts from app-server. The approval selec
 **Ask for approval** or **Approve for me**; the latter sets Codex's `approvals_reviewer` to
 `auto_review` without expanding the workspace sandbox. Full access is shown as unavailable in
 the gateway dashboard. These settings are saved per conversation and affect future turns.
+Opening a saved conversation from the sidebar restores its top-level model, Codex model,
+reasoning effort, approval mode, and fixed workspace in the chat controls.
 The dashboard shows pending command or file-change approvals in the conversation and offers
 one-time Approve or Decline when manual approval is needed. Other
 app-server interaction types are currently rejected. The workspace allowlist comes from

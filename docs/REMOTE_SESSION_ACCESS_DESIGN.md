@@ -2,11 +2,37 @@
 
 Status: research and evolving design, 2026-11-06. The direct home-Wi-Fi dashboard phase is operational and documented in [Local dashboard access](LOCAL_DASHBOARD_ACCESS.md). Harness session UI and access away from home remain design only. Owning repo: `llm-gateway`. Companion: `llm-harness/docs/REMOTE_SESSIONS_DESIGN.md`.
 
+## Pi Tailscale package preparation (2026-11-11)
+
+The official Tailscale Debian Trixie repository and package tailscale 1.104.6 are installed on the Pi. The tailscaled service is stopped and disabled; the Pi has not been authenticated into a tailnet. No Serve or Funnel configuration, advertised subnet route, exit node, router port forward, or remote dashboard listener was added. Post-install checks found no tailscaled process, tailscale0 interface, or UDP 41641 listener. IPv4 and IPv6 forwarding both remained 0. The existing loopback dashboard returned HTTP 200, with listeners still on 127.0.0.1:8080 and the existing home-Wi-Fi HTTPS address.
+
+The next activation step is to establish restrictive tailnet grants and device enrollment policy, then connect only the Pi to the tailnet for a denied-by-default network test. A remote session front door must remain separate from the existing broad administrative dashboard. The phone and remote service exposure are later steps. The Pi's GitHub CLI apt keyring was malformed during this installation, so the first full apt-get update failed. On 2026-11-11 it was replaced with GitHub's current official keyring after SHA-256 and signing-fingerprint checks; a full apt-get update then exited successfully. No packages were upgraded.
+
+## Pi host ingress boundary (deployed 2026-11-13)
+
+The Pi now has a dedicated `pi-host-ingress.service` nftables table. Its input policy accepts loopback, established traffic, ICMP, Wi-Fi DHCP and mDNS, SSH and client-certificate HTTPS from the home LAN, and NFSv4 from the current rig over private Ethernet. Other inbound traffic is dropped. Its forwarding policy is drop, including any future Tailscale-to-rig forwarding. Outbound traffic remains available for Codex, package updates, and Tailscale coordination. The versioned rule template and service unit live in `deploy/`; the rendered host addresses and interfaces live only in `/etc/llm-gateway/pi-host-ingress.nft` on the Pi. Add a new rig host explicitly when one is deployed; do not widen the current NFS export back to a whole subnet by default.
+
+Pi SSH now accepts public keys only, disallows root login, agent forwarding, and X11 forwarding, using the versioned `deploy/pi-sshd-hardening.conf` drop-in. TCP forwarding remains available for the operator's SSH tunnel fallback. The NFS export was narrowed from the private subnet to the mounted rig host; the prior `/etc/exports` is preserved in a root-owned backup. Validation: a fresh public-key SSH login succeeded, the gateway health route returned 200, the LAN HTTPS listener returned the expected no-client-certificate 400, a LAN NFS connection timed out, and the rig's NFSv4 mount remained present. A temporary rollback timer was stopped after these checks.
+
+The staged [Tailscale activation preparation](TAILSCALE_ACTIVATION_PREP.md) runbook and synthetic `deploy/tailscale-policy.hujson.template` capture the next networking steps. The 443 grant in that example is for the future session listener and must not be applied to the current administrative dashboard. Tailscale 1.104.6 remains disabled and unauthenticated. No `tailscale0` or Tailscale inbound rule is active. Tailscale's initial tailnet policy can allow broad device-to-device access; establish narrow grants and denial tests before enrollment. Later, expose only the separate session front door with Serve; keep Funnel, subnet routing, exit-node use, and direct manager/dashboard access off. Test the Serve path with the host ingress table active. Direct peer UDP can be added after measuring a need for it; Tailscale can use its outbound relay path without an inbound UDP rule. The dedicated Codex service identity and per-process egress boundary remain separate work before remote general-agent access.
+
 ## Goal and boundary
 
 The Pi gateway presents a small conversation UI and authenticated API for harness sessions. A phone or local browser can attach to a running Pi session while model inference remains on the isolated rig. The gateway handles network reachability, identity, authorization, and event relay. The harness handles the agent's prompts, context, tools, child agents, approvals, and durable session state. The manager handles model readiness and GPU claims. No browser or phone receives a direct rig route.
 
 Current state: `pi-gateway.service` listens on `127.0.0.1:8080`. The existing `/dashboard/` includes powerful rig and orchestration controls and has no API keys yet (`docs/DASHBOARD.md`). A separate HTTPS front door on the Pi's Wi-Fi interface requires a browser client certificate and forwards only dashboard routes at `/gpurig` and `/dashboard/...`. This is home-network operator access, not the proposed harness session surface. A future phone or private VPN listener must not inherit the whole administrative dashboard. Keep rig management and inference administration on loopback unless independently hardened.
+
+The new `llm-harness/mcp_servers/rig_search` remains a harness-side discovery
+tool; it is not a gateway route or a tailnet listener. A gateway session may
+request search only through an explicit harness tool capability. The MCP
+server defaults direct provider egress off, keeps query text and URLs out of
+its receipts, and returns untrusted candidate URLs. Search queries still
+leave the Pi through SearXNG's configured engines, so the harness must keep
+private prompts and credentials out of them. A separate page reader needs
+its own destination and redirect checks. Do not register the new search MCP
+for general dashboard Codex sessions until its native harness qualification
+and per-session capability wiring pass; the current live Codex MCP adapter
+exposes local-agent delegation only.
 
 ## Existing local dashboard and next build
 

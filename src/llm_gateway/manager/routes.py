@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, Callable
 
 from fastapi import APIRouter, Request
@@ -88,29 +89,85 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             raise ManagerError(404, "unknown published profile")
         return await manager.chat_availability(profile_id)
 
+    @r.get("/subagent-candidates")
+    async def subagent_candidates():
+        """Imported model-library identities; readiness is checked by each provider at use time."""
+        return models.catalog().get("subagent_catalog", {"schema_version": 1, "candidates": {}})
+
+    @r.post("/agent-routes/release")
+    async def release_agent_route(request: Request):
+        body = await _body(request)
+        route = body.get("route")
+        parent = body.get("parent_route")
+        prefix = model_prefix + "/shared-35b-"
+        if not isinstance(route, str) or not route.startswith(prefix + "child-") or \
+                not isinstance(parent, str) or not parent.startswith(prefix):
+            raise ManagerError(400, "an attached shared child route and parent are required")
+        child_id = route[len(prefix):]
+        status = await manager.rig.status()
+        service = status.get("shared_kv_service") or {}
+        chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
+        if service.get("status") != "ready" or child_id not in chats or parent[len(prefix):] not in chats:
+            raise ManagerError(409, "shared child or parent is not ready")
+        if chats[child_id].get("gpu") == chats[parent[len(prefix):]].get("gpu"):
+            raise ManagerError(409, "child is not isolated from parent")
+        await manager.rig.shared_kv("detach", chat_id=child_id)
+        return {"released": route}
+
     @r.post("/agent-routes/resolve")
     async def resolve_agent_route(request: Request):
         """Offer an already-ready, disjoint route for a child agent capability."""
         b = await _body(request)
         agent_type, parent_id = b.get("agent_type"), b.get("parent_route")
+        candidate_id = b.get("candidate_id")
         if agent_type not in AGENT_ROLE_ORDER or not isinstance(parent_id, str):
             raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_ROLE_ORDER)} and parent_route is required")
         prefix = model_prefix + "/"
-        if not parent_id.startswith(prefix):
-            raise ManagerError(400, "parent_route must be a gateway route")
+        cloud_parent = parent_id == "cloud/codex"
+        if not cloud_parent and not parent_id.startswith(prefix):
+            raise ManagerError(400, "parent_route must be a gateway route or cloud/codex")
         min_context = b.get("min_context", 4096)
         if type(min_context) is not int or min_context < 1:
             raise ManagerError(400, "min_context must be a positive integer")
+        shared_prefix = prefix + "shared-35b-"
+        if parent_id.startswith(shared_prefix):
+            if candidate_id not in (None, "qwen35_shared_1060"):
+                raise ManagerError(400, "candidate is incompatible with a shared 35B parent")
+            entry = (models.catalog().get("subagent_catalog") or {}).get("candidates", {}).get(
+                "qwen35_shared_1060", {})
+            if entry.get("provider") != "rig_shared_chat" or agent_type not in entry.get("agent_types", []):
+                raise ManagerError(409, "35B shared-chat subagent is not offered")
+            status = await manager.rig.status()
+            service = status.get("shared_kv_service") or {}
+            chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
+            parent_chat = parent_id[len(shared_prefix):]
+            parent = chats.get(parent_chat)
+            if (service.get("status") != "ready" or service.get("model") != entry.get("model")
+                    or not parent or type(parent.get("gpu")) is not int):
+                raise ManagerError(409, "parent shared chat is not ready")
+            if parent.get("context_cap", 0) < min_context:
+                raise ManagerError(409, "parent shared chat has insufficient context")
+            child_id = "child-" + uuid.uuid4().hex[:16]
+            attached = await manager.rig.shared_kv("attach", chat_id=child_id)
+            gpu = attached.get("gpu")
+            if type(gpu) is not int or gpu == parent["gpu"]:
+                raise ManagerError(502, "shared child placement did not isolate the parent GPU")
+            return {"agent_type": agent_type, "candidate_id": "qwen35_shared_1060",
+                    "route": shared_prefix + child_id, "model": entry["model"],
+                    "gpu_ids": [gpu], "context_length": attached["context_cap"],
+                    "state": "ready", "parent_route": parent_id, "ephemeral": True}
+        if candidate_id is not None:
+            raise ManagerError(400, "candidate is not available for this parent route")
         observed = await manager.status()
         if observed.get("from_copy"):
             raise ManagerError(503, "rig observation is stale")
         loaded = observed.get("profiles") or {}
         if isinstance(loaded, list):
             loaded = {row.get("id"): row for row in loaded if isinstance(row, dict)}
-        parent = loaded.get(parent_id[len(prefix):])
-        if not parent or parent.get("state") != "ready" or not parent.get("gpus"):
+        parent = None if cloud_parent else loaded.get(parent_id[len(prefix):])
+        if not cloud_parent and (not parent or parent.get("state") != "ready" or not parent.get("gpus")):
             raise ManagerError(409, "parent route is not ready with known GPU placement")
-        parent_gpus = set(parent["gpus"])
+        parent_gpus = set() if cloud_parent else set(parent["gpus"])
         published = profiles()
         for pid in _agent_profile_order(agent_type, published):
             row, spec = loaded.get(pid), published.get(pid)
@@ -143,10 +200,11 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 rows = refreshed.get("profiles") or {}
                 if isinstance(rows, list):
                     rows = {row.get("id"): row for row in rows if isinstance(row, dict)}
-                parent_now, row = rows.get(parent_id[len(prefix):]), rows.get(pid)
-                if (parent_now and parent_now.get("state") == "ready" and row and row.get("state") == "ready"
+                parent_now, row = (None if cloud_parent else rows.get(parent_id[len(prefix):])), rows.get(pid)
+                if ((cloud_parent or (parent_now and parent_now.get("state") == "ready"))
+                        and row and row.get("state") == "ready"
                         and row.get("model") == spec.get("model") and row.get("gpus")
-                        and set(parent_now.get("gpus") or []).isdisjoint(row["gpus"])
+                        and (cloud_parent or set(parent_now.get("gpus") or []).isdisjoint(row["gpus"]))
                         and type(row.get("ctx_size")) is int and row["ctx_size"] >= min_context):
                     return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
                             "gpu_ids": sorted(row["gpus"]), "context_length": row["ctx_size"], "state": "ready"}

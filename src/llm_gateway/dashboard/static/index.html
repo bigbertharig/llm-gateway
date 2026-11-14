@@ -34,6 +34,10 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: v
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
   padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.sort-header { border: 0; background: none; color: inherit; cursor: pointer; padding: 0; font: inherit;
+  text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
+.sort-header:hover, .sort-header:focus-visible { color: var(--text); }
+.sort-header span { color: var(--cool); margin-left: 3px; }
 td { padding: 6px 8px; border-bottom: 1px solid var(--panel2); vertical-align: top; }
 td.num, .num { font-family: var(--mono); font-size: 13px; text-align: right; white-space: nowrap; }
 td.mono { font-family: var(--mono); font-size: 12.5px; }
@@ -106,6 +110,9 @@ textarea { width: 100%; min-height: 80px; }
 .chat-image button { position: absolute; top: 4px; right: 4px; border: 1px solid var(--line); border-radius: 50%; background: #111c; color: white; cursor: pointer; }
 .chat-attach-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .chat-attach-row[hidden] { display: none; }
+.chat-enter-setting { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 5px;
+  margin: 0 4px 0 auto !important; white-space: nowrap; color: var(--muted); font: 12px var(--sans); cursor: pointer; }
+.chat-enter-setting input { margin: 0; }
 #chat-form { border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; background: var(--bg); }
 #chat-form label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 #chat-input { min-height: 56px; max-height: 35vh; resize: vertical; border: 0; padding: 4px; background: transparent; }
@@ -265,6 +272,9 @@ a { color: var(--cool); }
           </div>
           <div class="chat-actions"><span id="chat-status" class="line">Choose a model and send a message.</span>
             <button class="act" id="chat-retry" type="button" hidden>Retry model load</button>
+            <label class="chat-enter-setting" title="When enabled, use Shift+Enter for a new line">
+              <input id="chat-enter-send" type="checkbox"> Enter sends
+            </label>
             <button class="act" id="chat-send" type="submit" aria-label="Send message" title="Send message">↑</button></div>
         </form>
       </div>
@@ -466,18 +476,59 @@ function brackets(claims, gpus) {
 
 // ---------------------------------------------------------------- models
 let modelsData = null;
+let modelSort = {column: null, direction: 1};
+function modelSortValue(model, column) {
+  if (column.startsWith("test:")) return model.scores?.[column.slice(5)]?.score ?? null;
+  if (column === "pipeline") return model.pipeline;
+  if (column === "tok/s") return model.runtime?.decode_tps ?? null;
+  if (column === "ctx") return model.runtime?.ctx ?? null;
+  if (column === "roles") return (model.roles || []).join(", ");
+  if (column === "source") return model.source_url || null;
+  return model[column] ?? null;
+}
+function modelHeader(label, column, numeric = false) {
+  const selected = modelSort.column === column;
+  const order = selected ? (modelSort.direction === 1 ? "ascending" : "descending") : "none";
+  const arrow = selected ? (modelSort.direction === 1 ? "▲" : "▼") : "↕";
+  return `<th${numeric ? ' class="num"' : ""} aria-sort="${order}">` +
+    `<button type="button" class="sort-header" data-model-sort="${esc(column)}" aria-label="Sort by ${esc(label)}">` +
+    `${esc(label)}<span aria-hidden="true">${arrow}</span></button></th>`;
+}
+function sortedModels(models) {
+  if (!modelSort.column) return models;
+  const {column, direction} = modelSort;
+  return [...models].sort((a, b) => {
+    const left = modelSortValue(a, column), right = modelSortValue(b, column);
+    if (left == null || left === "") return right == null || right === "" ?
+      String(a.model).localeCompare(String(b.model), undefined, {numeric: true}) : 1;
+    if (right == null || right === "") return -1;
+    const comparison = typeof left === "number" && typeof right === "number" ? left - right :
+      String(left).localeCompare(String(right), undefined, {numeric: true, sensitivity: "base"});
+    return comparison * direction || String(a.model).localeCompare(String(b.model), undefined, {numeric: true});
+  });
+}
 function renderModels(d) {
   modelsData = d;
   const cols = d.key_tests || [];
-  $("#models").innerHTML = `<table><tr><th>Model</th><th>Status</th><th>Placement</th><th>Roles</th>` +
-    cols.map((c) => `<th class="num">${esc(c)}</th>`).join("") + `<th class="num">pipeline</th><th class="num">tok/s</th><th class="num">ctx</th><th>Source</th></tr>` +
-    d.models.map((m) => `<tr><td><b>${esc(m.model)}</b>${m.profiles.length > 1 ? "<br>" + m.profiles.map((p) => `<span class="tag">${esc(p)}</span>`).join("") : ""}</td>
+  $("#models").innerHTML = `<table><tr>` +
+    modelHeader("Model", "model") + modelHeader("Status", "status") +
+    modelHeader("Placement", "placement") + modelHeader("Roles", "roles") +
+    cols.map((c) => modelHeader(c, "test:" + c, true)).join("") +
+    modelHeader("pipeline", "pipeline", true) + modelHeader("tok/s", "tok/s", true) +
+    modelHeader("ctx", "ctx", true) + modelHeader("Source", "source") + `</tr>` +
+    sortedModels(d.models).map((m) => `<tr><td><b>${esc(m.model)}</b>${m.profiles.length > 1 ? "<br>" + m.profiles.map((p) => `<span class="tag">${esc(p)}</span>`).join("") : ""}</td>
       <td>${esc(m.status)}</td><td>${esc(m.placement || "")}</td>
       <td>${m.roles.map((r) => `<span class="tag role">${esc(r)}</span>`).join("")}</td>` +
       cols.map((c) => { const s = m.scores[c]; return `<td class="score num">${s ? fmt(s.score, 2) + `<small>${s.run_class === "smoke" ? "S" : "V"}</small>` + (s.unreadable ? `<small class="unread" title="${s.unreadable} of ${s.n} answers unreadable">u${s.unreadable}</small>` : "") : "-"}</td>`; }).join("") +
       `<td class="score num">${m.pipeline == null ? "-" : fmt(m.pipeline, 2)}</td>
       <td class="num">${m.runtime ? fmt(m.runtime.decode_tps, 1) : "-"}</td><td class="num">${m.runtime ? esc(m.runtime.ctx || "") : "-"}</td>
       <td>${m.source_url ? `<a href="${esc(m.source_url)}" rel="noopener" target="_blank">HF</a>` : ""}</td></tr>`).join("") + "</table>";
+  $("#models").querySelectorAll("[data-model-sort]").forEach((button) => button.onclick = () => {
+    const column = button.dataset.modelSort;
+    const numeric = column.startsWith("test:") || ["pipeline", "tok/s", "ctx"].includes(column);
+    modelSort = {column, direction: modelSort.column === column ? -modelSort.direction : numeric ? -1 : 1};
+    renderModels(modelsData);
+  });
   const sel = $("#load-model"), cur = sel.value;
   sel.innerHTML = d.models.filter((m) => ["active", "candidate"].includes(m.status)).map((m) => `<option>${esc(m.model)}</option>`).join("");
   if (cur) sel.value = cur;
@@ -551,12 +602,20 @@ function chatContextStatus(c) {
 let chatId = (() => { try { return localStorage.getItem("dash-chat-id") || ""; } catch (e) { return ""; } })();
 let chatBusy = false;
 let chatBoundModel = "";
+let displayedChatId = "", chatOpening = 0, activeCodexWorkspace = null;
 const busyChats = new Set();
 const chatDrafts = new Map();
 const chatImageDrafts = new Map();
 let chatImages = [];
 let openChatTabs = (() => { try { return JSON.parse(localStorage.getItem("dash-chat-tabs") || "[]"); } catch (e) { return []; } })();
 let codexConnected = false;
+let chatEnterSends = (() => { try { return localStorage.getItem("dash-chat-enter-sends") !== "false"; }
+  catch (e) { return true; } })();
+$("#chat-enter-send").checked = chatEnterSends;
+$("#chat-enter-send").onchange = (event) => {
+  chatEnterSends = event.target.checked;
+  try { localStorage.setItem("dash-chat-enter-sends", String(chatEnterSends)); } catch (e) { /* private window */ }
+};
 let codexModels = [], codexModelsLoading = null;
 let codexModelChoice = null, codexEffortChoice = null, codexReviewerChoice = "user";
 let codexSettingsPending = Promise.resolve();
@@ -700,6 +759,12 @@ function renderCodexSlashMenu() {
   menu.hidden = !choices.length;
 }
 $("#chat-input").addEventListener("input", renderCodexSlashMenu);
+$("#chat-input").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !chatEnterSends || event.shiftKey || event.ctrlKey || event.altKey ||
+      event.metaKey || event.isComposing || $("#chat-send").disabled) return;
+  event.preventDefault();
+  $("#chat-form").requestSubmit();
+});
 async function runCodexSlashCommand(prompt) {
   const [raw, ...words] = prompt.slice(1).split(/\s+/), command = raw.toLowerCase();
   const argument = words.join(" ").trim();
@@ -773,7 +838,7 @@ function renderChatTabs(conversations) {
     button.type = "button"; button.className = "chat-tab" + (busyChats.has(id) ? " busy" : "");
     button.setAttribute("role", "tab"); button.setAttribute("aria-selected", id === chatId ? "true" : "false");
     button.textContent = (c.provider === "codex" ? "Codex: " : "Local: ") + c.title;
-    button.onclick = () => openChat(id, false);
+    button.onclick = () => openSavedChat(id, false);
     tabs.append(button);
     const close = document.createElement("button"); close.type = "button"; close.className = "chat-tab";
     close.setAttribute("aria-label", "Close " + c.title + " tab"); close.textContent = "×";
@@ -805,11 +870,15 @@ async function loadCodexAccount() {
       : "No ChatGPT account connected on the Pi.");
     $("#chat-connect").hidden = codexConnected;
     $("#chat-disconnect").hidden = !codexConnected;
-    const workspace = $("#chat-workspace"), old = workspace.value;
+    const workspace = $("#chat-workspace"), wanted = activeCodexWorkspace || workspace.value;
     workspace.replaceChildren(...(state.workspaces || []).map((path) => {
       const option = document.createElement("option"); option.value = path; option.textContent = path; return option;
     }));
-    if ((state.workspaces || []).includes(old)) workspace.value = old;
+    if (wanted && !(state.workspaces || []).includes(wanted) && activeCodexWorkspace) {
+      const option = document.createElement("option"); option.value = wanted;
+      option.textContent = wanted + " (saved workspace)"; workspace.append(option);
+    }
+    if (wanted && [...workspace.options].some((option) => option.value === wanted)) workspace.value = wanted;
     if (state.login && state.login.success) $("#chat-device-code").hidden = true;
     if (state.login && state.login.success === false) $("#chat-device-code").textContent = "Sign-in failed: " + state.login.error;
     if ($("#chat-model").value === "Codex" && chatId && !busyChats.has(chatId))
@@ -843,7 +912,17 @@ $("#chat-input").addEventListener("paste", async (event) => {
   try { await addChatImages(files); toast(files.length === 1 ? "Image pasted." : files.length + " images pasted.", "good"); }
   catch (e) { toast("Could not paste image: " + e.message, "bad"); }
 });
+function selectSavedChatModel(model) {
+  const select = $("#chat-model");
+  if (!model) return;
+  if (![...select.options].some((option) => option.value === model)) {
+    const option = document.createElement("option"); option.value = model;
+    option.textContent = model + " (saved; unavailable)"; select.append(option);
+  }
+  select.value = model;
+}
 async function loadChat() {
+  const openingAtStart = chatOpening;
   const [opts, saved] = await Promise.all([api("chat/options"), api("chat/conversations")]);
   for (const c of saved.conversations) {
     if (c.provider === "codex") {
@@ -853,7 +932,9 @@ async function loadChat() {
   }
   const select = $("#chat-model"), old = select.value;
   select.innerHTML = '<option value="">Choose a model...</option>' + opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)}) ${m.ready ? "ready" : "cold"}</option>`).join("") + '<option value="Codex">Codex (cloud coding agent)</option>';
-  if (old && (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
+  const current = saved.conversations.find((c) => c.id === chatId);
+  if (current) selectSavedChatModel(current.model);
+  else if (old && (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
   chatProviderChanged();
   $("#chat-model-note").textContent = "The manager controls model loading and GPU placement.";
   const busy = $("#chat-rig-busy");
@@ -863,28 +944,35 @@ async function loadChat() {
     : "Rig unavailable. Saved conversations are still readable.";
   const list = $("#chat-conversations");
   list.innerHTML = saved.conversations.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)} ? ${esc(c.updated_at)}${c.last_turn_state && c.last_turn_state !== "completed" ? " ? " + esc(c.last_turn_state) : ""}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
-  list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openChat(b.dataset.chatId));
+  list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openSavedChat(b.dataset.chatId));
   renderChatTabs(saved.conversations);
-  if (chatId && saved.conversations.some((c) => c.id === chatId)) await openChat(chatId, false, true);
-  else { chatId = ""; chatBoundModel = ""; $("#chat-title").textContent = "New conversation";
+  if (current && displayedChatId !== chatId && openingAtStart === chatOpening) await openChat(chatId, false);
+  else if (!current && openingAtStart === chatOpening) { chatId = ""; displayedChatId = "";
+    chatBoundModel = ""; activeCodexWorkspace = null; $("#chat-title").textContent = "New conversation";
     const live = $("#chat-live"); $("#chat-messages").replaceChildren(live);
     $("#chat-agent-events").hidden = true; $("#chat-progress").hidden = true;
     $("#chat-approvals").hidden = true; syncChatLive();
     $("#chat-delete").hidden = true; $("#chat-switch").hidden = true; }
 }
+function openSavedChat(id, reloadList = true) {
+  openChat(id, reloadList).catch((error) => toast("Could not open saved chat: " + error.message, "bad"));
+}
 async function openChat(id, reloadList = true, preserveSelection = false) {
+  const opening = ++chatOpening;
   const sameChat = chatId === id;
   const transcript = $("#chat-messages");
   const distanceFromBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
   if (chatId !== id) showChatCommandOutput("");
   if (chatId) { chatDrafts.set(chatId, $("#chat-input").value); chatImageDrafts.set(chatId, chatImages); }
-  const pendingModel = preserveSelection ? $("#chat-model").value : "";
+  const pendingModel = preserveSelection && sameChat ? $("#chat-model").value : "";
   const c = await api("chat/conversations/" + encodeURIComponent(id));
+  if (opening !== chatOpening) return;
   chatId = c.id;
   chatImages = chatImageDrafts.get(id) || [];
   $("#chat-input").value = chatDrafts.get(id) || "";
   if (!openChatTabs.includes(id)) { openChatTabs.push(id); saveChatTabs(); }
   chatBoundModel = c.model;
+  activeCodexWorkspace = c.provider === "codex" ? c.cwd || null : null;
   if (c.provider === "codex") {
     codexModelChoice = c.codex_model || null;
     codexEffortChoice = c.codex_effort || null;
@@ -902,12 +990,12 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-delete").hidden = false;
   const box = $("#chat-messages");
   const live = $("#chat-live");
-  box.replaceChildren();
   $("#chat-agent-events").replaceChildren();
   $("#chat-agent-events").dataset.signature = "";
   $("#chat-agent-events").hidden = true;
   $("#chat-approvals").hidden = true;
   $("#chat-approvals").dataset.signature = "";
+  box.replaceChildren();
   for (const m of c.messages) {
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
@@ -951,13 +1039,23 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   syncChatLive();
   box.scrollTop = sameChat && distanceFromBottom > 90
     ? Math.max(0, box.scrollHeight - box.clientHeight - distanceFromBottom) : box.scrollHeight;
-  $("#chat-model").value = pendingModel && pendingModel !== c.model ? pendingModel : c.model;
+  selectSavedChatModel(c.model);
+  if (pendingModel && pendingModel !== c.model) $("#chat-model").value = pendingModel;
   chatProviderChanged();
+  if (activeCodexWorkspace) {
+    const workspace = $("#chat-workspace");
+    if (![...workspace.options].some((option) => option.value === activeCodexWorkspace)) {
+      const option = document.createElement("option"); option.value = activeCodexWorkspace;
+      option.textContent = activeCodexWorkspace + " (saved workspace)"; workspace.append(option);
+    }
+    workspace.value = activeCodexWorkspace;
+  }
   renderPendingChatImages();
   $("#chat-switch").hidden = c.provider === "codex" || $("#chat-model").value === c.model;
   $("#chat-status").textContent = $("#chat-switch").hidden
     ? chatContextStatus(c)
     : "This conversation uses " + c.model + ". Continue with the selected model, or start a new conversation.";
+  displayedChatId = c.id;
   if (reloadList) await loadChat();
   if (c.provider === "codex") refreshCodexApprovals(id);
   else $("#chat-approvals").hidden = true;

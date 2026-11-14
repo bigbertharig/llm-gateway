@@ -14,7 +14,7 @@ def test_page_and_rig_status(menv):  # noqa: F811
     c = menv["client"]
     page = c.get("/dashboard/")
     assert page.status_code == 200 and "Rig dashboard" in page.text and "/dashboard/api/" in page.text
-    assert "renderChatMarkdown" in page.text and "Attach images" in page.text
+    assert "renderChatMarkdown" in page.text and "Attach images" in page.text and "Enter sends" in page.text
     assert c.get("/dashboard", follow_redirects=False).status_code in (301, 302, 307)
     rig = c.get("/dashboard/api/rig").json()
     assert [g["gpu"] for g in rig["gpus"]] == [0, 1, 2]

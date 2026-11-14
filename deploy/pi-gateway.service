@@ -29,6 +29,12 @@ Environment=RIG_CONTROLLER_ID=pi
 Environment=START_TIMEOUT_SECONDS=900
 Environment=REQUEST_TIMEOUT_SECONDS=900
 Environment=CHAT_DATA_ROOT=/media/bryan/shared/llm-gateway/chat
+Environment=CODEX_LOCAL_AGENT_MCP_SCRIPT=/home/bryan/llm-harness/tools/gateway_subagent_mcp.py
+Environment=CODEX_LOCAL_AGENT_RECEIPTS=/media/bryan/shared/llm-gateway/local-agent-receipts
+Environment=CODEX_SEARCH_MCP_SCRIPT=/home/bryan/llm-harness/mcp_servers/rig_search/mcp_server.py
+Environment=CODEX_SEARCH_MCP_ENDPOINT=http://127.0.0.1:8888
+Environment=CODEX_SEARCH_MCP_ENV_FILE=/home/bryan/llm-harness/.env
+Environment=RIG_SEARCH_ALLOW_DIRECT_EGRESS=1
 ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m llm_gateway
 Restart=on-failure
 RestartSec=5

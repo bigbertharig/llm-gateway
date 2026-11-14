@@ -77,3 +77,42 @@ def test_atomic_text_replaces_complete_file(tmp_path):
     sync._atomic_text(path, "new\n")
     assert path.read_text() == "new\n"
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_sync_preserves_reviewed_subagent_candidates(tmp_path, monkeypatch):
+    root = tmp_path / "benchmarking"
+    (root / "scripts/active").mkdir(parents=True)
+    for name in ("model_registry.json", "model_roles.json", "load_recipes.json"):
+        (root / name).write_text("{}")
+    (root / "scripts/active/model_library.py").write_text("# converter")
+    candidates = {"schema_version": 1, "candidates": {"child": {"provider": "codex", "model": "gpt-test"}}}
+
+    class Library:
+        def load_registry(self, path):
+            return {"models": {"model-a": {}}}
+
+        def load_roles(self, path):
+            return {"roles": {}}
+
+        def validate(self, registry, roles):
+            return []
+
+        def generated_drift(self, registry):
+            return []
+
+    monkeypatch.setattr(sync.gen, "benchmarking_root", lambda: root)
+    monkeypatch.setattr(sync.gen, "load_library", lambda root: Library())
+    monkeypatch.setattr(sync.gen, "build", lambda *args: ({"remote_profiles": []}, []))
+    monkeypatch.setattr(sync.gen, "load_recipes", lambda *args: {"schema_version": 1, "recipes": {}})
+    monkeypatch.setattr(sync.gen, "load_subagent_catalog", lambda *args: candidates)
+    monkeypatch.setattr(sync.gen, "_summary", lambda root: {})
+    monkeypatch.setattr(sync.gen, "build_catalog", lambda library, registry, roles, summary, recipes, subagents:
+                        {"models": {}, "roles": {}, "load_recipes": recipes, "image": "test",
+                         "subagent_catalog": subagents})
+    catalog_path = tmp_path / "model_catalog.json"
+    monkeypatch.setattr(sync.gen, "CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(sync.gen, "OUTPUT_PATH", tmp_path / "remote_profiles.json")
+    monkeypatch.setattr(sys, "argv", ["sync_model_library.py"])
+
+    assert sync.main() == 0
+    assert json.loads(catalog_path.read_text())["subagent_catalog"] == candidates

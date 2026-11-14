@@ -1,0 +1,36 @@
+// Example for a dedicated tailnet or a carefully merged existing policy.
+// Replace the synthetic identities. Review all existing grants and ACLs first.
+// A broad existing ACL still grants access even if these grants are narrow.
+{
+  "tagOwners": {
+    "tag:pi-session": ["operator@example.invalid"],
+  },
+  "acls": [],
+  "grants": [
+    {
+      "src": ["operator@example.invalid"],
+      "dst": ["tag:pi-session"],
+      "ip": ["tcp:443"],
+    },
+  ],
+  "tests": [
+    {
+      "src": "operator@example.invalid",
+      "accept": ["tag:pi-session:443"],
+      "deny": [
+        "tag:pi-session:22",
+        "tag:pi-session:8080",
+        "tag:pi-session:2049",
+      ],
+    },
+    {
+      "src": "unapproved@example.invalid",
+      "deny": [
+        "tag:pi-session:22",
+        "tag:pi-session:443",
+        "tag:pi-session:8080",
+        "tag:pi-session:2049",
+      ],
+    },
+  ],
+}
