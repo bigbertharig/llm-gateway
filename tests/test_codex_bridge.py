@@ -1,6 +1,8 @@
 """Codex app-server request compatibility without an account or GPU."""
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -117,7 +119,32 @@ def test_codex_thread_registers_local_agent_mcp_when_configured(tmp_path, monkey
     server = calls[0][1]["config"]["mcp_servers"]["local_agents"]
     assert server["args"] == [str(script), "--cloud-parent", "--receipt-dir", str(receipts)]
     assert server["enabled_tools"] == ["delegate_local_task"]
+    assert "default_tools_approval_mode" not in server
     assert receipts.is_dir()
+
+
+def test_allowlisted_local_agent_elicitation_is_accepted_once():
+    bridge = CodexBridge()
+    writes = []
+
+    async def write(message):
+        writes.append(message)
+
+    async def check():
+        reader = asyncio.StreamReader()
+        bridge.process = SimpleNamespace(stdout=reader)
+        bridge.events["thread-1"] = asyncio.Queue()
+        bridge._write = write
+        reader.feed_data((json.dumps({"id": 7, "method": "mcpServer/elicitation/request", "params": {
+            "threadId": "thread-1", "serverName": "local_agents", "mode": "form",
+            "message": 'Allow the local_agents MCP server to run tool "delegate_local_task"?',
+            "requestedSchema": {"type": "object", "properties": {}}}}) + "\n").encode())
+        reader.feed_eof()
+        await bridge._read()
+        assert bridge.status("thread-1")["approvals"] == []
+
+    asyncio.run(check())
+    assert writes == [{"id": 7, "result": {"action": "accept", "content": {}}}]
 
 
 def test_agent_status_includes_recent_activity_with_idle_state():

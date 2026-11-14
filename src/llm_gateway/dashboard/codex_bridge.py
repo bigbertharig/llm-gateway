@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 class CodexBridgeError(RuntimeError):
@@ -145,7 +148,13 @@ class CodexBridge:
                     if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
                         self.approvals[str(message["id"])] = {"id": str(message["id"]),
                             "method": method, "thread_id": thread_id, "params": params}
+                    elif (method == "mcpServer/elicitation/request"
+                          and params.get("serverName") == "local_agents"
+                          and params.get("mode") == "form"
+                          and params.get("message") == 'Allow the local_agents MCP server to run tool "delegate_local_task"?'):
+                        await self._write({"id": message["id"], "result": {"action": "accept", "content": {}}})
                     else:
+                        log.warning("unsupported Codex app-server request: %s", method)
                         await self._write({"id": message["id"], "error": {
                             "code": -32601, "message": "This dashboard does not support the requested interaction"}})
                 if method == "serverRequest/resolved":
