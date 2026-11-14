@@ -1,0 +1,2 @@
+# Add each approved rig explicitly. Keep the rendered host IPs in /etc/exports.
+/media/bryan/shared @RIG_IP@(rw,sync,no_subtree_check,root_squash,anonuid=1000,anongid=1000)

@@ -1,0 +1,19 @@
+# Pi ingress boundary. Replace placeholders with private deployment values.
+# Outbound traffic remains available for Codex, updates, and future Tailscale.
+table inet pi_host_ingress {
+    chain input {
+        type filter hook input priority 10; policy drop;
+        iifname "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+        iifname "@LAN_IF@" udp sport 67 udp dport 68 accept
+        iifname "@LAN_IF@" udp dport 5353 accept
+        iifname "@LAN_IF@" ip saddr @LAN_CIDR@ tcp dport { 22, 443 } accept
+        iifname "@RIG_IF@" ip saddr @RIG_IP@ tcp dport 2049 accept
+    }
+    chain forward {
+        type filter hook forward priority 10; policy drop;
+    }
+}

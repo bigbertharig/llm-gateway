@@ -1,0 +1,15 @@
+[Unit]
+Description=Pi gateway host ingress boundary
+After=local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet pi_host_ingress
+ExecStart=/usr/sbin/nft -f /etc/llm-gateway/pi-host-ingress.nft
+ExecStop=-/usr/sbin/nft delete table inet pi_host_ingress
+
+[Install]
+WantedBy=multi-user.target
