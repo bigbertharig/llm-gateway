@@ -115,12 +115,14 @@ def test_codex_thread_registers_local_agent_mcp_when_configured(tmp_path, monkey
         return {"turn": {"id": "turn-1"}}
 
     bridge._call = call
-    asyncio.run(bridge.turn(None, "Work", str(tmp_path)))
+    asyncio.run(bridge.turn(None, "Use local agents to help", str(tmp_path)))
     server = calls[0][1]["config"]["mcp_servers"]["local_agents"]
     assert server["args"] == [str(script), "--cloud-parent", "--receipt-dir", str(receipts)]
-    assert server["enabled_tools"] == ["delegate_local_task"]
+    assert server["enabled_tools"] == ["list_local_agents", "delegate_local_task"]
     assert "default_tools_approval_mode" not in server
     assert receipts.is_dir()
+    assert "Call list_local_agents" in calls[1][1]["input"][0]["text"]
+    assert calls[1][1]["input"][0]["text"].endswith("Use local agents to help")
 
 
 def test_codex_search_mcp_uses_configured_router_and_cpu_reader(tmp_path, monkeypatch):
@@ -164,7 +166,8 @@ def test_search_elicitation_is_allowlisted():
     assert writes == [{"id": 9, "result": {"action": "accept", "content": {}}}]
 
 
-def test_allowlisted_local_agent_elicitation_is_accepted_once():
+@pytest.mark.parametrize("tool_name", ["list_local_agents", "delegate_local_task"])
+def test_allowlisted_local_agent_elicitation_is_accepted_once(tool_name):
     bridge = CodexBridge()
     writes = []
 
@@ -178,7 +181,7 @@ def test_allowlisted_local_agent_elicitation_is_accepted_once():
         bridge._write = write
         reader.feed_data((json.dumps({"id": 7, "method": "mcpServer/elicitation/request", "params": {
             "threadId": "thread-1", "serverName": "local_agents", "mode": "form",
-            "message": 'Allow the local_agents MCP server to run tool "delegate_local_task"?',
+            "message": f'Allow the local_agents MCP server to run tool "{tool_name}"?',
             "requestedSchema": {"type": "object", "properties": {}}}}) + "\n").encode())
         reader.feed_eof()
         await bridge._read()

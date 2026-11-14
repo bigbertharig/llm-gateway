@@ -738,6 +738,7 @@ const codexSlashCommands = [
   ["resume", "Open a saved Codex chat"], ["status", "Show this chat's state"],
   ["compact", "Compact this Codex thread"], ["diff", "Show workspace changes"],
   ["model", "List or select a Codex model"],
+  ["local-agent", "Delegate a task: /local-agent research <task>"],
 ];
 function showChatCommandOutput(message) {
   const box = $("#chat-command-output");
@@ -745,14 +746,14 @@ function showChatCommandOutput(message) {
 }
 function renderCodexSlashMenu() {
   const input = $("#chat-input"), menu = $("#chat-slash-menu");
-  const match = input.value.match(/^\/([a-z]*)$/i);
+  const match = input.value.match(/^\/([a-z-]*)$/i);
   const choices = $("#chat-model").value === "Codex" && match
     ? codexSlashCommands.filter(([name]) => name.startsWith(match[1].toLowerCase())) : [];
   menu.replaceChildren();
   for (const [name, description] of choices) {
     const button = document.createElement("button"); button.type = "button"; button.className = "act";
     button.textContent = "/" + name + " — " + description;
-    button.onclick = () => { input.value = "/" + name + (name === "resume" || name === "model" ? " " : "");
+    button.onclick = () => { input.value = "/" + name + (["resume", "model", "local-agent"].includes(name) ? " " : "");
       menu.hidden = true; input.focus(); };
     menu.append(button);
   }
@@ -1152,10 +1153,22 @@ $("#chat-delete").onclick = async () => {
 $("#chat-form").onsubmit = async (event) => {
   event.preventDefault();
   if (busyChats.has(chatId)) return;
-  const input = $("#chat-input"), prompt = input.value.trim();
+  const input = $("#chat-input"); let prompt = input.value.trim();
   const cloud = $("#chat-model").value === "Codex";
   const model = cloud ? "Codex" : $("#chat-model").value;
   const turnImages = cloud ? chatImages.map(({name, type, data_url}) => ({name, type, data_url})) : [];
+  if (cloud && prompt.toLowerCase().startsWith("/local-agent")) {
+    const match = prompt.match(/^\/local-agent\s+(coding|research)\s+([\s\S]+)$/i);
+    if (!match || !match[2].trim()) {
+      showChatCommandOutput("Use /local-agent research <task> or /local-agent coding <task>.");
+      return;
+    }
+    const role = match[1].toLowerCase(), task = match[2].trim();
+    prompt = "Call local_agents.delegate_local_task exactly once with " +
+      "agent_type=" + JSON.stringify(role) + " and task=" + JSON.stringify(task) +
+      ". Use the returned local child answer and receipt to respond. " +
+      "Do not spawn a cloud subagent or choose a GPU card.";
+  }
   if (cloud && prompt.startsWith("/")) {
     input.value = ""; renderCodexSlashMenu();
     try { await runCodexSlashCommand(prompt); }

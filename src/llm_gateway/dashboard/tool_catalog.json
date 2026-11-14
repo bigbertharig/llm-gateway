@@ -1,0 +1,33 @@
+{
+  "imported_at": "2026-11-14T23:33:50+00:00",
+  "schema_version": 1,
+  "servers": {
+    "local_agents": {
+      "purpose": "Discover local agent roles and delegate bounded tasks to a rig model",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "list_local_agents"
+        },
+        {
+          "approval": "automatic",
+          "name": "delegate_local_task"
+        }
+      ]
+    },
+    "rig_search": {
+      "purpose": "Search public sources and fetch selected public pages on Pi CPUs",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "search_web"
+        },
+        {
+          "approval": "automatic",
+          "name": "fetch_page"
+        }
+      ]
+    }
+  },
+  "source_sha256": "7c926e073d6ee85ae5fa50fb6f928d0624a7b2f020276098607f45ee5d268f93"
+}

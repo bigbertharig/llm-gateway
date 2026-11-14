@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from collections import deque
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
+TOOL_CATALOG = Path(__file__).with_name("tool_catalog.json")
 
 
 class CodexBridgeError(RuntimeError):
@@ -47,6 +49,26 @@ class CodexBridge:
             raise CodexBridgeError("Choose an available coding workspace")
         return selected
 
+    def dashboard_tools(self, server: str) -> list[dict]:
+        """Read gateway's imported harness catalog, never the harness checkout."""
+        try:
+            catalog = json.loads(TOOL_CATALOG.read_text(encoding="utf-8"))
+            if catalog.get("schema_version") != 1:
+                raise ValueError("unsupported schema")
+            return catalog["servers"][server]["tools"]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise CodexBridgeError("Dashboard tool catalog is unavailable; sync from harness") from exc
+
+    def automatic_tool_request(self, params: dict) -> bool:
+        if params.get("mode") != "form":
+            return False
+        server = params.get("serverName")
+        if server not in ("local_agents", "rig_search"):
+            return False
+        return any(tool["approval"] == "automatic" and
+                   params.get("message") == f'Allow the {server} MCP server to run tool "{tool["name"]}"?'
+                   for tool in self.dashboard_tools(server))
+
     def local_agent_config(self) -> dict:
         """Optional harness MCP adapter for bounded local children of a Codex session."""
         configured = os.getenv("CODEX_LOCAL_AGENT_MCP_SCRIPT")
@@ -61,7 +83,8 @@ class CodexBridge:
         return {"mcp_servers": {"local_agents": {
             "command": sys.executable,
             "args": [str(script), "--cloud-parent", "--receipt-dir", str(receipts)],
-            "enabled_tools": ["delegate_local_task"],
+            "enabled_tools": [tool["name"] for tool in self.dashboard_tools("local_agents")
+                              if tool["approval"] == "automatic"],
             "tool_timeout_sec": 480,
         }}}
 
@@ -83,7 +106,8 @@ class CodexBridge:
         return {"mcp_servers": {"rig_search": {
             "command": sys.executable,
             "args": [str(script), "--env-file", env_file, "--endpoint", endpoint],
-            "enabled_tools": ["search_web", "fetch_page"],
+            "enabled_tools": [tool["name"] for tool in self.dashboard_tools("rig_search")
+                              if tool["approval"] == "automatic"],
             "tool_timeout_sec": 60,
         }}}
 
@@ -171,17 +195,7 @@ class CodexBridge:
                     if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
                         self.approvals[str(message["id"])] = {"id": str(message["id"]),
                             "method": method, "thread_id": thread_id, "params": params}
-                    elif (method == "mcpServer/elicitation/request"
-                          and params.get("serverName") == "local_agents"
-                          and params.get("mode") == "form"
-                          and params.get("message") == 'Allow the local_agents MCP server to run tool "delegate_local_task"?'):
-                        await self._write({"id": message["id"], "result": {"action": "accept", "content": {}}})
-                    elif (method == "mcpServer/elicitation/request"
-                          and params.get("serverName") == "rig_search"
-                          and params.get("mode") == "form"
-                          and params.get("message") in (
-                              'Allow the rig_search MCP server to run tool "search_web"?',
-                              'Allow the rig_search MCP server to run tool "fetch_page"?')):
+                    elif method == "mcpServer/elicitation/request" and self.automatic_tool_request(params):
                         await self._write({"id": message["id"], "result": {"action": "accept", "content": {}}})
                     else:
                         log.warning("unsupported Codex app-server request: %s", method)
@@ -280,7 +294,8 @@ class CodexBridge:
         workspace = self.workspace(cwd)
         if reviewer not in ("user", "auto_review"):
             raise CodexBridgeError("Invalid Codex reviewer")
-        config = {"approvals_reviewer": reviewer, **self.local_agent_config()}
+        local_agents = self.local_agent_config()
+        config = {"approvals_reviewer": reviewer, **local_agents}
         search = self.search_config()
         if search:
             config.setdefault("mcp_servers", {}).update(search["mcp_servers"])
@@ -303,7 +318,14 @@ class CodexBridge:
         self.recent[thread_id] = deque(maxlen=80)
         answer = []
         try:
-            inputs = [{"type": "text", "text": prompt}]
+            routed_prompt = prompt
+            if local_agents and re.search(r"\blocal agents?\b", prompt, flags=re.IGNORECASE):
+                routed_prompt = (
+                    "Dashboard tool routing: In this gateway, 'local agents' means the "
+                    "local_agents MCP server. Call list_local_agents to see available roles "
+                    "and candidates, then delegate_local_task for bounded local GPU help. "
+                    "The gateway handles model loading and GPU placement.\n\nUser request:\n" + prompt)
+            inputs = [{"type": "text", "text": routed_prompt}]
             inputs.extend({"type": "image", "url": image["data_url"]} for image in (images or []))
             turn_params = {"threadId": thread_id,
                 "input": inputs,

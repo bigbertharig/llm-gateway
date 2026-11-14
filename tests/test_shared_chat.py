@@ -11,17 +11,21 @@ from llm_gateway.settings import Settings
 
 
 class SharedRig:
-    def __init__(self):
+    def __init__(self, ready=True):
+        self.ready = ready
         self.chats = [{"chat_id": "main", "gpu": 0, "context_cap": 262144, "used_tokens": 0}]
         self.calls = []
 
     async def status(self):
-        return {"profiles": [], "shared_kv_service": {"status": "ready",
+        return {"profiles": [], "shared_kv_service": ({"status": "ready",
                 "model": "qwen3.6:35b-a3b-xl", "port": 11524, "mode": "gpu0-main-q4",
-                "chats": [dict(row) for row in self.chats]}}
+                "chats": [dict(row) for row in self.chats]} if self.ready else None)}
 
     async def shared_kv(self, action, *, chat_id=None, message=None, max_tokens=None):
         self.calls.append((action, chat_id, message, max_tokens))
+        if action == "start":
+            self.ready = True
+            return {"status": "ready"}
         if action == "attach":
             row = {"chat_id": chat_id, "gpu": 1, "context_cap": 262144, "used_tokens": 0}
             self.chats.append(row)
@@ -97,6 +101,9 @@ def test_manager_attaches_and_releases_cataloged_child(monkeypatch):
     app = FastAPI()
     app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
     with TestClient(app) as client:
+        available = client.get("/v1/manager/local-agent-capabilities")
+        assert available.status_code == 200
+        assert available.json()["candidates"][0]["candidate_id"] == "qwen35_shared_1060"
         got = client.post("/v1/manager/agent-routes/resolve", json={
             "parent_route": "gpu-rig/shared-35b-main", "agent_type": "coding",
             "candidate_id": "qwen35_shared_1060"})
@@ -108,6 +115,55 @@ def test_manager_attaches_and_releases_cataloged_child(monkeypatch):
             "parent_route": "gpu-rig/shared-35b-main", "route": child["route"]})
         assert released.status_code == 200, released.text
         assert len(rig.chats) == 1
+
+
+def test_cloud_parent_starts_shared_service_and_releases_worker(monkeypatch):
+    rig = SharedRig(ready=False)
+    class Manager:
+        pass
+    manager = Manager()
+    manager.rig = rig
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat",
+                "model": "qwen3.6:35b-a3b-xl", "agent_types": ["research"]}}}})
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        got = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "cloud/codex", "agent_type": "research",
+            "candidate_id": "qwen35_shared_1060"})
+        assert got.status_code == 200, got.text
+        child = got.json()
+        assert child["gpu_ids"] == [1] and child["parent_route"] == "cloud/codex"
+        assert [call[0] for call in rig.calls] == ["start", "attach"]
+        released = client.post("/v1/manager/agent-routes/release", json={
+            "parent_route": "cloud/codex", "route": child["route"]})
+        assert released.status_code == 200, released.text
+        assert [call[0] for call in rig.calls] == ["start", "attach", "detach"]
+
+
+def test_cloud_parent_default_uses_ready_shared_service(monkeypatch):
+    rig = SharedRig()
+    class Manager:
+        pass
+    manager = Manager()
+    manager.rig = rig
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat",
+                "model": "qwen3.6:35b-a3b-xl", "agent_types": ["research"]}}}})
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        got = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "cloud/codex", "agent_type": "research"})
+        assert got.status_code == 200, got.text
+        assert got.json()["candidate_id"] == "qwen35_shared_1060"
+        assert [call[0] for call in rig.calls] == ["attach"]
+        released = client.post("/v1/manager/agent-routes/release", json={
+            "parent_route": "cloud/codex", "route": got.json()["route"]})
+        assert released.status_code == 200
 
 
 def test_fenced_tool_request_gets_one_strict_repair(tmp_path):
