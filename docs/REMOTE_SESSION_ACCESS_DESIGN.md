@@ -22,6 +22,18 @@ The Pi gateway presents a small conversation UI and authenticated API for harnes
 
 Current state: `pi-gateway.service` listens on `127.0.0.1:8080`. The existing `/dashboard/` includes powerful rig and orchestration controls and has no API keys yet (`docs/DASHBOARD.md`). A separate HTTPS front door on the Pi's Wi-Fi interface requires a browser client certificate and forwards only dashboard routes at `/gpurig` and `/dashboard/...`. This is home-network operator access, not the proposed harness session surface. A future phone or private VPN listener must not inherit the whole administrative dashboard. Keep rig management and inference administration on loopback unless independently hardened.
 
+The new `llm-harness/mcp_servers/rig_search` remains a harness-side discovery
+tool; it is not a gateway route or a tailnet listener. A gateway session may
+request search only through an explicit harness tool capability. The MCP
+server defaults direct provider egress off, keeps query text and URLs out of
+its receipts, and returns untrusted candidate URLs. Search queries still
+leave the Pi through SearXNG's configured engines, so the harness must keep
+private prompts and credentials out of them. A separate page reader needs
+its own destination and redirect checks. Do not register the new search MCP
+for general dashboard Codex sessions until its native harness qualification
+and per-session capability wiring pass; the current live Codex MCP adapter
+exposes local-agent delegation only.
+
 ## Existing local dashboard and next build
 
 The web UI was already moved from `llm_orchestration` to this repo on 2026-10-20. The Pi gateway now serves one page with Rig, Models, Benchmarks, and Orchestration tabs at `/dashboard/`. Orchestration's status and controls are exposed through its private versioned Unix-socket API; `dashboard/sources.py` calls that API. The existing start form exposes a plan, starter, and raw config JSON. This is the current operator interface, not a new UI migration to schedule.
