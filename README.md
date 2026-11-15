@@ -13,6 +13,7 @@ Plus the dashboard for the whole rig (`/dashboard/`).
 
 | Doc | For |
 |---|---|
+| [EXTERNAL_REPOS.md](EXTERNAL_REPOS.md) | outside runtimes and source projects, local revisions, and update checks |
 | [docs/MANAGER.md](docs/MANAGER.md) | the entry point: the two layers (Pi manager, rig hardware), the rules, model loads and fit, reservations and card collecting, runs, cancel by owner and demand, and "Pick up here" |
 | [docs/WORKLOAD_COORDINATION.md](docs/WORKLOAD_COORDINATION.md) | migration from exclusive rig modes to gateway-coordinated requests and explicit commands |
 | [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | design notes and ideas: failure recovery, slots, sharing capacity (exploratory) |
