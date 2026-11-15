@@ -1,9 +1,9 @@
 {
-  "imported_at": "2026-11-14T23:46:56+00:00",
+  "imported_at": "2026-11-15T23:33:53+00:00",
   "schema_version": 1,
   "servers": {
     "local_agents": {
-      "purpose": "Discover local agent roles and delegate bounded tasks to a rig model",
+      "purpose": "Discover agent roles and delegate bounded tasks from cloud or local models",
       "tools": [
         {
           "approval": "automatic",
@@ -11,7 +11,36 @@
         },
         {
           "approval": "automatic",
-          "name": "delegate_local_task"
+          "name": "delegate_task"
+        }
+      ]
+    },
+    "rig_info": {
+      "purpose": "Read-only rig, model, benchmark, and orchestration status through gateway APIs",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "get_rig_status"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_model_status"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_benchmark_status"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_orchestration_status"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_orchestration_diagnostics"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_orchestration_activity"
         }
       ]
     },
@@ -29,5 +58,5 @@
       ]
     }
   },
-  "source_sha256": "91e6c67d26734a39e75d2905480a9a20e9643095a6d893ff40dab64c36652f5b"
+  "source_sha256": "b77538cab9edcfcd80616f64ca98d271477426d9b880d56b36ccbafef3de4831"
 }

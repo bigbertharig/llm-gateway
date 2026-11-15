@@ -142,8 +142,31 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
             return {"profile": pid, "state": "ready", "port": 11434, "context_length": 65536}
     manager = Manager()
     requests = []
+    from llm_gateway.dashboard import tool_runtime
+    tool_calls = []
+    schema = {"type": "object", "properties": {"agent_type": {"type": "string"},
+                                                 "task": {"type": "string"}},
+              "required": ["agent_type", "task"]}
+    def available(parent_route):
+        assert parent_route == "gpu-rig/" + profile["id"]
+        return ([{"type": "function", "function": {"name": "delegate_task",
+                 "description": "Delegate", "parameters": schema}}],
+                {"delegate_task": (["fixture"], schema)})
+    def call(dispatch, name, arguments):
+        assert name in dispatch
+        tool_calls.append((name, arguments))
+        return {"structuredContent": {"answer": "42"}}
+    monkeypatch.setattr(tool_runtime, "available", available)
+    monkeypatch.setattr(tool_runtime, "call", call)
     def upstream(request):
         requests.append(json.loads(request.content))
+        if requests[-1]["messages"][-1].get("content") == "Delegate this":
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None,
+                "tool_calls": [{"id": "call-1", "type": "function", "function": {
+                    "name": "delegate_task", "arguments": '{"agent_type":"coding","task":"7 times 6"}'}}]}}]})
+        if requests[-1]["messages"][-1].get("role") == "tool":
+            return httpx.Response(200, json={"choices": [{"message": {"role": "assistant",
+                "content": "The child answered 42."}}]})
         return httpx.Response(200, json={"choices": [{"message": {"content": "Hello from the model."}}],
                                          "usage": {"prompt_tokens": 42, "completion_tokens": 9, "total_tokens": 51}})
     @asynccontextmanager
@@ -194,6 +217,12 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
         assert len(client.get(f"/dashboard/api/chat/conversations/{c['id']}").json()["messages"]) == 2
         manager.busy = False
         assert requests[0]["messages"] == [{"role": "user", "content": "Hi"}]
+        delegated = client.post(f"/dashboard/api/chat/conversations/{c['id']}/turn",
+                                json={"model": profile["id"], "message": "Delegate this"}).json()
+        assert delegated["conversation"]["messages"][-1]["content"] == "The child answered 42."
+        assert delegated["conversation"]["messages"][-1]["activity"] == [
+            {"type": "tool", "name": "delegate_task", "result": "completed"}]
+        assert tool_calls == [("delegate_task", {"agent_type": "coding", "task": "7 times 6"})]
         image = {"name": "screen.png", "type": "image/png", "data_url": "data:image/png;base64,iVBORw0KGgo="}
         image_blocked = client.post(f"/dashboard/api/chat/conversations/{c['id']}/turn",
                                     json={"model": profile["id"], "message": "look", "images": [image]})

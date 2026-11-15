@@ -18,7 +18,15 @@ operator devices for direct access.
 | Rig | every card in board order (verdict, holder, temperature, fan, power against its limit, VRAM, load); claims drawn as brackets over the cards they reserve; loaded models; the rig plan; manager events | kill a card, unclaim, unload a model, cancel a plan item, load a model (cards, use, wait for busy cards, force) | the manager (`/v1/manager/status`, `docs/MANAGER.md`); actions are the manager's overrides, the same as `rigctl` |
 | Models | every registry model: status, placement, roles, profiles, the best result per key test (a limit-50 run over a smoke run, then the newest), pipeline mean, decode speed and context from the latest runtime characterization, download link | click any column header to sort; click again to reverse the order | benchmarking `model_registry.json`, `model_roles.json`, `results/model_benchmark_records.jsonl`, `results/runtime_experiments/` |
 | Benchmarks | lane runs (running while the lane holds its `lane-<cards>` claim) and campaign runs with their block states | none (start runs as before) | `logs/benchmarks/worker_lanes_*`, `logs/benchmarks/campaigns/history/*/*/status.json` on the drive |
-| Orchestration | task counts, alerts, workers, active batches | start a plan, resume, kill, show outputs, kill all active plans, clean up stale task files, requeue a worker's tasks | llm_orchestration `GET /v1/orchestration/status`, `GET /v1/orchestration/options`, and `POST /v1/orchestration/actions/{action}` over `/run/llm-orchestration/api.sock` |
+| Orchestration | current brain and worker heartbeats, loaded models, active batches, last-day completions, per-batch activity | gateway discovers and prepares plans, then submits prepared work; orchestration executes, resumes through gateway preparation, kills, shows outputs, cleans stale task files, and requeues workers | gateway `plan_requests.py` and `plan_catalog.py`; llm_orchestration `GET /v1/orchestration/{status,diagnostics,activity}` and `POST /v1/orchestration/actions/{submit_prepared,kill_plan,kill_all_active,batch_outputs,cleanup_stale,requeue_worker}` over `/run/llm-orchestration/api.sock` |
+
+The Benchmarks tab and `rig_info.get_benchmark_status` read the same gateway summary.
+It shows up to 12 recent finished lane entries, any claimed active lanes, and
+up to 12 campaign entries updated in the past 24 hours. A
+long-running campaign refreshes its status receipt every scheduler tick, so its
+full current-job block state remains available even when it started earlier.
+Old receipts left marked `running` after a crash do not stay in the recent list.
+Finished run details remain in the benchmarking results and campaign receipts.
 
 The old dashboard's GPU-level controls (`clear_runtime`, `reset_gpu`, `return_default`, remote runtime
 cleanup) are gone: they acted on the rig outside the manager. Kill or unload through the Rig tab, then
@@ -39,9 +47,12 @@ Settings (environment, all optional): `ORCHESTRATION_API_SOCKET` (default
 `/media/bryan/shared`, `/mnt/shared`), `BENCHMARKING_ROOT` (as for model loads).
 `ORCHESTRATION_CONFIG` belongs to the orchestration API process, not the gateway.
 
-The API is accessible only to the local service user. No remote access is enabled by this migration.
-The gateway keeps the same browser routes and response shapes. The two services can be restarted and
-upgraded independently; `/v1/orchestration` is the versioned cross-repo contract.
+The orchestration socket is accessible only to the local service user. The gateway exposes the same
+current-state status, diagnostics, and job activity reads to the dashboard and `rig_info` tools at
+`/dashboard/api/orchestration`, `/dashboard/api/orchestration/diagnostics`, and
+`/dashboard/api/orchestration/activity`. The default status includes a compact 24-hour completion
+index; the activity route pages through one active or recent batch's event journal. The two services can be restarted and upgraded independently;
+`/v1/orchestration` is the versioned cross-repo contract.
 
 ## Next
 
@@ -54,12 +65,12 @@ upgraded independently; `/v1/orchestration` is the versioned cross-repo contract
 
 ### Codex coding sessions (live 2026-11-09)
 
-The gateway can register the harness's `delegate_local_task` MCP tool for Codex dashboard threads when
+The gateway can register the harness's `delegate_task` MCP tool for Codex dashboard threads when
 `CODEX_LOCAL_AGENT_MCP_SCRIPT` points to the harness adapter. The Pi service unit also sets
 `CODEX_LOCAL_AGENT_RECEIPTS` for per-child receipts. The tool asks the manager for a reviewed local
 `coding` or `research` child route; Codex does not select GPUs. On 2026-11-13 the focused Pi tests
 passed (gateway 47/47, harness 7/7), an isolated Codex app-server thread discovered
-`local_agents.delegate_local_task`, and a live dashboard Codex turn delegated a task to route
+`local_agents.delegate_task`, and a live dashboard Codex turn delegated a task to route
 `gpu-rig/harness-ornith-9b`. The local child returned `42` with a successful receipt, and Codex
 returned `42` without an operator approval prompt. The bridge automatically accepts only the
 configured local-agent MCP tool request. The child currently has no file tools, so it is suitable
@@ -75,6 +86,23 @@ redirect checks plus byte and text limits. Orange Pi dispatch is not active;
 those workers must be reachable before it can be tested. Search snippets and
 fetched page text are untrusted evidence candidates. The bridge accepts only
 the exact `rig_search.search_web` and `rig_search.fetch_page` tool requests.
+
+Local model and Codex dashboard turns use the same gateway-imported harness tool catalog
+and the same `dashboard_mcp_servers.py` launch definitions for `local_agents`, `rig_search`,
+and `rig_info`. The catalog decides automatic tool permissions for both. A local turn
+starts the MCP server with the selected model route as parent; a Codex turn uses its
+cloud-parent mode. The local turn
+advertises its live argument schemas, and runs at most two tool calls before saving
+the final answer and tool activity. A model-specific benchmarking receipt is still
+needed to establish that a route chooses and formats tool calls reliably.
+
+The `rig_info` server adds read-only `get_rig_status`,
+`get_model_status`, `get_benchmark_status`,
+`get_orchestration_status`, `get_orchestration_diagnostics`, and `get_orchestration_activity` tools
+backed by the dashboard's existing status endpoints. Codex and local model
+sessions both receive these names when the harness script is configured.
+`get_rig_status` includes rig reachability, controller heartbeat, GPU scan,
+guard, availability, loaded profiles, and claims in one bounded response.
 
 The model dropdown also offers **Codex (cloud coding agent)**. Selecting it and clicking New conversation
 opens a separate in-page chat tab. The selected Pi workspace is fixed for that conversation. Codex
@@ -146,7 +174,9 @@ not yet been exercised.
 
 The Chat tab is basic saved model chat, not a harness agent session. It lists the active chat profiles marked `dashboard_chat` in the gateway's generated official profile offer; it has no hardcoded model IDs. Selecting one and clicking "New conversation" creates and opens the saved conversation immediately, then asks the manager to load that profile if cold. The Chat tab shows load progress and disables Send until the manager reports ready; a failed load leaves the empty conversation saved and offers Retry model load. Sending then uses the gateway's shared inference forwarding path for the OpenAI-style chat request. The choice of profile is explicit; no model is loaded merely by opening the Chat tab. The manager currently favors the fastest free GPU for chat, which can be the 3090 even for a small model; the UI requires an explicit model choice and tells the operator to check Rig before sending. During a turn the UI shows elapsed time and switches to generating once the ready route appears. The current basic UI sends up to 16 recent saved messages for context and limits each new message to 8,000 characters. It shows the manager-reported loaded context length at preparation and, after a reply, the model server's reported prompt, output, and total token counts for the last completed turn against that window. Counts are persisted with the conversation and cleared when its model changes. Older conversations and servers that omit usage show an unavailable measurement rather than a guessed one. This is a last-turn snapshot, not a prediction of the next request or a claim that all saved messages fit. Cold loading or generation can take several minutes.
 
-Each conversation stores its selected profile. Opening a saved conversation restores that choice; sending a turn with another model is rejected until the operator explicitly chooses "Continue this conversation with selected model." "New conversation" starts a separate history with the chosen model and begins preparation before its first message. Reopening an existing saved conversation remains immediate; if its model was unloaded, the next Send prepares it. Historical messages retain their producing model label. Switching changes future turns only and does not reload the model until a message is sent. The SQLite transcript belongs to this basic Chat tab; the planned harness session service will own agent instructions, tools, compaction, delegation, approvals, and durable event replay when implemented. See `docs/REMOTE_SESSION_ACCESS_DESIGN.md` and the harness companion design. Do not treat the basic Chat transcript as a harness session.
+Each conversation stores its selected profile. Opening a saved conversation restores that choice; sending a turn with another model is rejected until the operator explicitly chooses "Continue this conversation with selected model." "New conversation" starts a separate history with the chosen model and begins preparation before its first message. Reopening an existing saved conversation remains immediate; if its model was unloaded, the next Send prepares it. Historical messages retain their producing model label. Switching changes future turns only and does not reload the model until a message is sent. Local turns can call the gateway's imported harness tools; completed tool names are saved with the assistant message and shown in the transcript. The SQLite transcript belongs to this basic Chat tab. The planned harness session service will add agent instructions, compaction, approvals, and durable event replay. See `docs/REMOTE_SESSION_ACCESS_DESIGN.md` and the harness companion design. Do not treat the basic Chat transcript as a harness session.
+
+Live verification on 2026-11-15: the harness and gateway tool catalogs and the benchmarking-to-gateway model catalog passed their sync checks. A dashboard `gpt-oss-20b` turn called `get_rig_status` and saved the tool activity; direct dashboard tool-runtime checks called `list_local_agents` and `search_web`. With the dashboard parent route prepared, `delegate_task` sent a coding task to Codex Luna and received `42`. The test conversations were deleted and parent model unloaded. The boot-enabled rig guard, plan executor, and orchestration API were running while the rig was idle. On-demand hardware diagnostics returned healthy with all six GPUs visible. The orchestration card shows the guard and GPU scan; inactive task worker files do not create false alerts. Focused Codex/local launcher, chat, and catalog tests passed after both dashboard paths were unified.
 
 ### Saved transcript and runtime checkpoint
 

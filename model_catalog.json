@@ -1,5 +1,6 @@
 {
   "_comment": "Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; the gateway reads models only from here. Re-run the importer to take in new lessons.",
+  "source_sha256": "e9c1dc65156d9261843385fb17ba6740683b3413c44e0ea6f48955512979888e",
   "registry_updated": "2026-11-06",
   "roles_updated": "2026-10-15",
   "image": "llama-runtime:b11669",
@@ -3340,7 +3341,6 @@
     }
   },
   "summary": {
-    "generated_at": "2026-11-11T22:32:16",
     "key_tests": [
       "bbh",
       "gsm8k",

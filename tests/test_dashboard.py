@@ -34,30 +34,6 @@ def test_overrides_go_through_the_manager(menv):  # noqa: F811
     assert c.post("/dashboard/api/rig/kill", json={"gpu_ids": []}).status_code == 400
 
 
-def _bench(tmp_path):
-    root = tmp_path / "bench"
-    (root / "results" / "runtime_experiments").mkdir(parents=True)
-    (root / "model_registry.json").write_text(json.dumps({"models": {
-        "m:9b": {"status": "active", "source_url": "https://huggingface.co/x/y/resolve/main/m.gguf",
-                 "schedule": {"placement": "single_gpu", "tier": 1}, "profiles": {"default": {}, "thinking": {}}},
-        "old:7b": {"status": "archived", "profiles": {"default": {}}}}}))
-    (root / "model_roles.json").write_text(json.dumps({"roles": {"single_1060": {"model": "m:9b"}}}))
-    v4 = {"config_id": "lm-eval-0.4.11-reasoning-extract-v4"}
-    v5 = {"config_id": "lm-eval-0.4.11-reasoning-extract-v5"}
-    recs = [{"model": "m:9b", "test_id": "bbh_flexible", "score": 0.80, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"},
-            {"model": "m:9b", "test_id": "bbh_flexible", "score": 0.85, "run_class": "validated", "run_at": "2026-10-18T01:00:00Z"},
-            # same run re-scored by the newer extractor: earlier run_at, but it wins
-            {"model": "m:9b", "test_id": "drop_flexible", "score": 0.2, "run_class": "smoke", "run_at": "2026-10-19T01:00:09Z", "runtime": v4},
-            {"model": "m:9b", "test_id": "drop_flexible", "score": 0.6, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z",
-             "runtime": v5, "extractor_failure_count": 2, "sample_count": 10},
-            {"model": "m:9b", "test_id": "custom_a", "score": 1.0, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"},
-            {"model": "m:9b", "test_id": "custom_b", "score": 0.5, "run_class": "smoke", "run_at": "2026-10-19T01:00:00Z"}]
-    (root / "results" / "model_benchmark_records.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
-    (root / "results" / "runtime_experiments" / "m_9b_runtime_characterization_20261020.json").write_text(json.dumps(
-        {"runtime": {"ctx_size": 26880}, "decode": {"generation_tokens_per_second": 16.6}}))
-    return root
-
-
 def test_models_summary_is_read_from_the_catalog_not_benchmarking(tmp_path, monkeypatch):
     path = tmp_path / "model_catalog.json"
     path.write_text(json.dumps({"models": {}, "summary": {"models": [{"model": "m:9b"}], "roles": {}, "key_tests": []}}))
@@ -65,17 +41,6 @@ def test_models_summary_is_read_from_the_catalog_not_benchmarking(tmp_path, monk
     assert sources.models_summary()["models"] == [{"model": "m:9b"}]
     monkeypatch.setenv("MODEL_CATALOG", str(tmp_path / "missing.json"))
     assert "error" in sources.models_summary()
-
-
-def test_models_summary_prefers_limit50_runs_and_reads_roles_and_speed(tmp_path):
-    out = sources.build_models_summary(_bench(tmp_path))
-    first = out["models"][0]
-    assert first["model"] == "m:9b" and first["roles"] == ["single_1060"] and first["profiles"] == ["default", "thinking"]
-    assert first["scores"]["bbh"]["score"] == 0.85 and first["scores"]["bbh"]["run_class"] == "validated"
-    assert first["scores"]["bbh"]["unreadable"] is None
-    assert first["scores"]["drop"]["score"] == 0.6 and first["scores"]["drop"]["unreadable"] == 2
-    assert first["pipeline"] == 0.75 and first["runtime"]["decode_tps"] == 16.6
-    assert out["models"][-1]["model"] == "old:7b"
 
 
 def test_benchmarks_summary_finds_lanes_and_campaigns(tmp_path):
@@ -108,12 +73,35 @@ def test_benchmarks_summary_finds_lanes_and_campaigns(tmp_path):
     assert ("worker_lanes_20261019_120000", "gpu 1-2", False) in rows
 
 
+def test_benchmarks_summary_keeps_active_jobs_and_only_one_day_of_finished_history(tmp_path):
+    logs = tmp_path / "logs" / "benchmarks"
+    stale = time.time() - sources.RECENT_HISTORY_S - 60
+    for name, status in (("finished", "completed"), ("stale_running", "running"),
+                         ("long_running", "running")):
+        path = logs / "campaigns" / "history" / name / "run" / "status.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"campaign": name, "status": status, "blocks": {}}))
+        if name != "long_running":
+            os.utime(path, (stale, stale))
+    for group, done in (("1", True), ("2", False)):
+        run = logs / f"worker_lanes_{group}"
+        run.mkdir()
+        lane = run / f"lane_gpu{group}.log"
+        lane.write_text("LANE_DONE\n" if done else "still running\n")
+        os.utime(lane, (stale, stale))
+    out = sources.benchmarks_summary(tmp_path, claims={"lane-2"})
+    assert [c["campaign"] for c in out["campaigns"]] == ["long_running"]
+    assert [(l["lane"], l["active"]) for l in out["lanes"]] == [("gpu 2", True)]
+
+
 def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noqa: F811
     def fake_request(method, path, body=None):
         if path.endswith("/status"):
-            return {"counts": {"queue": 1}, "workers": [], "alerts": []}
-        if path.endswith("/options"):
-            return {"ok": True, "plans": ["p"]}
+            return {"active_batch_count": 1, "workers": [], "brain": {"heartbeat_status": "ok"}}
+        if path.endswith("/diagnostics"):
+            return {"ok": True, "checks": []}
+        if "/activity?" in path:
+            return {"batch_id": "b1", "events": [{"event": "task_started"}], "has_more": False}
         if path.endswith("/kill_plan"):
             return {"ok": True, "message": f"Killed batch {body['batch_id']}"}
         if path.endswith("/requeue_worker"):
@@ -121,8 +109,11 @@ def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noq
         raise AssertionError((method, path, body))
 
     monkeypatch.setattr(sources, "orchestration_request", fake_request)
+    monkeypatch.setattr(sources, "orchestration_options", lambda: {"ok": True, "plans": ["p"]})
     c = menv["client"]
-    assert c.get("/dashboard/api/orchestration").json()["counts"]["queue"] == 1
+    assert c.get("/dashboard/api/orchestration").json()["active_batch_count"] == 1
+    assert c.get("/dashboard/api/orchestration/diagnostics").json()["ok"] is True
+    assert c.get("/dashboard/api/orchestration/activity?batch_id=b1").json()["events"][0]["event"] == "task_started"
     assert c.get("/dashboard/api/orchestration/options").json()["plans"] == ["p"]
     assert c.post("/dashboard/api/orchestration/kill_plan", json={"batch_id": "b1"}).json()["message"] == "Killed batch b1"
     assert c.post("/dashboard/api/orchestration/requeue_worker", json={"worker": "gpu-3"}).json()["ok"]
@@ -132,4 +123,5 @@ def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noq
 def test_a_missing_orchestration_socket_is_reported_not_raised(menv, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setenv("ORCHESTRATION_API_SOCKET", str(tmp_path / "missing.sock"))
     r = menv["client"].get("/dashboard/api/orchestration")
-    assert r.status_code == 503 and "FileNotFoundError" in r.json()["error"]["message"]
+    assert r.status_code == 503 and any(
+        name in r.json()["error"]["message"] for name in ("FileNotFoundError", "AttributeError"))

@@ -11,14 +11,13 @@ import json
 import logging
 import os
 import re
-import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+
+from . import dashboard_mcp_servers
 
 log = logging.getLogger(__name__)
-TOOL_CATALOG = Path(__file__).with_name("tool_catalog.json")
 
 
 class CodexBridgeError(RuntimeError):
@@ -52,64 +51,42 @@ class CodexBridge:
     def dashboard_tools(self, server: str) -> list[dict]:
         """Read gateway's imported harness catalog, never the harness checkout."""
         try:
-            catalog = json.loads(TOOL_CATALOG.read_text(encoding="utf-8"))
-            if catalog.get("schema_version") != 1:
-                raise ValueError("unsupported schema")
-            return catalog["servers"][server]["tools"]
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return dashboard_mcp_servers.catalog_servers()[server]["tools"]
+        except (ValueError, KeyError, TypeError) as exc:
             raise CodexBridgeError("Dashboard tool catalog is unavailable; sync from harness") from exc
 
     def automatic_tool_request(self, params: dict) -> bool:
         if params.get("mode") != "form":
             return False
         server = params.get("serverName")
-        if server not in ("local_agents", "rig_search"):
+        if not isinstance(server, str) or not server.isidentifier():
+            return False
+        try:
+            tools = self.dashboard_tools(server)
+        except CodexBridgeError:
             return False
         return any(tool["approval"] == "automatic" and
                    params.get("message") == f'Allow the {server} MCP server to run tool "{tool["name"]}"?'
-                   for tool in self.dashboard_tools(server))
+                   for tool in tools)
 
     def local_agent_config(self) -> dict:
         """Optional harness MCP adapter for bounded local children of a Codex session."""
-        configured = os.getenv("CODEX_LOCAL_AGENT_MCP_SCRIPT")
-        if not configured:
-            return {}
-        script = Path(configured).resolve()
-        if not script.is_file():
-            raise CodexBridgeError("Local agent MCP script is unavailable")
-        receipts = Path(os.getenv("CODEX_LOCAL_AGENT_RECEIPTS") or
-                        (Path.home() / ".local/share/llm-gateway/local-agent-receipts"))
-        receipts.mkdir(parents=True, exist_ok=True)
-        return {"mcp_servers": {"local_agents": {
-            "command": sys.executable,
-            "args": [str(script), "--cloud-parent", "--receipt-dir", str(receipts)],
-            "enabled_tools": [tool["name"] for tool in self.dashboard_tools("local_agents")
-                              if tool["approval"] == "automatic"],
-            "tool_timeout_sec": 480,
-        }}}
+        return self._server_config("local_agents")
 
     def search_config(self) -> dict:
         """Optional Pi-local research tools for Codex sessions."""
-        configured = os.getenv("CODEX_SEARCH_MCP_SCRIPT")
-        if not configured:
-            return {}
-        script = Path(configured).resolve()
-        if not script.is_file():
-            raise CodexBridgeError("Search MCP script is unavailable")
-        env_file = os.getenv("CODEX_SEARCH_MCP_ENV_FILE")
-        if not env_file or not Path(env_file).is_file():
-            raise CodexBridgeError("Search MCP provider config is unavailable")
-        endpoint = os.getenv("CODEX_SEARCH_MCP_ENDPOINT", "http://127.0.0.1:8888")
-        parsed = urlsplit(endpoint)
-        if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
-            raise CodexBridgeError("Search MCP endpoint must be Pi loopback HTTP")
-        return {"mcp_servers": {"rig_search": {
-            "command": sys.executable,
-            "args": [str(script), "--env-file", env_file, "--endpoint", endpoint],
-            "enabled_tools": [tool["name"] for tool in self.dashboard_tools("rig_search")
-                              if tool["approval"] == "automatic"],
-            "tool_timeout_sec": 60,
-        }}}
+        return self._server_config("rig_search")
+
+    def rig_info_config(self) -> dict:
+        """Read-only harness view of the dashboard's own status sources."""
+        return self._server_config("rig_info")
+
+    def _server_config(self, server: str) -> dict:
+        try:
+            config = dashboard_mcp_servers.cloud_config()["mcp_servers"]
+        except ValueError as exc:
+            raise CodexBridgeError(str(exc)) from exc
+        return {"mcp_servers": {server: config[server]}} if server in config else {}
 
     async def start(self) -> None:
         async with self.start_lock:
@@ -294,11 +271,14 @@ class CodexBridge:
         workspace = self.workspace(cwd)
         if reviewer not in ("user", "auto_review"):
             raise CodexBridgeError("Invalid Codex reviewer")
-        local_agents = self.local_agent_config()
-        config = {"approvals_reviewer": reviewer, **local_agents}
-        search = self.search_config()
-        if search:
-            config.setdefault("mcp_servers", {}).update(search["mcp_servers"])
+        try:
+            tool_config = dashboard_mcp_servers.cloud_config()
+        except ValueError as exc:
+            raise CodexBridgeError(str(exc)) from exc
+        config = {"approvals_reviewer": reviewer}
+        if tool_config["mcp_servers"]:
+            config.update(tool_config)
+        local_agents = "local_agents" in tool_config["mcp_servers"]
         # Conversation creation already checks authentication. Avoid placing a
         # second account/read behind another active app-server turn.
         if thread_id:
@@ -323,7 +303,7 @@ class CodexBridge:
                 routed_prompt = (
                     "Dashboard tool routing: In this gateway, 'local agents' means the "
                     "local_agents MCP server. Call list_local_agents to see available roles "
-                    "and candidates, then delegate_local_task for bounded local GPU help. "
+                    "and candidates, then delegate_task for bounded local GPU help. "
                     "The gateway handles model loading and GPU placement.\n\nUser request:\n" + prompt)
             inputs = [{"type": "text", "text": routed_prompt}]
             inputs.extend({"type": "image", "url": image["data_url"]} for image in (images or []))

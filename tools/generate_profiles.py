@@ -21,13 +21,12 @@ Usage (on the Pi, where the benchmarking repo is on the shared drive):
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import hashlib
 import json
 import os
 import re
 import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
@@ -88,23 +87,63 @@ def benchmarking_root() -> Path:
     env = os.getenv("BENCHMARKING_ROOT")
     candidates = [Path(env)] if env else list(BENCHMARKING_ROOTS)
     for root in candidates:
-        if (root / "model_registry.json").is_file():
+        if (root / "model_library_export.json").is_file():
             return root
-    raise SystemExit(f"model registry not found under {[str(c) for c in candidates]}; set BENCHMARKING_ROOT")
+    raise SystemExit(f"model library export not found under {[str(c) for c in candidates]}; set BENCHMARKING_ROOT")
 
 
-def load_library(root: Path) -> ModuleType:
-    path = root / "scripts" / "active" / "model_library.py"
-    spec = importlib.util.spec_from_file_location("rig_model_library", path)
-    library = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(library)
-    return library
+def load_export(root: Path) -> dict[str, Any]:
+    path = root / "model_library_export.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if doc.get("schema") != "gpu-rig-model-library/1":
+        raise ValueError("unsupported benchmarking model library export")
+    payload = {key: value for key, value in doc.items() if key != "source_sha256"}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                                       ensure_ascii=True).encode("utf-8")).hexdigest()
+    if digest != doc.get("source_sha256"):
+        raise ValueError("benchmarking model library export hash mismatch")
+    if not isinstance(doc.get("registry", {}).get("models"), dict) or not isinstance(doc.get("resolved_profiles"), dict):
+        raise ValueError("benchmarking model library export is incomplete")
+    return doc
+
+
+class ExportLibrary:
+    def __init__(self, doc: dict[str, Any]):
+        self.doc = doc
+
+    def load_registry(self, _path: Path) -> dict:
+        return self.doc["registry"]
+
+    def load_roles(self, _path: Path) -> dict:
+        return self.doc["roles"]
+
+    def resolve(self, model: str, profile: str, _registry: dict) -> dict:
+        if model in self.doc["resolved_profiles"]:
+            return self.doc["resolved_profiles"][model][profile]
+        for canonical, entry in self.doc["registry"]["models"].items():
+            if model in entry.get("aliases", []):
+                return self.doc["resolved_profiles"][canonical][profile]
+        raise KeyError(model)
+
+    def runtime_image(self, _registry: dict) -> str:
+        return self.doc["registry"]["runtime_image"]
+
+    def validate(self, registry: dict, roles: dict) -> list[str]:
+        models = registry["models"]
+        return [f"role {name} names an unknown model" for name, spec in roles["roles"].items()
+                if spec.get("model") not in models]
+
+    def generated_drift(self, _registry: dict) -> list[str]:
+        return []
+
+
+def load_library(root: Path) -> ExportLibrary:
+    return ExportLibrary(load_export(root))
 
 
 def load_recipes(root: Path, registry: dict[str, Any]) -> dict[str, Any]:
-    """Validate passive benchmark recipes. Manager never executes these IDs directly."""
-    path = root / "load_recipes.json"
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    """Validate exported research recipes. Manager never executes these IDs directly."""
+    doc = load_export(root)["load_recipes"]
     if (not isinstance(doc, dict) or set(doc) != {"schema_version", "recipes"}
             or type(doc["schema_version"]) is not int or doc["schema_version"] != 1):
         raise ValueError("load_recipes.json: expected schema_version 1 and recipes")
@@ -137,8 +176,8 @@ def load_recipes(root: Path, registry: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"load_recipes.json: {rid}: evidence must be a nonempty list")
         for ref in evidence:
             if (not isinstance(ref, str) or not ref.startswith("results/runtime_experiments/")
-                    or not ref.endswith(".md") or ".." in Path(ref).parts or not (root / ref).is_file()):
-                raise ValueError(f"load_recipes.json: {rid}: missing or invalid evidence {ref!r}")
+                or not ref.endswith(".md") or ".." in Path(ref).parts):
+                raise ValueError(f"load_recipes: {rid}: missing or invalid evidence {ref!r}")
     return doc
 
 
@@ -182,13 +221,15 @@ def build(offer: list[dict[str, Any]], library: Any, registry: dict[str, Any]) -
             "use": item.get("use", "chat"),
             "ctx_size": item.get("ctx_size", runtime["ctx_size"]),  # minimum context for this route
         })
-    doc = {"_comment": GENERATED_NOTE, "registry_updated": registry.get("updated"), "remote_profiles": profiles}
+    doc = {"_comment": GENERATED_NOTE, "registry_updated": registry.get("updated"),
+           "source_sha256": getattr(library, "doc", {}).get("source_sha256"),
+           "remote_profiles": profiles}
     return doc, problems
 
 
 def load_subagent_catalog(root: Path, registry: dict[str, Any]) -> dict[str, Any]:
     """Copy reviewed child identities, never readiness or a rig command."""
-    doc = json.loads((root / "subagent_catalog.json").read_text(encoding="utf-8"))
+    doc = load_export(root)["subagent_catalog"]
     if doc.get("schema_version") != 1 or not isinstance(doc.get("candidates"), dict):
         raise ValueError("subagent_catalog.json: expected schema_version 1 and candidates")
     for name, row in doc["candidates"].items():
@@ -241,7 +282,9 @@ def build_catalog(library: Any, registry: dict[str, Any], roles: dict[str, Any] 
                        "strata": entry.get("strata"), "profiles": profiles}
     role_rows = {name: {k: spec.get(k) for k in ("model", "profile", "lane", "why", "good_for")}
                  for name, spec in ((roles or {}).get("roles") or {}).items() if isinstance(spec, dict)}
-    return {"_comment": CATALOG_NOTE, "registry_updated": registry.get("updated"),
+    return {"_comment": CATALOG_NOTE,
+            "source_sha256": getattr(library, "doc", {}).get("source_sha256"),
+            "registry_updated": registry.get("updated"),
             "roles_updated": (roles or {}).get("updated"), "image": library.runtime_image(registry),
             "models": models, "roles": role_rows, "summary": summary,
             "load_recipes": load_recipes or {"schema_version": 1, "recipes": {}},
@@ -253,10 +296,8 @@ def render(doc: dict[str, Any]) -> str:
 
 
 def _summary(root: Path) -> dict[str, Any] | None:
-    """The dashboard's model summary, built here from the benchmarking results (the dashboard reads the copy)."""
-    sys.path.insert(0, str(REPO / "src"))
-    from llm_gateway.dashboard.sources import build_models_summary  # noqa: E402
-    return build_models_summary(root)
+    """The benchmark-owned summary included in the portable export."""
+    return load_export(root)["summary"]
 
 
 def main() -> int:
@@ -268,8 +309,7 @@ def main() -> int:
     library = load_library(root)
     registry = library.load_registry(root / "model_registry.json")
     doc, problems = build(OFFER, library, registry)
-    roles = json.loads((root / "model_roles.json").read_text(encoding="utf-8")) \
-        if (root / "model_roles.json").is_file() else None
+    roles = library.load_roles(root / "model_roles.json")
     try:
         recipes = load_recipes(root, registry)
     except (OSError, ValueError) as exc:

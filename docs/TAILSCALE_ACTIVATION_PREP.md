@@ -10,10 +10,10 @@ the home LAN is an administrative surface, not the remote harness session UI.
 - The Pi host firewall drops inbound traffic outside explicit LAN and private-rig
   allowances. Its forwarding policy drops all transit traffic. There is no
   `tailscale0` allowance yet. Outbound connections remain available.
-- Pi SSH uses keys only, disables root login and agent/X11 forwarding, and keeps
-  TCP forwarding for the operator tunnel fallback. The NFS export and eth0
-  TCP/2049 ingress admit the isolated 10.0.0.0/24 rig and Orange Pi worker
-  network, as approved on 2026-11-14. Wi-Fi and Tailscale do not admit NFS.
+- Pi SSH uses keys only and disables root login and agent/X11 forwarding. The
+  eth0 ingress rule admits SSH (TCP/22) and NFSv4 (TCP/2049) from the isolated
+  10.0.0.0/24 rig and Orange Pi worker network. The NFS export admits that
+  subnet. Wi-Fi and Tailscale do not admit NFS; Tailscale has no inbound grant.
 - The gateway and harness session front door is still a design. Tailscale
   enrollment alone must not publish the existing broad dashboard.
 
@@ -41,8 +41,9 @@ the home LAN is an administrative surface, not the remote harness session UI.
 2. Confirm tailnet membership and outbound coordination. Check the Pi's
    `tailscale0` interface and effective host firewall rules. From another
    tailnet device, prove inbound attempts are denied. From the LAN, prove SSH
-   and client-certificate dashboard access still work; from the rig, prove NFS
-   still works. Check `nft` and Tailscale logs for unintended drops.
+   and client-certificate dashboard access still work; from the rig, prove
+   key-only SSH and NFS still work. Check `nft` and Tailscale logs for
+   unintended drops.
 3. Only when the separate authenticated harness session listener exists, merge
    a 443-only operator grant with explicit denial tests. Configure Serve for
    that loopback listener, never for the administrative dashboard. With the

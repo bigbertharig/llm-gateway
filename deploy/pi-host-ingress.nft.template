@@ -12,7 +12,7 @@ table inet pi_host_ingress {
         iifname "@LAN_IF@" udp dport 5353 accept
         iifname "@LAN_IF@" ip saddr @LAN_CIDR@ tcp dport { 22, 443 } accept
         # Rig and Orange Pi workers share this isolated wired subnet.
-        iifname "@RIG_IF@" ip saddr @PRIVATE_CIDR@ tcp dport 2049 accept
+        iifname "@RIG_IF@" ip saddr @PRIVATE_CIDR@ tcp dport { 22, 2049 } accept
     }
     chain forward {
         type filter hook forward priority 10; policy drop;

@@ -118,7 +118,7 @@ def test_codex_thread_registers_local_agent_mcp_when_configured(tmp_path, monkey
     asyncio.run(bridge.turn(None, "Use local agents to help", str(tmp_path)))
     server = calls[0][1]["config"]["mcp_servers"]["local_agents"]
     assert server["args"] == [str(script), "--cloud-parent", "--receipt-dir", str(receipts)]
-    assert server["enabled_tools"] == ["list_local_agents", "delegate_local_task"]
+    assert server["enabled_tools"] == ["list_local_agents", "delegate_task"]
     assert "default_tools_approval_mode" not in server
     assert receipts.is_dir()
     assert "Call list_local_agents" in calls[1][1]["input"][0]["text"]
@@ -166,7 +166,7 @@ def test_search_elicitation_is_allowlisted():
     assert writes == [{"id": 9, "result": {"action": "accept", "content": {}}}]
 
 
-@pytest.mark.parametrize("tool_name", ["list_local_agents", "delegate_local_task"])
+@pytest.mark.parametrize("tool_name", ["list_local_agents", "delegate_task"])
 def test_allowlisted_local_agent_elicitation_is_accepted_once(tool_name):
     bridge = CodexBridge()
     writes = []

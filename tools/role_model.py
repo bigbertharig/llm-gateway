@@ -1,51 +1,56 @@
-"""Resolve a benchmarking role to its model, so tools never hard-code a model name.
+"""Resolve a reviewed model role from gateway's imported local catalog.
 
-    python3 tools/role_model.py [ROLE]          print the model id (default role: single_1060)
+    python3 tools/role_model.py [ROLE]          print the model id (default: single_1060)
     python3 tools/role_model.py ROLE --json     model, profile, gguf_path, gguf_relative
 
-Roles live in the benchmarking repo's model_roles.json (resolved by its scripts/active/model_library.py).
-Change a role there and every tool that uses this follows. Standard library only.
+Run tools/sync_model_library.py after benchmarking publishes a new model export.
+This helper reads no benchmarking checkout or Python module. Standard library only.
 """
+
 import json
-import subprocess
 import sys
 from pathlib import Path
 
-LIBRARY_CANDIDATES = [
-    Path.home() / "llm_orchestration/shared/plans/shoulders/benchmarking/scripts/active/model_library.py",
-    Path("/media/bryan/shared/plans/shoulders/benchmarking/scripts/active/model_library.py"),
-    Path("/mnt/shared/plans/shoulders/benchmarking/scripts/active/model_library.py"),
-]
+CATALOG = Path(__file__).resolve().parents[1] / "model_catalog.json"
 DEFAULT_ROLE = "single_1060"
 
 
-def _library(kind: str, name: str) -> dict:
-    library = next((p for p in LIBRARY_CANDIDATES if p.exists()), None)
-    if library is None:
-        raise RuntimeError("model_library.py not found; looked in: " + ", ".join(map(str, LIBRARY_CANDIDATES)))
-    p = subprocess.run([sys.executable, str(library), kind, name], capture_output=True, text=True, timeout=60)
-    if p.returncode != 0:
-        raise RuntimeError(f"{kind} {name!r}: {(p.stderr or p.stdout).strip()[-300:]}")
-    return _summary(json.loads(p.stdout))
+def _catalog() -> dict:
+    doc = json.loads(CATALOG.read_text(encoding="utf-8"))
+    if not isinstance(doc.get("models"), dict) or not isinstance(doc.get("roles"), dict):
+        raise ValueError("gateway model catalog is incomplete; sync from benchmarking")
+    return doc
 
 
-def resolve(role: str = DEFAULT_ROLE) -> dict:
-    """{"model", "profile", "gguf_path", "gguf_relative"} for a role (gguf_relative is below models/)."""
-    return _library("role", role)
-
-
-def resolve_model(model: str) -> dict:
-    """The same fields for a model id from the registry."""
-    return _library("model", model)
-
-
-def _summary(spec: dict) -> dict:
-    gguf = spec.get("gguf_path") or ""
-    return {"model": spec["model"], "profile": spec.get("profile", "default"), "gguf_path": gguf,
+def _summary(model: str, profile: str, entry: dict) -> dict:
+    if profile not in entry.get("profiles", {}):
+        raise KeyError(f"model {model} has no profile {profile}")
+    gguf = entry.get("gguf_path") or ""
+    return {"model": model, "profile": profile, "gguf_path": gguf,
             "gguf_relative": gguf.split("/models/", 1)[1] if "/models/" in gguf else Path(gguf).name}
 
 
+def resolve(role: str = DEFAULT_ROLE) -> dict:
+    """Return canonical model, profile and path for a reviewed role."""
+    doc = _catalog()
+    spec = doc["roles"][role]
+    return _summary(spec["model"], spec.get("profile") or "default", doc["models"][spec["model"]])
+
+
+def resolve_model(model: str) -> dict:
+    """Return canonical model, default profile and path for an ID or alias."""
+    doc = _catalog()
+    if model in doc["models"]:
+        canonical = model
+    else:
+        canonical = next((mid for mid, entry in doc["models"].items()
+                          if model in entry.get("aliases", [])), None)
+        if canonical is None:
+            raise KeyError(f"unknown model {model}")
+    return _summary(canonical, "default", doc["models"][canonical])
+
+
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     info = resolve(args[0] if args else DEFAULT_ROLE)
     print(json.dumps(info) if "--json" in sys.argv else info["model"])

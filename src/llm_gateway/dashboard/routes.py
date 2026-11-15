@@ -158,6 +158,22 @@ def router(manager: Manager) -> APIRouter:
         except Exception as exc:
             return _unavailable(exc)
 
+    @r.get("/api/orchestration/diagnostics")
+    async def orchestration_diagnostics():
+        try:
+            return await asyncio.to_thread(sources.orchestration_diagnostics)
+        except Exception as exc:
+            return _unavailable(exc)
+
+    @r.get("/api/orchestration/activity")
+    async def orchestration_activity(batch_id: str, after: int = 0):
+        if not batch_id or len(batch_id) > 160 or after < 0:
+            raise ManagerError(400, "invalid activity request")
+        try:
+            return await asyncio.to_thread(sources.orchestration_activity, batch_id, after)
+        except Exception as exc:
+            return _unavailable(exc)
+
     @r.post("/api/orchestration/{action}")
     async def orchestration_action(action: str, request: Request):
         if action not in ORCHESTRATION_ACTIONS:
@@ -165,6 +181,16 @@ def router(manager: Manager) -> APIRouter:
         b = await _body(request)
 
         try:
+            if action in {"start_plan", "resume_plan"}:
+                from .plan_requests import PlanRequests
+                plans = PlanRequests(sources.shared_root(), {})
+                if action == "start_plan":
+                    return await asyncio.to_thread(
+                        plans.start_plan, str(b.get("plan_name") or ""), str(b.get("config_json") or ""),
+                        str(b.get("plan_scope") or "shoulders"), str(b.get("starter_file") or ""),
+                        str(b.get("repo_path") or ""), str(b.get("repo_url") or ""),
+                        str(b.get("claimed_behavior") or ""), str(b.get("inline_query_text") or ""))
+                return await asyncio.to_thread(plans.resume_plan, str(b.get("batch_id") or ""))
             return await asyncio.to_thread(sources.orchestration_action, action, b)
         except Exception as exc:
             return _unavailable(exc)

@@ -18,6 +18,7 @@ GET_PATHS = frozenset({
     "/gpurig", "/gpurig/", "/dashboard", "/dashboard/", "/dashboard/api/rig", "/dashboard/api/models",
     "/dashboard/api/benchmarks", "/dashboard/api/orchestration",
     "/dashboard/api/orchestration/options",
+    "/dashboard/api/orchestration/diagnostics", "/dashboard/api/orchestration/activity",
     "/dashboard/api/chat/options", "/dashboard/api/chat/conversations",
     "/dashboard/api/chat/codex/account",
 })

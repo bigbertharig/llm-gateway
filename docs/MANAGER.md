@@ -109,7 +109,7 @@ First measure one ready route with two bounded concurrent requests, including co
 
 For a Codex dashboard parent, pass `parent_route: "cloud/codex"`. The manager uses the same reviewed
 coding/research role order and readiness checks without requiring a local parent profile or reserving
-parent GPUs. The harness MCP adapter exposes this as `delegate_local_task` and records a child receipt.
+parent GPUs. The harness MCP adapter exposes this as `delegate_task` and records a child receipt.
 This route does not make the child a file-editing agent; its current runtime has no tools.
 
 The harness never chooses a GPU or calls a profile load endpoint. It uses the returned route with `X-Require-Ready: true` and checks the ready roster before and after the child run. The first live control used `chat-27b` on GPU 0 and a cold `coding` request, which the manager placed as `coder-7b` on GPU 1. The native child and parent MCP handoff both returned `42`; receipts are in `/home/bryan/llm-harness/results/subagent_gateway_parent_mcp_2026-11-04_v1/` and `subagent_gateway_live_2026-11-04_v3/`. Gateway contract tests passed 33/33. This is one bounded Pi-harness integration, not yet a six-harness delegation comparison. Manager policy and child model quality still need broader evaluation.
@@ -422,7 +422,7 @@ The primitive is the rig's claim (`hw_state.py`), extended:
 |---|---|
 | `name`, `gpu_ids` | as before |
 | `owner` | who renews it (a lane, a campaign run, a manager wait, orchestration) |
-| `ttl_s`, `expires_at` | optional. A claim with a TTL lapses unless its owner renews it, so a dead run frees its cards; a claim without one is permanent until removed (the old behavior) |
+| `ttl_s`, `expires_at`, `boot_id` | Every claim expires (default 10 minutes, maximum 1 hour) and is valid only for the current rig boot. Long-running owners renew before expiry; a dead owner or reboot frees its cards. |
 | `purpose`, `model` | what it waits for, for status and for an operator deciding to override |
 
 Rules (automatic):

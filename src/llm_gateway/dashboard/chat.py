@@ -23,6 +23,7 @@ from ..manager.errors import ManagerError
 from ..rig import RigUnavailable
 from ..profiles import Profiles
 from .codex_bridge import CodexBridge, CodexBridgeError
+from . import tool_runtime
 
 MAX_MESSAGE = 8000
 HISTORY_MESSAGES = 16
@@ -500,16 +501,44 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         history = conversation["messages"][-HISTORY_MESSAGES:]
         messages = [{"role": m["role"], "content": m["content"]} for m in history]
         messages.append({"role": "user", "content": prompt.strip()})
-        payload = json.dumps({"model": f"gpu-rig/{model}", "messages": messages,
-                              "stream": False, "max_tokens": 768}).encode()
-        response = await forward_inference(request, "/v1/chat/completions", payload, port, False, model)
-        if response.status_code != 200:
-            return response
         try:
-            result = json.loads(response.body)
-            answer = result["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise ManagerError(502, "model returned no chat message") from exc
+            tools, dispatch = await asyncio.to_thread(tool_runtime.available, f"gpu-rig/{model}")
+        except tool_runtime.DashboardToolError as exc:
+            raise ManagerError(503, str(exc)) from exc
+        activity = []
+        for step in range(3):
+            payload = json.dumps({"model": f"gpu-rig/{model}", "messages": messages,
+                                  "stream": False, "max_tokens": 768,
+                                  **({"tools": tools} if tools and step < 2 else {})}).encode()
+            response = await forward_inference(request, "/v1/chat/completions", payload, port, False, model)
+            if response.status_code != 200:
+                return response
+            try:
+                result = json.loads(response.body)
+                message = result["choices"][0]["message"]
+                calls = message.get("tool_calls") or []
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+                raise ManagerError(502, "model returned no chat message") from exc
+            if not calls:
+                answer = message.get("content")
+                break
+            if step >= 2 or len(calls) != 1:
+                raise ManagerError(502, "model exceeded the dashboard tool-call limit")
+            call = calls[0]
+            try:
+                name = call["function"]["name"]
+                arguments = json.loads(call["function"]["arguments"])
+                tool_result = await asyncio.to_thread(tool_runtime.call, dispatch, name, arguments)
+            except (KeyError, TypeError, ValueError, tool_runtime.DashboardToolError) as exc:
+                raise ManagerError(502, f"dashboard tool call failed: {exc}") from exc
+            messages.append(message)
+            content = json.dumps(tool_result.get("structuredContent") or tool_result.get("content") or [],
+                                 ensure_ascii=False)
+            messages.append({"role": "tool", "tool_call_id": call.get("id", name),
+                             "content": content[:16000]})
+            activity.append({"type": "tool", "name": name, "result": "completed"})
+        else:
+            raise ManagerError(502, "model did not finish after dashboard tools")
         if not isinstance(answer, str) or not answer.strip():
             raise ManagerError(502, "model returned an empty chat message")
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
@@ -526,7 +555,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             context_length = None
         saved = await asyncio.to_thread(get_store().append_exchange, cid, len(conversation["messages"]),
                                         model, prompt.strip(), answer, context_length, prompt_tokens,
-                                        completion_tokens, total_tokens)
+                                        completion_tokens, total_tokens, activity=activity)
         return {"conversation": saved, "history_sent": len(history), "history_limit": HISTORY_MESSAGES}
 
     @r.get("/conversations/{cid}/agent")

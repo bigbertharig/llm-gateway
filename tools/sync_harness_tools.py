@@ -13,7 +13,6 @@ from pathlib import Path
 
 
 DESTINATION = Path(__file__).resolve().parents[1] / "src/llm_gateway/dashboard/tool_catalog.json"
-KNOWN_SERVERS = {"local_agents", "rig_search"}
 VALID_APPROVALS = {"automatic", "disabled"}
 
 
@@ -21,8 +20,10 @@ def load_source(path: Path) -> dict:
     catalog = json.loads(path.read_text(encoding="utf-8"))
     if catalog.get("schema_version") != 1 or not isinstance(catalog.get("servers"), dict):
         raise ValueError("unsupported harness tool catalog schema")
-    if set(catalog["servers"]) != KNOWN_SERVERS:
-        raise ValueError("unknown or missing dashboard MCP server")
+    if not catalog["servers"] or any(not isinstance(name, str) or not name.isidentifier()
+                                      for name in catalog["servers"]):
+        raise ValueError("invalid dashboard MCP server")
+    all_names = set()
     for server, entry in catalog["servers"].items():
         if not isinstance(entry, dict) or not isinstance(entry.get("tools"), list):
             raise ValueError(f"invalid tools for {server}")
@@ -36,6 +37,9 @@ def load_source(path: Path) -> dict:
             names.append(name)
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate tool for {server}")
+        if all_names.intersection(names):
+            raise ValueError(f"dashboard tool name collision in {server}")
+        all_names.update(names)
     return catalog
 
 

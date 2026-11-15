@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -40,17 +39,12 @@ def _read_json(path: Path) -> dict:
 def inspect(root: Path, catalog: dict, offer: dict) -> dict:
     old_catalog = _read_json(gen.CATALOG_PATH)
     old_offer = _read_json(gen.OUTPUT_PATH)
-    inputs = [root / "model_registry.json", root / "model_roles.json", root / "load_recipes.json",
-              root / "scripts/active/model_library.py"]
-    digest = hashlib.sha256()
-    for path in inputs:
-        digest.update(path.name.encode())
-        digest.update(path.read_bytes())
+    source_hash = gen.load_export(root)["source_sha256"]
     old_offers = {item["id"]: item for item in old_offer.get("remote_profiles", [])}
     new_offers = {item["id"]: item for item in offer["remote_profiles"]}
     return {
         "source": str(root),
-        "source_sha256": digest.hexdigest(),
+        "source_sha256": source_hash,
         "registry_updated": catalog.get("registry_updated"),
         "roles_updated": catalog.get("roles_updated"),
         "models": changed_keys(old_catalog.get("models", {}), catalog["models"]),
@@ -59,8 +53,9 @@ def inspect(root: Path, catalog: dict, offer: dict) -> dict:
                                      catalog["load_recipes"]["recipes"]),
         "offers": changed_keys(old_offers, new_offers),
         "runtime_image_changed": old_catalog.get("image") != catalog.get("image"),
-        "catalog_stale": _without_build_time(old_catalog) != _without_build_time(catalog),
-        "offers_stale": old_offer != offer,
+        "catalog_stale": (_without_build_time(old_catalog) != _without_build_time(catalog)
+                          or gen.CATALOG_PATH.read_text(encoding="utf-8") != gen.render(catalog)),
+        "offers_stale": (old_offer != offer or gen.OUTPUT_PATH.read_text(encoding="utf-8") != gen.render(offer)),
     }
 
 

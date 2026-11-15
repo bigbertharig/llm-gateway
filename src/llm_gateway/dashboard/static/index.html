@@ -286,6 +286,8 @@ a { color: var(--cool); }
     <h2>Alerts</h2><div id="orch-alerts"></div>
     <h2>Workers</h2><div class="scroll" id="orch-workers"></div>
     <h2>Batches</h2><div class="scroll" id="orch-batches"></div>
+    <h2>Finished in the last 24 hours</h2><div class="scroll" id="orch-recent"></div>
+    <h2>Job activity</h2><div class="scroll" id="orch-activity">Choose a batch to read its events.</div>
     <h2>Start a plan</h2>
     <form class="inline" id="plan-form">
       <label>Plan <select name="plan_name" id="plan-name"></select></label>
@@ -549,22 +551,28 @@ function renderBenchmarks(d) {
 // ---------------------------------------------------------------- orchestration
 let orchOptions = null;
 function renderOrch(d) {
-  const counts = d.counts || {}, policy = d.control_policy || {};
-  $("#orch-summary").innerHTML = `<div class="line">tasks: queue <b>${counts.queue ?? 0}</b> &middot; processing <b>${counts.processing ?? 0}</b> &middot; complete <b>${counts.complete ?? 0}</b> &middot; failed <b>${counts.failed ?? 0}</b>` +
-    ` &middot; policy <b>${esc(policy.boot_profile || "-")}</b> &middot; generated ${esc(d.generated_at || "")}</div>`;
-  const alerts = d.alerts || [];
+  const hw = d.hardware || {};
+  const guard = hw.guard_level || "unavailable";
+  const gpuCount = (hw.gpu_ids || []).length;
+  $("#orch-summary").innerHTML = `<div class="line">active batches <b>${d.active_batch_count ?? 0}</b>` +
+    ` &middot; guard <b>${esc(guard)}</b> &middot; GPUs <b>${gpuCount}</b>` +
+    ` &middot; task mode <b>${esc(d.task_mode || "idle")}</b> &middot; generated ${esc(d.generated_at || "")}</div>`;
+  const alerts = [d.brain, ...(d.workers || [])].filter((w) => w && w.heartbeat_status !== "ok")
+    .map((w) => ({severity: "bad", worker: w.name, message: `heartbeat ${w.heartbeat_status}`}));
+  if (!hw.ok) alerts.unshift({severity: "bad", worker: "hardware", message: hw.error || hw.guard_reason || "health check failed"});
   $("#orch-alerts").innerHTML = alerts.length ? alerts.slice(0, 20).map((a) => `<div class="line ${a.severity === "bad" ? "bad" : "warn"}">${esc(a.worker || "")} &middot; ${esc(a.message)}</div>`).join("") : '<div class="line">No alerts.</div>';
-  const workers = [...(d.brain_gpus || []), ...(d.workers || [])];
+  const workers = [d.brain, ...(d.workers || [])].filter(Boolean);
   $("#orch-workers").innerHTML = `<table><tr><th>Worker</th><th>State</th><th>Model</th><th>Busy</th><th class="num">Heartbeat</th><th class="num">Temp</th></tr>` +
     workers.map((w) => `<tr><td>${esc(w.name)}</td><td>${esc(w.state)}</td><td class="mono">${esc(w.loaded_model || w.model || "-")}</td>
       <td>${esc(w.busy ? (w.busy_lane || "busy") + (w.busy_owner ? " / " + w.busy_owner : "") : "")}</td>
-      <td class="num">${age(w.age_s)}</td><td class="num">${fmt(w.gpu_temp_c)}</td></tr>`).join("") + "</table>";
+      <td class="num">${age(w.age_s)}</td><td class="num">${fmt(w.gpu_temp_c)}</td></tr>`).join("") + "</table>" +
+    (workers.length ? "" : '<div class="line">No task workers active.</div>');
   const batches = Object.entries(d.active_batches || {});
-  $("#orch-batches").innerHTML = batches.length ? `<table><tr><th>Batch</th><th>Plan</th><th class="num">Queue</th><th class="num">Running</th><th class="num">Done</th><th class="num">Failed</th><th>Started</th><th></th></tr>` +
+  $("#orch-batches").innerHTML = batches.length ? `<table><tr><th>Batch</th><th>Plan</th><th>Started</th><th></th></tr>` +
     batches.map(([id, b]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(b.display_name || b.plan || "")}</td>
-      <td class="num">${b.counts.queue}</td><td class="num">${b.counts.processing}</td><td class="num">${b.counts.complete}</td><td class="num">${b.counts.failed}</td>
       <td class="mono">${esc(String(b.started_at || "").slice(0, 16))}</td>
-      <td><button class="act" data-batch="resume_plan" data-id="${esc(id)}">Resume</button>
+      <td><button class="act" data-activity="${esc(id)}">Activity</button>
+          <button class="act" data-batch="resume_plan" data-id="${esc(id)}">Resume</button>
           <button class="act" data-batch="batch_outputs" data-id="${esc(id)}">Outputs</button>
           <button class="act danger" data-batch="kill_plan" data-id="${esc(id)}">Kill</button></td></tr>`).join("") + "</table>" : '<div class="line">No active batches.</div>';
   $("#orch-batches").querySelectorAll("[data-batch]").forEach((b) => b.onclick = () => {
@@ -572,6 +580,26 @@ function renderOrch(d) {
     if (a === "batch_outputs") return api("orchestration/batch_outputs", {batch_id: id}).then((o) => toast(JSON.stringify(o, null, 1).slice(0, 1500))).catch((e) => toast(e.message, "bad"));
     act(`${a.replace("_plan", "")} ${id}`, "orchestration/" + a, {batch_id: id}, a === "kill_plan" ? `Kill batch ${id}?` : "");
   });
+  const recent = d.recent_batches || [];
+  $("#orch-recent").innerHTML = recent.length ? recent.map((b) =>
+    `<div class="line"><button class="act" data-activity="${esc(b.batch_id)}">Activity</button> ${esc(b.plan || b.batch_id)} · ${esc(b.status)} · ${esc(b.completed_at)}</div>`).join("")
+    : '<div class="line">No recently finished batches.</div>';
+  document.querySelectorAll("#orch-batches [data-activity], #orch-recent [data-activity]").forEach((button) =>
+    button.onclick = () => loadOrchActivity(button.dataset.activity));
+}
+async function loadOrchActivity(batchId, after = 0) {
+  const target = $("#orch-activity");
+  if (!after) target.innerHTML = `<div class="line">${esc(batchId)}</div>`;
+  try {
+    const page = await api("orchestration/activity?batch_id=" + encodeURIComponent(batchId) + "&after=" + after);
+    target.querySelector("[data-more]")?.remove();
+    target.insertAdjacentHTML("beforeend", page.events.map((e) =>
+      `<div class="line">${esc(e.recorded_at || "")} · ${esc(e.event || "")} · ${esc(e.task_name || e.task_id || "")}</div>`).join(""));
+    if (page.has_more) {
+      target.insertAdjacentHTML("beforeend", '<button class="act" data-more>Load more</button>');
+      target.querySelector("[data-more]").onclick = () => loadOrchActivity(batchId, page.next_after);
+    }
+  } catch (e) { target.insertAdjacentHTML("beforeend", `<div class="line bad">${esc(e.message)}</div>`); }
 }
 async function loadOrchOptions() {
   try { orchOptions = await api("orchestration/options"); } catch (e) { return; }
@@ -697,22 +725,34 @@ $("#chat-permission-menu").querySelectorAll("[data-reviewer]").forEach((button) 
 });
 function renderChatActivity(target, events, active = false) {
   const byId = new Map();
-  for (const event of events || []) {
+  for (const [index, event] of (events || []).entries()) {
+    if (event.type === "tool") {
+      byId.set("tool:" + index, event);
+      continue;
+    }
     const item = event.item || {};
     if (item.type === "agentMessage" && item.phase === "final_answer") continue;
     const key = item.id || event.method + ":" + event.received_at;
     byId.set(key, event);
   }
   const items = [...byId.values()], signature = JSON.stringify(items);
+  const toolOnly = items.length > 0 && items.every((event) => event.type === "tool");
   if (target.dataset.signature === signature && target.dataset.active === String(active)) return;
   const wasOpen = target.open, firstUpdate = !target.dataset.signature;
   target.replaceChildren(); target.dataset.signature = signature; target.dataset.active = String(active);
   target.hidden = !items.length;
   if (!items.length) return;
   const summary = document.createElement("summary");
-  summary.textContent = (active ? "Codex working" : "Codex activity") + " · " + items.length + " steps";
+  summary.textContent = (toolOnly ? "Tools used" : active ? "Codex working" : "Codex activity") +
+    " · " + items.length + (toolOnly ? (items.length === 1 ? " call" : " calls") : " steps");
   target.append(summary);
   for (const event of items) {
+    if (event.type === "tool") {
+      const row = document.createElement("div"); row.className = "chat-activity-item";
+      row.textContent = String(event.name || "Tool") + " · " + String(event.result || "completed");
+      target.append(row);
+      continue;
+    }
     const item = event.item || {}, turn = event.turn || {};
     const detail = item.command || item.text ||
       (Array.isArray(item.changes) ? item.changes : []).map((change) => change.path).join(", ") ||
@@ -1164,7 +1204,7 @@ $("#chat-form").onsubmit = async (event) => {
       return;
     }
     const role = match[1].toLowerCase(), task = match[2].trim();
-    prompt = "Call local_agents.delegate_local_task exactly once with " +
+    prompt = "Call local_agents.delegate_task exactly once with " +
       "agent_type=" + JSON.stringify(role) + " and task=" + JSON.stringify(task) +
       ". Use the returned local child answer and receipt to respond. " +
       "Do not spawn a cloud subagent or choose a GPU card.";

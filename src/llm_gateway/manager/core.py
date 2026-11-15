@@ -177,7 +177,7 @@ class Manager:
             keep = mine
         self.mirror = {"saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        "observed_at": obs.get("observed_at"), "rig_plan_version": plan.get("version"),
-                       "plan": keep, **{k: obs.get(k) for k in ("mode", "gpus", "profiles", "leases", "claims",
+                       "plan": keep, **{k: obs.get(k) for k in ("mode", "gpu_scan", "gpus", "profiles", "leases", "claims",
                                                                 "guard", "containers")}}
         if not self.mirror_path:
             return
@@ -240,7 +240,9 @@ class Manager:
                 raise
             m = self.mirror
             return {"observed_at": m.get("observed_at"), "mode": m.get("mode"), "summary": {"rig": "unreachable"},
-                    "controller": self.control(), "guard": m.get("guard"), "gpus": [], "profiles": m.get("profiles", {}),
+                    "controller": self.control(), "guard": m.get("guard"),
+                    "gpu_scan": {k: (m.get("gpu_scan") or {}).get(k) for k in ("ok", "ids", "errors")},
+                    "gpus": [], "profiles": m.get("profiles", {}),
                     "plan": m.get("plan") or {}, "jobs": [], "leases": m.get("leases", []),
                     "claims": m.get("claims", []), "rig": self.rig_report(), "from_copy": True}
         leases, claims = obs.get("leases", []), obs.get("claims", [])
@@ -249,7 +251,9 @@ class Manager:
         for r in rows:
             counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
         return {"observed_at": obs.get("observed_at"), "mode": obs.get("mode"), "summary": counts,
-                "controller": self.control(obs), "guard": obs.get("guard"), "gpus": rows,
+                "controller": self.control(obs), "guard": obs.get("guard"),
+                "gpu_scan": {k: (obs.get("gpu_scan") or {}).get(k) for k in ("ok", "ids", "errors")},
+                "gpus": rows,
                 "profiles": obs.get("profiles", {}), "plan": obs.get("plan") or {}, "jobs": obs.get("jobs", []),
                 "last_error": obs.get("last_error"), "state_error": obs.get("state_error"),
                 "leases": leases, "claims": claims, "rig": self.rig_report()}
