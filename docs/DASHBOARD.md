@@ -1,8 +1,11 @@
 # Dashboard
 
-One page for the whole setup, served by the gateway on the Pi: `http://127.0.0.1:8080/dashboard/`.
-An enrolled desktop can open `https://raspberrypi.local/gpurig` directly through the
-[local HTTPS front door](LOCAL_DASHBOARD_ACCESS.md). It replaced the
+The gateway dashboard is the operator view for rig state, model inventory,
+benchmarks, orchestration, and chat. It is served locally at
+`http://127.0.0.1:8080/dashboard/`; enrolled devices can use the
+[local HTTPS front door](LOCAL_DASHBOARD_ACCESS.md). See [Rig manager](MANAGER.md)
+for placement and load behavior, and [mobile access](MOBILE_DASHBOARD.md) for the
+separate restricted phone view. The dashboard replaced the
 orchestration dashboard (port 8787) on 2026-10-20. Orchestration now serves its status and controls
 through a versioned local API on a private Unix socket; the gateway does not import its code.
 
@@ -44,7 +47,7 @@ requeue that worker's tasks on the Orchestration tab.
 
 Settings (environment, all optional): `ORCHESTRATION_API_SOCKET` (default
 `/run/llm-orchestration/api.sock`), `SHARED_ROOT` (default the first of
-`/media/bryan/shared`, `/mnt/shared`), `BENCHMARKING_ROOT` (as for model loads).
+the configured shared-drive mount locations), `BENCHMARKING_ROOT` (as for model loads).
 `ORCHESTRATION_CONFIG` belongs to the orchestration API process, not the gateway.
 
 The orchestration socket is accessible only to the local service user. The gateway exposes the same
@@ -198,7 +201,7 @@ checkpoint's committed turn. The current prototype has not solved that
 delivery transaction or on-disk compaction. Keep this integration behind
 speed/capacity validation of the worker path.
 
-Conversations and messages are saved in SQLite under `CHAT_DATA_ROOT` (default `~/.local/share/llm-gateway/chat`). On the Pi, `deploy/pi-gateway.service` sets this to `/media/bryan/shared/llm-gateway/chat` on the 4 TB volume and requires that mount before startup. Change that environment value to relocate history; stop the service and move the directory as a unit. The directory is mode 0700 and the database mode 0600. The dashboard provides new, list, open, send, and delete operations. No cloud sync or remote access is involved.
+Conversations and messages are saved in SQLite under `CHAT_DATA_ROOT` (default `~/.local/share/llm-gateway/chat`). A deployment may set this to a mounted shared volume and require that mount before startup. Change that environment value to relocate history; stop the service and move the directory as a unit. The directory is mode 0700 and the database mode 0600. The dashboard provides new, list, open, send, and delete operations. Remote access is provided only through separately configured front doors; see [mobile access](MOBILE_DASHBOARD.md).
 
 For now, the Chat tab displays a manager-owned "Rig busy" signal and a cold turn returns 409 before loading when another job, profile, claim, lease, runtime, or GPU load is present. The same ready chat profile can continue alone. A failed preparation or turn does not add messages to the saved conversation. This guard does not stop or replace other work, and the manager's lease checks still arbitrate any race after the signal. When idle, cold Chat loads use the manager's automatic placement. The manager plans the largest context that fits its selected fast placement; the UI does not yet present a capacity negotiation when the 3090 is busy. A future manager response should offer choices such as "use free 1060s now" versus "wait for 3090" with projected context and measured speed when available. Chat should render the manager's options without deciding placement or fallback itself. It must never silently stop existing work or switch the conversation's model. See `docs/MANAGER.md` for the proposed offer contract and tests. Loading a large context does not expand this basic UI's 16-message history limit; context use and truncation need separate work before the UI can claim full-history use.
 

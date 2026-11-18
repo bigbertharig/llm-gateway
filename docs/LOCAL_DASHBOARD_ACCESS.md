@@ -1,6 +1,6 @@
 # Direct local dashboard access
 
-The browser entry point is `https://raspberrypi.local/gpurig` on the home Wi-Fi. The desktop already resolves that mDNS name. This phase does not expose the rig or make the dashboard reachable from outside the home network.
+The browser entry point is `https://<pi-mdns-name>.local/gpurig` on the home Wi-Fi. The desktop already resolves that mDNS name. This phase does not expose the rig or make the dashboard reachable from outside the home network.
 
 Nginx binds HTTPS only to the Pi Wi-Fi address and requires a client TLS certificate signed by the Pi's private dashboard CA. It advertises that CA in its TLS certificate request so browsers show only matching client certificates. It proxies only the dashboard page and its explicit dashboard API routes. The gateway itself remains on `127.0.0.1:8080`; the manager, inference, and orchestration APIs are not LAN routes. POST actions require a matching browser Origin, `Sec-Fetch-Site: same-origin` when present, and JSON. A device without an enrolled certificate receives no dashboard content.
 
@@ -16,7 +16,7 @@ The current single-CA setup does not provide per-device certificate revocation. 
 
 ## Verification
 
-- With the enrolled desktop certificate, `https://raspberrypi.local/gpurig` returns the dashboard and its API calls work.
+- With the enrolled desktop certificate, `https://<pi-mdns-name>.local/gpurig` returns the dashboard and its API calls work.
 - Without a client certificate, Nginx rejects the request and serves no dashboard content.
 - With a certificate, a direct `/v1/manager/status` request to the LAN listener returns 404. Cross-origin POSTs return 403.
 - `ss -ltn` on the Pi shows the main gateway on `127.0.0.1:8080`, the route proxy on `127.0.0.1:8843`, and Nginx HTTPS on the Wi-Fi address only. No port 80 listener is enabled.
@@ -28,10 +28,10 @@ Verified after the TLS front-end change: OpenSSL reports `Acceptable client cert
 
 ## Chrome certificate chooser
 
-Advertising the Pi CA narrows Chrome's chooser to the enrolled client certificate; Incognito can still show a one-choice prompt because it starts a fresh browser session. Chrome's `AutoSelectCertificateForUrls` policy can remove this prompt for the exact dashboard origin. Use one list entry with pattern `https://raspberrypi.local` and filter `ISSUER.CN=Pi Dashboard Local CA`, `SUBJECT.CN=bryan-desktop`. Keep that rule on the desktop only; do not add it to the public repo. Verify its status in `chrome://policy` and test in a new Incognito window. This policy sends the matching client certificate automatically to that origin.
+Advertising the Pi CA narrows Chrome's chooser to the enrolled client certificate; Incognito can still show a one-choice prompt because it starts a fresh browser session. Chrome's `AutoSelectCertificateForUrls` policy can remove this prompt for the exact dashboard origin. Use one list entry with pattern `https://<pi-mdns-name>.local` and filter `ISSUER.CN=Pi Dashboard Local CA`, `SUBJECT.CN=<enrolled-device-name>`. Keep that rule on the desktop only; do not add it to the public repo. Verify its status in `chrome://policy` and test in a new Incognito window. This policy sends the matching client certificate automatically to that origin.
 
 The operator's Windows registry denied the agent's write to `HKCU\Software\Policies\Google\Chrome`, so this rule is not installed. The server-side CA hint and certificate verification are active independently of the optional browser policy.
 
-## Chat access
+## Chat and Coding access
 
-The LAN proxy allows only the Chat tab's explicit options, conversation, and turn routes. All mutation routes use the same same-origin and JSON checks as rig controls. Chat history stays on the Pi's 4 TB volume; model inference remains behind the loopback gateway and rig manager. The LAN proxy and Nginx read timeouts are long enough for a cold profile load plus generation.
+The LAN proxy permits explicit Chat and Coding conversation routes, including bounded workspace browsing, search, and versioned saves for an allowlisted Coding conversation. All mutation routes use the same same-origin and JSON checks as rig controls. Chat history stays on the Pi's 4 TB volume; model inference remains behind the loopback gateway and rig manager. The LAN proxy and Nginx read timeouts are long enough for a cold profile load plus generation. The client certificate admits the trusted operator to the whole administrative dashboard; the tabs are tool profiles, not distinct browser identities.

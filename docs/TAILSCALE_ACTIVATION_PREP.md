@@ -1,21 +1,26 @@
 # Tailscale activation preparation
 
-Status: prepared on 2026-11-13; no Pi enrollment, Serve, or Funnel is active.
-This runbook is for the later networking session. The existing dashboard on
-the home LAN is an administrative surface, not the remote harness session UI.
+Reference rollout: the Pi and a phone were enrolled, the separate mobile
+listener and tailnet-only Serve were enabled, the 443-only grant passed policy
+tests, and the phone loaded the dashboard over cellular. Funnel remained off.
+Cross-device conversation continuation and device revocation remain to be
+verified. The existing home-LAN dashboard is a separate administrative surface.
+See [the security model](REMOTE_ACCESS_SECURITY.md) for the trust boundaries;
+keep this installation's actual names and addresses in private operations notes.
 
 ## Prepared state
 
-- Tailscale 1.104.6 is installed on the Pi; `tailscaled` is disabled and stopped.
+- Tailscale is installed on the Pi; `tailscaled` is running for enrollment.
 - The Pi host firewall drops inbound traffic outside explicit LAN and private-rig
-  allowances. Its forwarding policy drops all transit traffic. There is no
+  allowances. Its forwarding policy drops transit except the existing narrow
+  `eth0` to `wlan0` rig flow and established return traffic. There is no
   `tailscale0` allowance yet. Outbound connections remain available.
 - Pi SSH uses keys only and disables root login and agent/X11 forwarding. The
   eth0 ingress rule admits SSH (TCP/22) and NFSv4 (TCP/2049) from the isolated
-  10.0.0.0/24 rig and Orange Pi worker network. The NFS export admits that
+  rig and worker subnet. The NFS export admits that
   subnet. Wi-Fi and Tailscale do not admit NFS; Tailscale has no inbound grant.
-- The gateway and harness session front door is still a design. Tailscale
-  enrollment alone must not publish the existing broad dashboard.
+- The separate mobile front door is implemented. Tailscale enrollment alone
+  must not publish the existing broad LAN dashboard.
 
 ## Before enrolling the Pi
 
@@ -37,14 +42,16 @@ the home LAN is an administrative surface, not the remote harness session UI.
 ## First enrollment and network check
 
 1. Enroll only the Pi with the restrictive policy. Keep Serve, Funnel, subnet
-   routes, exit-node advertising, and IP forwarding off. Do not expose the rig.
+   routes, and exit-node advertising off. Preserve the existing IPv4 forwarding
+   for the isolated rig network; never add a `tailscale0` forwarding allowance.
+   Do not expose the rig.
 2. Confirm tailnet membership and outbound coordination. Check the Pi's
    `tailscale0` interface and effective host firewall rules. From another
    tailnet device, prove inbound attempts are denied. From the LAN, prove SSH
    and client-certificate dashboard access still work; from the rig, prove
    key-only SSH and NFS still work. Check `nft` and Tailscale logs for
    unintended drops.
-3. Only when the separate authenticated harness session listener exists, merge
+3. Only when the separate authenticated mobile listener exists, merge
    a 443-only operator grant with explicit denial tests. Configure Serve for
    that loopback listener, never for the administrative dashboard. With the
    host firewall active, test access from an approved and an unapproved device;
@@ -55,7 +62,7 @@ the home LAN is an administrative surface, not the remote harness session UI.
    gate, not the application's action authorization.
 
 The first networking session can finish at denied-by-default enrollment. A
-working remote chat session also needs the separate session front door and
+working remote chat session also needs the separate mobile front door and
 its application security checks.
 
 References: [Tailscale policy syntax](https://tailscale.com/docs/reference/syntax/policy-file),

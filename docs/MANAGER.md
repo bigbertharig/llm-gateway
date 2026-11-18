@@ -1,4 +1,12 @@
-# Rig manager: the process everything follows
+# Rig manager
+
+The manager coordinates GPU leases, placement, model loads, and work plans across
+the gateway controller and the rig executor. The controller exposes the manager
+API; the rig owns durable state and enforces hardware rules. Start with [the
+dashboard guide](DASHBOARD.md) for operator controls or [design notes](DESIGN_NOTES.md)
+for the resource model. The operator CLI is `tools/rigctl.py`.
+
+Implementation status and detailed flows follow.
 
 Status 2026-10-24: Phase A built (leases, claims, placement, observed status, detached rig loads,
 gateway cold loads through the manager); lease record moved onto the rig; rig guard built (gates
@@ -112,7 +120,7 @@ coding/research role order and readiness checks without requiring a local parent
 parent GPUs. The harness MCP adapter exposes this as `delegate_task` and records a child receipt.
 This route does not make the child a file-editing agent; its current runtime has no tools.
 
-The harness never chooses a GPU or calls a profile load endpoint. It uses the returned route with `X-Require-Ready: true` and checks the ready roster before and after the child run. The first live control used `chat-27b` on GPU 0 and a cold `coding` request, which the manager placed as `coder-7b` on GPU 1. The native child and parent MCP handoff both returned `42`; receipts are in `/home/bryan/llm-harness/results/subagent_gateway_parent_mcp_2026-11-04_v1/` and `subagent_gateway_live_2026-11-04_v3/`. Gateway contract tests passed 33/33. This is one bounded Pi-harness integration, not yet a six-harness delegation comparison. Manager policy and child model quality still need broader evaluation.
+The harness never chooses a GPU or calls a profile load endpoint. It uses the returned route with `X-Require-Ready: true` and checks the ready roster before and after the child run. The first live control used `chat-27b` on GPU 0 and a cold `coding` request, which the manager placed as `coder-7b` on GPU 1. The native child and parent MCP handoff both returned `42`; receipts are kept in the private harness results. Gateway contract tests passed 33/33. This is one bounded Pi-harness integration, not a six-harness delegation comparison. Manager policy and child model quality still need broader evaluation.
 
 A cold request for `gpu-rig/<id>`: the manager leases cards for the profile (`interactive`, owner
 `llm-gateway`), then queues a `load` item in the rig's plan (`rig plan add`) with the GPUs, port,
@@ -370,7 +378,7 @@ Open: a VRAM check for published profiles; context per slot with `--parallel`.
 ## Runs, cancel by owner, and demand (2026-10-22)
 
 **Runs.** `rigctl run-start --run ID [--resume "CMD"] [--auto-resume] [--needs MIB[xN]] -- CMD...` hands the rig
-a long run: the rig's plan executor starts it as its own unit (`rig-run-ID`, as bryan) and records it in the
+a long run: the rig's plan executor starts it as its own unit (`rig-run-ID`, under the rig service identity) and records it in the
 plan's `runs` (owner, command, resume command, needs, attempts). Its state follows the unit: running, then
 finished (exit 0) or failed; `stopped` and `dismissed` are set by the controller. The reconciler reports each
 run that ends, once. `rigctl runs` lists them; `rigctl recover RUN` starts an interrupted, failed or stopped run
@@ -508,8 +516,8 @@ that owner when they end. Both start as runs (`rigctl run-start`). Open: drop
 
 As of 2026-11-14, a cloud Codex dashboard parent may request `candidate_id=qwen35_shared_1060` with `parent_route=cloud/codex`. The manager starts the shared service through rig orchestration if it is absent, attaches a fresh worker chat, and returns an ephemeral ready route. Release accepts the cloud parent and detaches its child. The rig controller chooses the worker GPU; the cloud chat and harness never name a card. `GET /v1/manager/local-agent-capabilities` supplies a small discovery catalog for the dashboard's `list_local_agents` MCP tool. Default delegation without a candidate uses an already-ready shared 35B service when available; otherwise it follows the existing role-based ready/cold profile policy. If automatic shared attachment has no worker capacity, the manager falls back to the ordinary profile policy.
 
-The benchmark [subagent catalog](/media/bryan/shared/plans/shoulders/benchmarking/subagent_catalog.json) is imported into `model_catalog.json`. `GET /v1/manager/subagent-candidates` lists the stable candidate IDs. `POST /v1/manager/agent-routes/resolve` accepts an optional `candidate_id`; for `qwen35_shared_1060` with a shared 35B parent, the manager attaches a fresh 1060 chat to the resident GPU0 weights and returns a ready route and `ephemeral: true`. `POST /v1/manager/agent-routes/release` detaches that child after the harness finishes. The local harness checks the ready roster after attachment and releases in a cleanup path. The parent route and model remain loaded.
+The benchmark subagent catalog (maintained in a private shared-drive workspace) is imported into `model_catalog.json`. `GET /v1/manager/subagent-candidates` lists the stable candidate IDs. `POST /v1/manager/agent-routes/resolve` accepts an optional `candidate_id`; for `qwen35_shared_1060` with a shared 35B parent, the manager attaches a fresh 1060 chat to the resident GPU0 weights and returns a ready route and `ephemeral: true`. `POST /v1/manager/agent-routes/release` detaches that child after the harness finishes. The local harness checks the ready roster after attachment and releases in a cleanup path. The parent route and model remain loaded.
 
 Ready shared chats are exposed as `gpu-rig/shared-35b-<chat_id>` through `/v1/models`, `/v1/rig/ready-roster`, `/v1/chat/completions`, and a bounded `/v1/responses` adapter. Requests and tool calls use OpenAI-shaped JSON so the existing six harnesses can use the route. The adapter buffers generation before emitting SSE, accepts text and function calls, and caps a runtime turn at 512 output tokens. It is experimental: each chat is stateful on the rig, so clients must keep a stable route and aligned conversation history; it is not a stateless general OpenAI proxy. Long-running and arbitrary multimodal Responses operations are outside this contract. Codex Terra/Luna are separate online candidates selected by the harness through the live Codex model list, not rig routes.
 
-See the harness [shared 35B subagent matrix](/home/bryan/llm-harness/docs/research/shared35_subagent_matrix_2026-11-12.md) for scored outcomes and limitations.
+See the harness shared-model subagent matrix for scored outcomes and limitations (maintained in the private harness workspace).

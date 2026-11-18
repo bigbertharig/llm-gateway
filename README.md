@@ -1,15 +1,30 @@
 # llm-gateway
 
-The machines and the API for the local LLM rig, running on the Pi. Two parts:
+The operator-facing entry point for a local LLM rig. The Pi-hosted Gateway serves an OpenAI-compatible model API and durable dashboard conversations. A separate home-LAN dashboard uses browser client certificates; a smaller mobile dashboard uses private Tailscale Serve. The GPU rig and workers remain behind the Pi, outside the tailnet.
 
-- **The rig manager**: who holds which GPU (leases, claims), where a model goes and whether it fits, model
-  loads, long runs (campaigns, lanes), waits for busy cards, and cleanup. `tools/rigctl.py` is its CLI.
-- **The gateway**: an OpenAI-compatible endpoint (`/v1/models`, `/v1/chat/completions`, ...). The first
-  request for a model makes the manager load it and holds the request until it is ready.
+Gateway owns presentation, tool and model policy, and work coordination. Its older Manager routes still handle parts of placement and loading while hardware authority moves toward `llm_orchestration`. See [work organization and current boundaries](docs/WORK_ORGANIZATION_DIRECTION.md) for that migration.
 
-Plus the dashboard for the whole rig (`/dashboard/`).
+## Project map
 
-## Start here
+This project runs local model and agent workloads across a Pi control host, an isolated GPU rig, and optional CPU workers. The four repositories have different jobs:
+
+| Repository | Responsibility |
+|---|---|
+| [llm-gateway](https://github.com/bigbertharig/llm-gateway) | Operator-facing dashboard, conversations, model API, tool policy, and work coordination. Its existing Manager code still bridges some hardware operations. |
+| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | Hardware-facing admission, placement, reservations, model lifecycle, telemetry, and the existing parallel batch engine. |
+| [benchmarking](https://github.com/bigbertharig/benchmarking) | Measured model and runtime evidence, model registry and roles, load recipes, evaluation suites, and results. |
+| [llm-harness](https://github.com/bigbertharig/llm-harness) | Experimental agent loop, context and session contracts, tool adapters, and harness comparisons. No candidate harness has been promoted as the gateway's work engine. |
+
+Benchmarking publishes reviewed evidence; Gateway imports it and presents work to the operator; the rig-side Orchestration layer enforces hardware rules. Harness experiments consume prepared Gateway model routes. Gateway's current Manager still handles some admission and placement. Complete hardware reservations and placement are moving to Orchestration, so the target ownership and current code differ during the migration.
+
+## Read this repo
+
+- [Dashboard](docs/DASHBOARD.md): operator UI, saved conversations, and its local controls.
+- [Remote access security](docs/REMOTE_ACCESS_SECURITY.md): why the phone route is separate from the LAN dashboard.
+- [Manager](docs/MANAGER.md): current model admission and rig-control interface.
+- [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md): current ownership and the planned hardware-boundary migration.
+
+## Documentation index
 
 | Doc | For |
 |---|---|
@@ -18,17 +33,10 @@ Plus the dashboard for the whole rig (`/dashboard/`).
 | [docs/WORKLOAD_COORDINATION.md](docs/WORKLOAD_COORDINATION.md) | migration from exclusive rig modes to gateway-coordinated requests and explicit commands |
 | [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | design notes and ideas: failure recovery, slots, sharing capacity (exploratory) |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | the dashboard |
+| [docs/REMOTE_ACCESS_SECURITY.md](docs/REMOTE_ACCESS_SECURITY.md) | private phone access boundaries, reusable setup, and verification |
+| [docs/MOBILE_DASHBOARD.md](docs/MOBILE_DASHBOARD.md) | mobile dashboard and Tailscale rollout |
 | [docs/POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md](docs/POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md) | powerful gateway host target and cloud Codex to local child agent integration |
 | [docs/multi_rig_tests.md](docs/multi_rig_tests.md) | tests across two machines (network splits, failover) |
-
-## The four repos
-
-| Repo | Owns | Start at |
-|---|---|---|
-| **llm-gateway** (this one) | the machines and the API: rig manager, gateway, dashboard, `rigctl` | `docs/MANAGER.md` |
-| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | parallel batch work (brain + workers on a task queue, plans), the rig-side hardware scripts (`shared/scripts/rig/`), CPU workers | `shared/workspace/CONTEXT.md` |
-| [benchmarking](https://github.com/bigbertharig/benchmarking) | which models are good: the model registry and roles, suites, campaigns, results | `NEW_MODEL_INTEGRATION.md`, `MODEL_LIBRARY.md` |
-| [llm-harness](https://github.com/bigbertharig/llm-harness) | one model in an interactive loop: chat, tools, context, sessions (no code yet) | `README.md` reading order |
 
 ```text
 client -> Pi 127.0.0.1:8080 llm-gateway (pi-gateway.service)
@@ -36,9 +44,7 @@ client -> Pi 127.0.0.1:8080 llm-gateway (pi-gateway.service)
              `-> Pi 127.0.0.1:<port> --pi-rig-tunnel.service--> rig 127.0.0.1:<port> llama-server
 ```
 
-From another machine, ssh to the Pi and work there, or forward the Pi's 8080
-(`ssh -L 8080:127.0.0.1:8080 pi`). The rig's runtimes stay loopback-only; only the Pi talks to them.
-Cloud models are not routed here.
+The core Gateway API and rig runtimes remain on loopback or the isolated rig link. The trusted home-LAN browser uses its separate certificate front door; the approved phone uses the narrower, tailnet-only mobile front door. See [remote access security](docs/REMOTE_ACCESS_SECURITY.md) for the boundary and [local dashboard access](docs/LOCAL_DASHBOARD_ACCESS.md) for LAN setup. The inference API offers local models; dashboard Codex conversations have their own provider and tool policy.
 
 ## rigctl: the common commands
 
