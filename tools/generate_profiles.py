@@ -241,10 +241,26 @@ def load_subagent_catalog(root: Path, registry: dict[str, Any]) -> dict[str, Any
                 role not in ("coding", "research") for role in row["agent_types"]):
             raise ValueError(f"subagent_catalog.json: invalid agent_types for {name}")
         if row["provider"] == "rig_shared_chat":
-            if row["model"] not in registry["models"] or row.get("mode") != "gpu1060-chat-q4" or                     row.get("requires") != {"model": row["model"], "mode": "gpu0-main-q4"}:
+            requires = row.get("requires")
+            if (row["model"] not in registry["models"]
+                    or not isinstance(row.get("mode"), str)
+                    or not re.fullmatch(r"gpu[a-z0-9-]+", row["mode"])
+                    or not isinstance(requires, dict)
+                    or requires.get("model") != row["model"]
+                    or not isinstance(requires.get("mode"), str)
+                    or not re.fullmatch(r"gpu[a-z0-9-]+", requires["mode"])):
                 raise ValueError(f"subagent_catalog.json: invalid shared chat mode for {name}")
             if type(row.get("context_cap")) is not int or row["context_cap"] <= 0:
                 raise ValueError(f"subagent_catalog.json: invalid context cap for {name}")
+            if row.get("context_allocation") not in ("fixed_per_chat", "dynamic_at_attach"):
+                raise ValueError(f"subagent_catalog.json: invalid context allocation for {name}")
+            if row.get("context_allocation") == "dynamic_at_attach" and (
+                    type(row.get("context_min")) is not int or row["context_min"] < 1
+                    or type(row.get("context_default")) is not int
+                    or not row["context_min"] <= row["context_default"] <= row["context_cap"]):
+                raise ValueError(f"subagent_catalog.json: invalid dynamic context range for {name}")
+            if type(row.get("max_attached_chats")) is not int or row["max_attached_chats"] <= 0:
+                raise ValueError(f"subagent_catalog.json: invalid attached chat limit for {name}")
         elif not row["model"].startswith("gpt-") or row.get("availability") != "check_codex_model_list":
             raise ValueError(f"subagent_catalog.json: invalid Codex candidate {name}")
     return doc

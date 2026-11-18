@@ -13,6 +13,7 @@ from . import fit, models, observations
 from .core import Manager
 from .errors import ManagerError
 from ..rig import RigUnavailable
+from ..shared_chat_contract import ROUTE_PREFIX_BY_MODEL, serving_approved, validate_admission
 
 
 # Agent capability policy names reviewed benchmarking roles, never models or GPUs.
@@ -21,6 +22,14 @@ AGENT_ROLE_ORDER = {
     "coding": ("brain_code", "single_1060_code"),
     "research": ("brain", "single_1060", "text_extraction"),
 }
+def _shared_candidates(catalog: dict) -> dict[str, dict]:
+    """Reviewed shared services; a candidate only attaches to its already-loaded model."""
+    entries = (catalog.get("subagent_catalog") or {}).get("candidates") or {}
+    return {cid: {**entry, "route_prefix": ROUTE_PREFIX_BY_MODEL[entry["model"]]}
+            for cid, entry in entries.items()
+            if entry.get("provider") == "rig_shared_chat"
+            and entry.get("model") in ROUTE_PREFIX_BY_MODEL
+            and serving_approved(catalog, entry["model"])}
 
 
 def _agent_profile_order(agent_type: str, published: dict[str, dict], *, cold: bool = False) -> list[str]:
@@ -92,25 +101,66 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
     @r.get("/subagent-candidates")
     async def subagent_candidates():
         """Imported model-library identities; readiness is checked by each provider at use time."""
-        return models.catalog().get("subagent_catalog", {"schema_version": 1, "candidates": {}})
+        full_catalog = models.catalog()
+        catalog = full_catalog.get("subagent_catalog", {"schema_version": 1, "candidates": {}})
+        allowed = _shared_candidates(full_catalog)
+        return {**catalog, "candidates": {cid: row for cid, row in (catalog.get("candidates") or {}).items()
+                if row.get("provider") != "rig_shared_chat" or cid in allowed}}
 
     @r.get("/local-agent-capabilities")
     async def local_agent_capabilities():
-        """Small catalog for cloud chat; placement and readiness stay in the manager."""
-        catalog = models.catalog().get("subagent_catalog") or {}
+        """Cloud-child choices plus truthful fixed-context and live slot information."""
+        full_catalog = models.catalog()
+        try:
+            service = (await manager.rig.status()).get("shared_kv_service") or {}
+        except RigUnavailable:
+            service = {}
         candidates = []
-        for candidate_id, entry in (catalog.get("candidates") or {}).items():
-            if entry.get("provider") == "rig_shared_chat":
-                candidates.append({"candidate_id": candidate_id,
-                                   "agent_types": entry.get("agent_types", []),
-                                   "model": entry.get("model"),
-                                   "status": entry.get("status", "experimental")})
+        for candidate_id, entry in _shared_candidates(full_catalog).items():
+            loaded = service.get("status") == "ready" and service.get("model") == entry.get("model")
+            active = sum(isinstance(chat, dict) and
+                         str(chat.get("chat_id", "")).startswith("child-")
+                         for chat in (service.get("chats") or [])) if loaded else 0
+            limit = entry.get("max_attached_chats")
+            live_reservations = [{**chat["reservation"],
+                                  "route": model_prefix + "/" + entry["route_prefix"] + chat["chat_id"],
+                                  "chat_id": chat["chat_id"]}
+                                 for chat in (service.get("chats") or [])
+                                 if loaded and isinstance(chat, dict)
+                                 and isinstance(chat.get("chat_id"), str)
+                                 and chat["chat_id"].startswith("child-")
+                                 and isinstance(chat.get("reservation"), dict)]
+            worker_capacity = service.get("worker_capacity") or {}
+            authoritative = loaded and worker_capacity.get("status") == "observed"
+            candidates.append({"candidate_id": candidate_id,
+                               "agent_types": entry.get("agent_types", []),
+                               "model": entry.get("model"),
+                               "status": entry.get("status", "experimental"),
+                               "context_length": entry.get("context_cap"),
+                               "context_allocation": entry.get("context_allocation", "fixed_per_chat"),
+                               **({"context_min": entry["context_min"]}
+                                  if type(entry.get("context_min")) is int else {}),
+                               **({"context_default": entry["context_default"]}
+                                  if type(entry.get("context_default")) is int else {}),
+                               **({"memory_estimate": entry["memory_estimate"]}
+                                  if isinstance(entry.get("memory_estimate"), dict) else {}),
+                               "max_concurrent_children": limit,
+                               "loaded": loaded,
+                               "service_instance_id": service.get("instance_id") if loaded else None,
+                               "active_reservations": live_reservations,
+                               "active_children": active,
+                               "available_worker_slots": worker_capacity.get("free_gpu_count")
+                                   if authoritative else None,
+                               "available_worker_gpu_ids": worker_capacity.get("free_gpu_ids")
+                                   if authoritative else None,
+                               "capacity_context_tokens": worker_capacity.get("context_capacity")
+                                   if authoritative else None})
         return {"object": "local_agent_capabilities", "version": 1,
                 "roles": [{"agent_type": role, "description": (
                     "Analyze sources, extract evidence, and identify limits" if role == "research" else
                     "Review or solve bounded coding tasks")}
                     for role in AGENT_ROLE_ORDER],
-                "default": "The manager selects a ready local model or loads one for the requested role",
+                "default": "The manager selects a ready local model or loads one for the requested role; slot admission is authoritative at delegation time",
                 "candidates": candidates}
 
     @r.post("/agent-routes/release")
@@ -118,21 +168,45 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         body = await _body(request)
         route = body.get("route")
         parent = body.get("parent_route")
-        prefix = model_prefix + "/shared-35b-"
-        if not isinstance(route, str) or not route.startswith(prefix + "child-") or \
-                not isinstance(parent, str) or (parent != "cloud/codex" and not parent.startswith(prefix)):
+        expected_instance = body.get("service_instance_id")
+        expected_reservation = body.get("reservation_id")
+        if expected_instance is not None and not isinstance(expected_instance, str):
+            raise ManagerError(400, "service_instance_id must be a string")
+        if expected_reservation is not None and not isinstance(expected_reservation, str):
+            raise ManagerError(400, "reservation_id must be a string")
+        shared = {model_prefix + "/" + route_prefix: model
+                  for model, route_prefix in ROUTE_PREFIX_BY_MODEL.items()}
+        prefix = next((p for p in shared if isinstance(route, str) and route.startswith(p + "child-")), None)
+        if prefix is None or not isinstance(parent, str) or \
+                (parent != "cloud/codex" and not parent.startswith(prefix)):
             raise ManagerError(400, "an attached shared child route and parent are required")
         child_id = route[len(prefix):]
         status = await manager.rig.status()
         service = status.get("shared_kv_service") or {}
         chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
         parent_chat = "main" if parent == "cloud/codex" else parent[len(prefix):]
-        if service.get("status") != "ready" or child_id not in chats or parent_chat not in chats:
-            raise ManagerError(409, "shared child or parent is not ready")
+        if service.get("status") != "ready" or parent_chat not in chats:
+            raise ManagerError(409, "shared parent is not ready")
+        if expected_instance is not None and service.get("instance_id") != expected_instance:
+            raise ManagerError(409, "shared service instance changed before release")
+        if child_id not in chats:
+            if expected_instance is None:
+                raise ManagerError(409, "shared child is not ready")
+            return {"released": route, "already_released": True,
+                    "service_instance_id": service.get("instance_id")}
         if chats[child_id].get("gpu") == chats[parent_chat].get("gpu"):
             raise ManagerError(409, "child is not isolated from parent")
-        await manager.rig.shared_kv("detach", chat_id=child_id)
-        return {"released": route}
+        if service.get("model") != shared[prefix]:
+            raise ManagerError(409, "shared child model changed")
+        reservation = chats[child_id].get("reservation")
+        if expected_reservation is not None and (not isinstance(reservation, dict)
+                or reservation.get("reservation_id") != expected_reservation):
+            raise ManagerError(409, "shared child reservation changed before release")
+        detached = await manager.rig.shared_kv("detach", model=shared[prefix], chat_id=child_id)
+        return {"released": route,
+                "service_instance_id": service.get("instance_id"),
+                **({"released_reservation": detached["released_reservation"]}
+                   if isinstance(detached.get("released_reservation"), dict) else {})}
 
     @r.post("/agent-routes/resolve")
     async def resolve_agent_route(request: Request):
@@ -140,59 +214,105 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         b = await _body(request)
         agent_type, parent_id = b.get("agent_type"), b.get("parent_route")
         candidate_id = b.get("candidate_id")
+        worker_strategy = b.get("worker_strategy", "auto")
         if agent_type not in AGENT_ROLE_ORDER or not isinstance(parent_id, str):
             raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_ROLE_ORDER)} and parent_route is required")
+        if worker_strategy not in ("auto", "shared_model", "separate_model"):
+            raise ManagerError(400, "worker_strategy must be auto, shared_model, or separate_model")
+        if worker_strategy == "separate_model" and candidate_id is not None:
+            raise ManagerError(400, "candidate_id cannot be combined with separate_model")
         prefix = model_prefix + "/"
         cloud_parent = parent_id == "cloud/codex"
         if not cloud_parent and not parent_id.startswith(prefix):
             raise ManagerError(400, "parent_route must be a gateway route or cloud/codex")
         min_context = b.get("min_context", 4096)
+        context_tokens = b.get("context_tokens")
         if type(min_context) is not int or min_context < 1:
             raise ManagerError(400, "min_context must be a positive integer")
-        shared_prefix = prefix + "shared-35b-"
+        if context_tokens is not None and (type(context_tokens) is not int
+                or not 16384 <= context_tokens <= 262144):
+            raise ManagerError(400, "context_tokens must be an integer from 16384 to 262144")
+        if context_tokens is not None and context_tokens < min_context:
+            raise ManagerError(400, "context_tokens cannot be smaller than min_context")
+        catalog = models.catalog()
+        shared = _shared_candidates(catalog)
+        service = (await manager.rig.status()).get("shared_kv_service") or {}
+        selected = None
         inferred_shared = False
-        if cloud_parent and candidate_id is None:
-            current_service = (await manager.rig.status()).get("shared_kv_service") or {}
-            if (current_service.get("status") == "ready"
-                    and current_service.get("model") == "qwen3.6:35b-a3b-xl"):
-                candidate_id = "qwen35_shared_1060"
-                inferred_shared = True
-        if parent_id.startswith(shared_prefix) or (cloud_parent and candidate_id == "qwen35_shared_1060"):
-            if candidate_id not in (None, "qwen35_shared_1060"):
-                raise ManagerError(400, "candidate is incompatible with a shared 35B parent")
-            entry = (models.catalog().get("subagent_catalog") or {}).get("candidates", {}).get(
-                "qwen35_shared_1060", {})
-            if entry.get("provider") != "rig_shared_chat" or agent_type not in entry.get("agent_types", []):
-                raise ManagerError(409, "35B shared-chat subagent is not offered")
-            status = await manager.rig.status()
-            service = status.get("shared_kv_service") or {}
-            if cloud_parent and not service:
-                await manager.rig.shared_kv("start")
-                status = await manager.rig.status()
-                service = status.get("shared_kv_service") or {}
+        if worker_strategy != "separate_model" and cloud_parent:
+            if candidate_id is not None:
+                selected = candidate_id if candidate_id in shared else None
+            elif service.get("status") == "ready":
+                selected = next((cid for cid, row in shared.items()
+                                 if row["model"] == service.get("model")), None)
+                inferred_shared = selected is not None
+        elif worker_strategy != "separate_model":
+            selected = next((cid for cid, row in shared.items()
+                             if parent_id.startswith(prefix + row["route_prefix"])), None)
+            if selected and candidate_id not in (None, selected):
+                raise ManagerError(400, "candidate is incompatible with the loaded shared model")
+        if selected:
+            entry = shared[selected]
+            if agent_type not in entry.get("agent_types", []):
+                raise ManagerError(409, "shared-chat subagent does not support this role")
+            model = entry["model"]
+            shared_prefix = prefix + entry["route_prefix"]
+            model_arg = {"model": model}
+            if cloud_parent and service.get("status") != "ready":
+                await manager.rig.shared_kv("start", **model_arg)
+                service = (await manager.rig.status()).get("shared_kv_service") or {}
             chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
             parent_chat = "main" if cloud_parent else parent_id[len(shared_prefix):]
             parent = chats.get(parent_chat)
-            if (service.get("status") != "ready" or service.get("model") != entry.get("model")
+            if (service.get("status") != "ready" or service.get("model") != model
                     or not parent or type(parent.get("gpu")) is not int):
                 raise ManagerError(409, "parent shared chat is not ready")
             if parent.get("context_cap", 0) < min_context:
                 raise ManagerError(409, "parent shared chat has insufficient context")
             child_id = "child-" + uuid.uuid4().hex[:16]
             try:
-                attached = await manager.rig.shared_kv("attach", chat_id=child_id)
-            except RigUnavailable:
+                attach_args = {**model_arg, "chat_id": child_id}
+                if context_tokens is not None:
+                    attach_args["context_tokens"] = context_tokens
+                elif entry.get("context_allocation") == "dynamic_at_attach":
+                    attach_args["context_tokens"] = entry.get("context_default", entry["context_cap"])
+                attached = await manager.rig.shared_kv("attach", **attach_args)
+            except RigUnavailable as exc:
+                if "no eligible free GPU" in str(exc):
+                    if worker_strategy == "auto" and inferred_shared and candidate_id is None:
+                        selected = None
+                    else:
+                        raise ManagerError(409, f"{selected} has no available worker slot") from exc
                 if not inferred_shared:
                     raise
                 candidate_id = None
             else:
-                gpu = attached.get("gpu")
-                if type(gpu) is not int or gpu == parent["gpu"]:
-                    raise ManagerError(502, "shared child placement did not isolate the parent GPU")
-                return {"agent_type": agent_type, "candidate_id": "qwen35_shared_1060",
-                        "route": shared_prefix + child_id, "model": entry["model"],
-                        "gpu_ids": [gpu], "context_length": attached["context_cap"],
-                        "state": "ready", "parent_route": parent_id, "ephemeral": True}
+                try:
+                    admission = validate_admission(
+                        attached, expected_instance=service.get("instance_id"),
+                        parent_gpu=parent["gpu"])
+                except ValueError as exc:
+                    try:
+                        await manager.rig.shared_kv("detach", model=model, chat_id=child_id)
+                    except Exception as rollback_exc:
+                        raise ManagerError(502, f"invalid shared admission and rollback failed: {rollback_exc}") from exc
+                    raise ManagerError(502, f"invalid shared admission: {exc}") from exc
+                gpu = admission["gpu"]
+                reservation = admission["reservation"]
+                instance = admission["service_instance_id"]
+                return {"agent_type": agent_type, "candidate_id": selected,
+                        "route": shared_prefix + child_id, "model": model,
+                        "gpu_ids": [gpu], "context_length": admission["context_capacity"],
+                        "state": "ready", "parent_route": parent_id, "ephemeral": True,
+                        "service_instance_id": instance, "reservation": reservation,
+                        "admission": {"mode": "shared_model",
+                                      "service_instance_id": instance,
+                                      "reservation_id": reservation["reservation_id"],
+                                      "requested_context_tokens": context_tokens,
+                                      "served_context_tokens": admission["context_capacity"],
+                                      "reservation": reservation}}
+        if worker_strategy == "shared_model" and selected is None:
+            raise ManagerError(409, "no requested shared-model worker is currently available")
         if candidate_id is not None:
             raise ManagerError(400, "candidate is not available for this parent route")
         observed = await manager.status()
@@ -215,7 +335,8 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                     type(context) is not int or context < min_context or not row.get("port")):
                 continue
             return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
-                    "gpu_ids": sorted(gpus), "context_length": context, "state": "ready"}
+                    "gpu_ids": sorted(gpus), "context_length": context, "state": "ready",
+                    "admission": {"mode": "separate_model", "served_context_tokens": context}}
         # No ready offer: let the manager fit, lease, and load a published profile.
         # Existing ready routes on the parent's cards are never moved by this request.
         async def prepare_cold():
@@ -244,7 +365,9 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                         and (cloud_parent or set(parent_now.get("gpus") or []).isdisjoint(row["gpus"]))
                         and type(row.get("ctx_size")) is int and row["ctx_size"] >= min_context):
                     return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
-                            "gpu_ids": sorted(row["gpus"]), "context_length": row["ctx_size"], "state": "ready"}
+                            "gpu_ids": sorted(row["gpus"]), "context_length": row["ctx_size"], "state": "ready",
+                            "admission": {"mode": "separate_model",
+                                          "served_context_tokens": row["ctx_size"]}}
                 failures.append(f"{pid}: loaded route did not satisfy child offer")
             raise ManagerError(503, f"no {agent_type} route on GPUs separate from {parent_id}", failures=failures)
         try:
