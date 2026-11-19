@@ -4,9 +4,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from fastapi.responses import JSONResponse
 
 from llm_gateway.app import create_app
 from llm_gateway.manager.routes import router as manager_router
+from llm_gateway.manager.errors import ManagerError
 from llm_gateway.settings import Settings
 
 
@@ -19,20 +21,31 @@ class SharedRig:
     async def status(self):
         return {"profiles": [], "shared_kv_service": ({"status": "ready",
                 "model": "qwen3.6:35b-a3b-xl", "port": 11524, "mode": "gpu0-main-q4",
+                "instance_id": "qwen-load-1",
                 "chats": [dict(row) for row in self.chats]} if self.ready else None)}
 
-    async def shared_kv(self, action, *, chat_id=None, message=None, max_tokens=None):
+    async def shared_kv(self, action, *, model=None, chat_id=None, message=None, max_tokens=None,
+                        context_tokens=None):
         self.calls.append((action, chat_id, message, max_tokens))
         if action == "start":
             self.ready = True
             return {"status": "ready"}
         if action == "attach":
-            row = {"chat_id": chat_id, "gpu": 1, "context_cap": 262144, "used_tokens": 0}
+            capacity = context_tokens or 262144
+            reservation = {"reservation_id": "reservation-" + chat_id,
+                           "service_instance_id": "qwen-load-1",
+                           "context_capacity": capacity, "occupied_tokens": 0,
+                           "placement": {"gpus": [1]}, "reserved_mib": 1537,
+                           "reservation_scope": "gpu_exclusive", "claim": "worker"}
+            row = {"chat_id": chat_id, "gpu": 1,
+                   "context_cap": capacity, "used_tokens": 0,
+                   "reservation": reservation}
             self.chats.append(row)
-            return row
+            return {**row, "service_instance_id": "qwen-load-1"}
         if action == "detach":
+            row = next(row for row in self.chats if row["chat_id"] == chat_id)
             self.chats = [row for row in self.chats if row["chat_id"] != chat_id]
-            return {"detached": chat_id}
+            return {"detached": chat_id, "released_reservation": row.get("reservation")}
         if action == "turn":
             row = next(row for row in self.chats if row["chat_id"] == chat_id)
             row["used_tokens"] += 32
@@ -41,6 +54,204 @@ class SharedRig:
                     "generated_tokens": 20, "used_tokens": row["used_tokens"],
                     "finish_reason": "stop"}
         raise AssertionError(action)
+
+
+def test_nemo_ready_route_uses_model_scoped_shared_service(tmp_path):
+    class NemoRig(SharedRig):
+        async def status(self):
+            return {"profiles": [], "shared_kv_service": {"status": "ready",
+                "model": "nemotron-3.5-bolt:74b-a9b", "instance_id": "load-1",
+                "worker_capacity": {"status": "observed", "context_capacity": 262144,
+                                    "free_gpu_count": 1 if len(self.chats) == 1 else 0,
+                                    "free_gpu_ids": [1] if len(self.chats) == 1 else []},
+                "chats": [dict(row) for row in self.chats]}}
+
+        async def shared_kv(self, action, *, model=None, chat_id=None, message=None, max_tokens=None,
+                            context_tokens=None):
+            assert model == "nemotron-3.5-bolt:74b-a9b"
+            assert action == "turn" and chat_id == "main"
+            return {"content": "Nemo works", "generated_tokens": 2, "used_tokens": 6,
+                    "finish_reason": "stop"}
+
+    rig = NemoRig()
+    with TestClient(create_app(settings(tmp_path), rig=rig)) as client:
+        route = "gpu-rig/shared-nemo-main"
+        assert route in {row["id"] for row in client.get("/v1/rig/ready-roster").json()["data"]}
+        response = client.post("/v1/chat/completions", json={"model": route,
+            "messages": [{"role": "user", "content": "Hello"}], "_shared_instance_id": "load-1"})
+        assert response.status_code == 200, response.text
+        assert response.json()["choices"][0]["message"]["content"] == "Nemo works"
+        stale = client.post("/v1/chat/completions", json={"model": route,
+            "messages": [{"role": "user", "content": "Hello"}], "_shared_instance_id": "old-load"})
+        assert stale.status_code == 409
+
+
+def test_manager_spawns_child_of_loaded_nemo_and_releases_it(monkeypatch):
+    model = "nemotron-3.5-bolt:74b-a9b"
+    class NemoRig(SharedRig):
+        async def status(self):
+            return {"shared_kv_service": {"status": "ready", "model": model,
+                    "instance_id": "load-1", "chats": [dict(row) for row in self.chats],
+                    "worker_capacity": {"status": "observed", "context_capacity": 262144,
+                                        "free_gpu_count": 1 if len(self.chats) == 1 else 0,
+                                        "free_gpu_ids": [1] if len(self.chats) == 1 else []}}}
+
+        async def shared_kv(self, action, *, model=None, chat_id=None, message=None, max_tokens=None,
+                            context_tokens=None):
+            assert model == "nemotron-3.5-bolt:74b-a9b"
+            result = await super().shared_kv(action, chat_id=chat_id, message=message,
+                                             max_tokens=max_tokens, context_tokens=context_tokens)
+            if action == "attach":
+                result["service_instance_id"] = "load-1"
+                result["reservation"]["service_instance_id"] = "load-1"
+            return result
+
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "models": {model: {"status": "active"}},
+        "load_recipes": {"recipes": {"nemotron74_shared_kv_http_v1": {
+            "model": model, "status": "validated", "procedure": "shared_kv_http_v1"}}},
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "nemotron74_shared_1060": {"provider": "rig_shared_chat", "model": model,
+                "agent_types": ["coding", "research"], "context_cap": 262144,
+                "context_allocation": "fixed_per_chat", "max_attached_chats": 1}}}})
+    rig = NemoRig()
+    class Manager:
+        pass
+    manager = Manager()
+    manager.rig = rig
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        found = client.get("/v1/manager/local-agent-capabilities").json()
+        assert found["candidates"][0]["candidate_id"] == "nemotron74_shared_1060"
+        assert found["candidates"][0] == {
+            "candidate_id": "nemotron74_shared_1060", "agent_types": ["coding", "research"],
+            "model": model, "status": "experimental", "context_length": 262144,
+            "context_allocation": "fixed_per_chat", "max_concurrent_children": 1,
+            "loaded": True, "service_instance_id": "load-1", "active_reservations": [],
+            "active_children": 0, "available_worker_slots": 1,
+            "available_worker_gpu_ids": [1], "capacity_context_tokens": 262144}
+        got = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "gpu-rig/shared-nemo-main", "agent_type": "coding"})
+        assert got.status_code == 200, got.text
+        child = got.json()
+        assert child["route"].startswith("gpu-rig/shared-nemo-child-")
+        assert child["gpu_ids"] == [1]
+        assert child["service_instance_id"] == "load-1"
+        assert child["reservation"]["context_capacity"] == 262144
+        assert child["admission"]["mode"] == "shared_model"
+        occupied = client.get("/v1/manager/local-agent-capabilities").json()["candidates"][0]
+        assert occupied["active_children"] == 1
+        assert occupied["available_worker_slots"] == 0
+        assert occupied["active_reservations"][0]["route"] == child["route"]
+        assert occupied["active_reservations"][0]["reservation_id"] == child["reservation"]["reservation_id"]
+        released = client.post("/v1/manager/agent-routes/release", json={
+            "parent_route": "gpu-rig/shared-nemo-main", "route": child["route"],
+            "service_instance_id": child["service_instance_id"],
+            "reservation_id": child["reservation"]["reservation_id"]})
+        assert released.status_code == 200, released.text
+        assert len(rig.chats) == 1
+        repeated = client.post("/v1/manager/agent-routes/release", json={
+            "parent_route": "gpu-rig/shared-nemo-main", "route": child["route"],
+            "service_instance_id": child["service_instance_id"],
+            "reservation_id": child["reservation"]["reservation_id"]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["already_released"] is True
+
+
+def test_manager_requests_context_size_for_new_shared_child(monkeypatch):
+    model = "qwen3.6:35b-a3b-xl"
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "models": {model: {"status": "active"}},
+        "load_recipes": {"recipes": {"qwen35_shared_kv_http_v1": {
+            "model": model, "status": "validated", "procedure": "shared_kv_http_v1"}}},
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat", "model": model,
+                "agent_types": ["coding"], "context_cap": 262144,
+                "context_allocation": "dynamic_at_attach", "max_attached_chats": 5}}}})
+    rig = SharedRig()
+    class Manager:
+        pass
+    manager = Manager()
+    manager.rig = rig
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "cloud/codex", "agent_type": "coding",
+            "candidate_id": "qwen35_shared_1060", "min_context": 16000,
+            "context_tokens": 32768})
+        assert response.status_code == 200, response.text
+        child = response.json()
+        assert child["context_length"] == 32768
+        assert child["reservation"]["context_capacity"] == 32768
+        assert child["admission"]["served_context_tokens"] == 32768
+
+
+def test_manager_rolls_back_a_malformed_shared_admission(monkeypatch):
+    model = "qwen3.6:35b-a3b-xl"
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "models": {model: {"status": "active"}},
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat", "model": model,
+                "agent_types": ["coding"], "context_cap": 262144,
+                "context_allocation": "dynamic_at_attach", "context_default": 32768,
+                "max_attached_chats": 5}}}})
+
+    class MalformedRig(SharedRig):
+        async def shared_kv(self, action, **kwargs):
+            result = await super().shared_kv(action, **kwargs)
+            if action == "attach":
+                result["reservation"].pop("reservation_id")
+            return result
+
+    rig = MalformedRig()
+    manager = type("Manager", (), {"rig": rig})()
+    app = FastAPI()
+    @app.exception_handler(ManagerError)
+    async def manager_error(_request, exc):
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "cloud/codex", "agent_type": "coding",
+            "worker_strategy": "shared_model"})
+    assert response.status_code == 502, response.text
+    assert [call[0] for call in rig.calls] == ["attach", "detach"]
+    assert len(rig.chats) == 1
+
+
+def test_manager_can_choose_a_separate_small_model_instead_of_loaded_shared_model(monkeypatch):
+    shared_model = "qwen3.6:35b-a3b-xl"
+    worker_model = "qwen2.5-coder:7b"
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "models": {shared_model: {"status": "active"}, worker_model: {"status": "active"}},
+        "roles": {"brain_code": {"model": worker_model}},
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat", "model": shared_model,
+                "agent_types": ["coding"], "context_cap": 262144,
+                "context_allocation": "dynamic_at_attach", "max_attached_chats": 5}}}})
+    rig = SharedRig()
+    class Manager:
+        async def status(self):
+            return {"profiles": {"coder": {"id": "coder", "model": worker_model,
+                    "state": "ready", "gpus": [2], "ctx_size": 32768, "port": 11436}}}
+    manager = Manager()
+    manager.rig = rig
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {
+        "coder": {"model": worker_model}}, "gpu-rig"))
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "cloud/codex", "agent_type": "coding",
+            "worker_strategy": "separate_model", "min_context": 16384})
+        assert response.status_code == 200, response.text
+        child = response.json()
+        assert child["route"] == "gpu-rig/coder"
+        assert child["gpu_ids"] == [2]
+        assert child["admission"] == {"mode": "separate_model",
+                                      "served_context_tokens": 32768}
+        assert rig.calls == []
 
     def loading(self):
         return []
@@ -62,7 +273,8 @@ def test_shared_route_is_ready_and_translates_tool_call(tmp_path):
         assert roster.status_code == 200, roster.text
         assert route in {row["id"] for row in roster.json()["data"]}
         response = client.post("/v1/chat/completions", json={"model": route,
-            "messages": [{"role": "system", "content": "Be concise"},
+            "messages": [{"role": "system", "content":
+                          "Be concise\n<cwd>\n/private/receipt/workspace\n</cwd>"},
                          {"role": "user", "content": "Ask a child"}],
             "tools": [{"type": "function", "function": {"name": "delegate_task",
                       "description": "delegate", "parameters": {"type": "object"}}}],
@@ -72,9 +284,13 @@ def test_shared_route_is_ready_and_translates_tool_call(tmp_path):
         assert choice["finish_reason"] == "tool_calls"
         assert choice["message"]["tool_calls"][0]["function"]["name"] == "delegate_task"
         assert "Be concise" in rig.calls[0][2]
+        assert "<cwd>" not in rig.calls[0][2]
+        assert "/private/receipt/workspace" not in rig.calls[0][2]
         assert rig.calls[0][3] == 96
         streamed = client.post("/v1/chat/completions", json={"model": route, "stream": True,
-            "messages": [{"role": "user", "content": "Ask a child"}], "max_tokens": 96})
+            "messages": [{"role": "user", "content": "Ask a child"}], "max_tokens": 96,
+            "tools": [{"type": "function", "function": {"name": "delegate_task",
+                      "description": "delegate", "parameters": {"type": "object"}}}]})
         assert streamed.status_code == 200, streamed.text
         assert "data: [DONE]" in streamed.text
         assert '"object":"chat.completion.chunk"' in streamed.text
@@ -86,6 +302,45 @@ def test_shared_route_is_ready_and_translates_tool_call(tmp_path):
         assert "response.completed" in responses.text
         assert client.post("/v1/chat/completions", json={"model": "gpu-rig/shared-35b-missing",
                    "messages": [{"role": "user", "content": "hi"}]}).status_code == 409
+
+
+def test_shared_route_translates_tool_call_after_tool_result(tmp_path):
+    rig = SharedRig()
+    with TestClient(create_app(settings(tmp_path), rig=rig)) as client:
+        response = client.post("/v1/chat/completions", json={
+            "model": "gpu-rig/shared-35b-main",
+            "messages": [{"role": "user", "content": "Delegate this"},
+                         {"role": "assistant", "content": None, "tool_calls": [{
+                             "id": "call-list", "type": "function", "function": {
+                                 "name": "list_local_agents", "arguments": "{}"}}]},
+                         {"role": "tool", "tool_call_id": "call-list", "content": "candidate found"}],
+            "tools": [{"type": "function", "function": {"name": "delegate_task",
+                       "description": "delegate", "parameters": {"type": "object"}}}],
+            "max_tokens": 96})
+        assert response.status_code == 200, response.text
+        choice = response.json()["choices"][0]
+        assert choice["finish_reason"] == "tool_calls"
+        assert choice["message"]["tool_calls"][0]["function"]["name"] == "delegate_task"
+
+
+def test_shared_route_repairs_bare_tool_json_when_tools_are_unavailable(tmp_path):
+    class Rig(SharedRig):
+        async def shared_kv(self, action, *, model=None, chat_id=None, message=None, max_tokens=None,
+                            context_tokens=None):
+            if action == "turn" and "no tools are available" in (message or ""):
+                self.calls.append((action, chat_id, message, max_tokens))
+                return {"content": "A 44 by 44 inch poster should emphasize the research question and key result.",
+                        "generated_tokens": 18, "used_tokens": 54, "finish_reason": "stop"}
+            return await super().shared_kv(action, model=model, chat_id=chat_id,
+                                           message=message, max_tokens=max_tokens)
+    rig = Rig()
+    with TestClient(create_app(settings(tmp_path), rig=rig)) as client:
+        response = client.post("/v1/chat/completions", json={"model": "gpu-rig/shared-35b-main",
+            "messages": [{"role": "user", "content": "Help with a poster"}], "max_tokens": 96})
+        assert response.status_code == 200, response.text
+        answer = response.json()["choices"][0]["message"]["content"]
+        assert "poster should emphasize" in answer
+        assert len(rig.calls) == 2
 
 
 def test_manager_attaches_and_releases_cataloged_child(monkeypatch):

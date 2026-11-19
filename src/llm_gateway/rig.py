@@ -76,15 +76,18 @@ class Rig:
             raise RigUnavailable(502, f"rig unreachable over ssh: {text[-500:] or 'no output'}")
         return proc.returncode, text
 
-    async def shared_kv(self, action: str, *, chat_id: str | None = None,
-                        message: str | None = None, max_tokens: int | None = None) -> dict:
-        if action not in ("status", "start", "attach", "detach", "turn"):
+    async def shared_kv(self, action: str, *, model: str | None = None, chat_id: str | None = None,
+                        message: str | None = None, max_tokens: int | None = None,
+                        context_tokens: int | None = None) -> dict:
+        if action not in ("status", "start", "attach", "detach", "turn", "stop"):
             raise ValueError("unsupported shared chat action")
         args = ["shared-kv", action]
+        if model is not None: args += ["--model", model]
         if chat_id is not None: args += ["--chat-id", chat_id]
         if message is not None: args += ["--message", message]
         if max_tokens is not None: args += ["--max-tokens", str(max_tokens)]
-        code, out = await self._run(*args, timeout=900 if action == "turn" else 180)
+        if context_tokens is not None: args += ["--context-cap", str(context_tokens)]
+        code, out = await self._run(*args, timeout=900 if action in ("start", "turn") else 180)
         if code != RIG_OK:
             raise RigUnavailable(503 if action == "attach" else 502,
                                  f"shared chat {action} failed: {out[-500:]}")

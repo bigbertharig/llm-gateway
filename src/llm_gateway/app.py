@@ -21,6 +21,7 @@ from .dashboard.codex_bridge import CodexBridge
 from .profiles import ProfileError, Profiles
 from .rig import Rig, RigUnavailable
 from .settings import Settings
+from .shared_chat_contract import ROUTE_PREFIX_BY_MODEL
 
 log = logging.getLogger("llm_gateway")
 
@@ -222,20 +223,24 @@ def create_app(
     async def health():
         return {"status": "ok"}
 
+    shared_routes = ROUTE_PREFIX_BY_MODEL
+
     def shared_ready(status: dict) -> list[dict]:
         service = status.get("shared_kv_service") or {}
-        if service.get("status") != "ready" or service.get("model") != "qwen3.6:35b-a3b-xl":
+        prefix = shared_routes.get(service.get("model"))
+        if service.get("status") != "ready" or prefix is None:
             return []
         rows = []
         for chat in service.get("chats") or []:
             if not isinstance(chat, dict) or not isinstance(chat.get("chat_id"), str):
                 continue
             gpu, cap = chat.get("gpu"), chat.get("context_cap")
-            if type(gpu) is int and gpu in range(6) and type(cap) is int and cap > 0:
-                rows.append({"id": f"{s.model_prefix}/shared-35b-{chat['chat_id']}",
+            if type(gpu) is int and gpu >= 0 and type(cap) is int and cap > 0:
+                rows.append({"id": f"{s.model_prefix}/{prefix}{chat['chat_id']}",
                              "model": service["model"], "state": "ready",
                              "gpu_ids": [gpu], "context_length": cap,
-                             "used_tokens": chat.get("used_tokens", 0)})
+                             "used_tokens": chat.get("used_tokens", 0),
+                             "instance_id": service.get("instance_id")})
         return rows
 
     async def shared_completion(pid: str, body: dict) -> Response:
@@ -243,6 +248,9 @@ def create_app(
         ready = next((row for row in shared_ready(await rig.status()) if row["id"] == route), None)
         if not ready:
             raise GatewayError(409, f"model {route} is not ready", "model_not_ready")
+        expected_instance = body.get("_shared_instance_id")
+        if expected_instance is not None and expected_instance != ready.get("instance_id"):
+            raise GatewayError(409, "shared model was reloaded; start a new conversation", "model_not_ready")
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages or any(not isinstance(m, dict) for m in messages):
             raise GatewayError(400, "messages must be a nonempty list", "invalid_request")
@@ -269,6 +277,10 @@ def create_app(
         prompt = latest_text
         if ready["used_tokens"] == 0:
             system = "\n".join(message_text(m.get("content")) for m in messages if m.get("role") == "system")
+            # Pi adds its process cwd as a system section. Shared decoders can
+            # copy and loop on that XML-like tail, and the path is not useful
+            # because tool roots are enforced outside the model.
+            system = re.sub(r"\n?<cwd>\s*[\s\S]*?</cwd>\n?", "\n", system, flags=re.I).strip()
             if system:
                 prompt = "System instructions:\n" + system + "\n\nUser request:\n" + prompt
         if allowed and latest["role"] == "user":
@@ -279,12 +291,18 @@ def create_app(
                        "Use an advertised tool name and valid arguments. Otherwise answer normally.")
         elif latest["role"] == "tool":
             prompt = ("Tool result for " + str(latest.get("tool_call_id") or "previous call") + ":\n" + prompt +
-                      "\nContinue the original request using this result. Answer directly.")
+                      "\nContinue the original request using this result.")
+            if allowed:
+                prompt += ("\nIf another tool is needed, return exactly one JSON object with keys "
+                           "name and arguments for an available tool. Otherwise answer directly.")
+            else:
+                prompt += "\nAnswer directly; no more tools are available for this turn."
         limit = body.get("max_tokens", 256)
         if type(limit) is not int or limit < 1:
             raise GatewayError(400, "max_tokens must be positive", "invalid_request")
         limit = min(limit, 512)
-        result = await rig.shared_kv("turn", chat_id=pid.removeprefix("shared-35b-"),
+        prefix = shared_routes[ready["model"]]
+        result = await rig.shared_kv("turn", model=ready["model"], chat_id=pid.removeprefix(prefix),
                                      message=prompt, max_tokens=limit)
         content = result.get("content")
         if not isinstance(content, str):
@@ -292,7 +310,7 @@ def create_app(
         message = {"role": "assistant", "content": content}
         finish = result.get("finish_reason", "stop")
         total_generated = result.get("generated_tokens", 0)
-        if allowed and latest["role"] == "user":
+        if allowed:
             def strict_proposal(value):
                 candidate = value.strip()
                 fenced = re.fullmatch(r"```(?:json)?\s*\n(\{[\s\S]*\})\s*\n```", candidate)
@@ -311,7 +329,7 @@ def create_app(
             proposed = strict_proposal(content)
             if proposed is None and '"name"' in content and any(name in content for name in allowed):
                 log.info("shared tool format repair route=%s", route)
-                repair = await rig.shared_kv("turn", chat_id=pid.removeprefix("shared-35b-"),
+                repair = await rig.shared_kv("turn", model=ready["model"], chat_id=pid.removeprefix(prefix),
                     message=("Your previous reply attempted a tool call but was not a valid call. "
                              "If you intend to call a tool, reply with exactly one raw JSON object "
                              "with name and arguments using the advertised schema. "
@@ -330,6 +348,31 @@ def create_app(
                     "function": {"name": proposed["name"],
                                  "arguments": json.dumps(proposed["arguments"], separators=(",", ":"))}}]}
                 finish = "tool_calls"
+        else:
+            def is_bare_tool_request(value):
+                candidate = value.strip()
+                fenced = re.fullmatch(r"```(?:json)?\s*\n(\{[\s\S]*\})\s*\n```", candidate)
+                if fenced:
+                    candidate = fenced.group(1)
+                try:
+                    parsed = json.loads(candidate)
+                except ValueError:
+                    return False
+                return (isinstance(parsed, dict) and isinstance(parsed.get("name"), str)
+                        and isinstance(parsed.get("arguments"), dict))
+            if is_bare_tool_request(content):
+                repair = await rig.shared_kv("turn", model=ready["model"], chat_id=pid.removeprefix(prefix),
+                    message=("Your previous reply was an internal tool request, but no tools are available "
+                             "for this turn. Answer the user's request directly in natural language. "
+                             "Do not output JSON or a tool call."), max_tokens=limit)
+                repaired_content = repair.get("content")
+                if not isinstance(repaired_content, str) or is_bare_tool_request(repaired_content):
+                    raise GatewayError(502, "shared model repeatedly requested a tool, but no tools were available for this turn", "upstream_error")
+                content = repaired_content
+                result = repair
+                total_generated += repair.get("generated_tokens", 0)
+                message = {"role": "assistant", "content": content}
+                finish = repair.get("finish_reason", "stop")
         generated = total_generated
         used = result.get("used_tokens", 0)
         usage = {"prompt_tokens": max(0, used-ready["used_tokens"]-generated),
@@ -572,7 +615,7 @@ def create_app(
     async def completions(request: Request):
         raw, body = await read_json(request)
         pid = resolve_profile(body.get("model"))
-        if pid.startswith("shared-35b-"):
+        if pid.startswith(tuple(shared_routes.values())):
             if request.url.path == "/v1/chat/completions":
                 return await shared_completion(pid, body)
             if request.url.path == "/v1/responses":
