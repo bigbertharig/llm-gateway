@@ -1,6 +1,6 @@
 # Rig manager
 
-The Manager coordinates GPU leases, placement, model loads, and work plans across the Gateway controller and rig executor. The controller exposes the Manager API; the rig owns durable state and enforces hardware rules. Start with the [dashboard guide](DASHBOARD.md) for operator controls and [design notes](DESIGN_NOTES.md) for the resource model. The operator CLI is `tools/rigctl.py`.
+The Manager coordinates model requests, leases, loads, and work plans across the Gateway controller and rig executor. Gateway sends fit requirements or an explicit operator card pin; the rig selects cards from its live state and returns the admitted lease or a specific refusal. Gateway still estimates model/context fit and coordinates load policy. The rig owns durable state and enforces hardware rules. Start with the [dashboard guide](DASHBOARD.md) for operator controls and [design notes](DESIGN_NOTES.md) for the resource model. The operator CLI is `tools/rigctl.py`.
 
 Implementation status and detailed flows follow.
 

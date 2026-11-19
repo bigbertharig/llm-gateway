@@ -5,7 +5,7 @@ This is the current operator-facing architecture of the integrated Big Bertha pr
 ## Ownership and data flow
 
 1. **Benchmarking** measures models and runtimes and publishes a validated, hash-checked model library. A load recipe is evidence until it is reviewed and promoted into a supported offer. It does not schedule live user work.
-2. **Gateway** imports that library, presents the dashboard and OpenAI-compatible API, keeps conversations and tool grants, and coordinates model requests. Its current Manager still makes some fit, placement, lease, and load decisions while the hardware boundary is being migrated.
+2. **Gateway** imports that library, presents the dashboard and OpenAI-compatible API, keeps conversations and tool grants, and coordinates model requests. Its current Manager estimates context fit and coordinates leases and loads; it sends card requirements to the rig for physical selection.
 3. **Orchestration** observes the rig, enforces hardware admission and reservations, starts/stops admitted runtimes, and reports status. Its brain/worker Markdown-plan queue remains for legacy batch jobs; it is not the planned owner of new dashboard work organization.
 4. **Harness** develops and tests the model-use loop: shared tools, prompts, sessions, context, delegation, limits, and recovery. Gateway consumes its reviewed tool catalog. No candidate harness has been promoted as the sole dashboard work engine.
 
@@ -19,4 +19,4 @@ Model IDs and routes do not encode a physical card. Fit and execution still depe
 
 ## Current migration
 
-Gateway's Manager and Orchestration currently share some admission and placement responsibilities. The intended boundary moves complete hardware reservations and placement to Orchestration while Gateway retains user-facing work policy and model choice. This document describes the current mixed state, not a promise that the migration is complete. New work graphs and model assignment belong to Gateway; legacy Markdown plans remain a separate compatibility path.
+The rig selects physical cards for leases and enforces admission against live state. Gateway still computes some context-fit and load-policy decisions. The remaining migration moves those physical capacity calculations and reservations to Orchestration while Gateway retains user-facing work policy and model choice. New work graphs and model assignment belong to Gateway; legacy Markdown plans remain a separate compatibility path.

@@ -1,12 +1,12 @@
 # llm-gateway
 
-Gateway serves Big Bertha's OpenAI-compatible model API, dashboard conversations, and model/tool policy. It runs on the Pi. The LAN dashboard uses browser client certificates; the mobile dashboard uses private Tailscale Serve. The GPU rig and workers stay behind the Pi.
+Gateway serves an OpenAI-compatible model API, dashboard conversations, and model/tool policy. It can run on the rig host or on a separate controller. Big Bertha currently runs it on a Pi with a certificate-protected LAN dashboard and a narrower private mobile route.
 
-Gateway coordinates model requests and dashboard work. Its Manager selects model offers and handles part of fit, placement, and loading; Orchestration enforces rig hardware admission. [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md) records the remaining ownership migration.
+Gateway coordinates model requests and dashboard work. Its Manager selects model offers, estimates fit, and coordinates loads. The rig now selects cards for lease requests and enforces live admission; Gateway still has context and load policy to move across this boundary. [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md) records the remaining migration.
 
 ## Project map
 
-Big Bertha runs across a Pi control host, an isolated GPU rig, and optional CPU workers. Four repositories divide the system's work:
+Big Bertha currently uses a separate controller, GPU rig, and optional CPU workers. The same interfaces support a single-host installation. Four repositories divide the system's work:
 
 | Repository | Responsibility |
 |---|---|
@@ -33,7 +33,7 @@ Private site configuration supplies host addresses, credentials, model files, an
 | Doc | For |
 |---|---|
 | [EXTERNAL_REPOS.md](EXTERNAL_REPOS.md) | outside runtimes and source projects, local revisions, and update checks |
-| [docs/MANAGER.md](docs/MANAGER.md) | the entry point: the two layers (Pi manager, rig hardware), the rules, model loads and fit, reservations and card collecting, runs, cancel by owner and demand, and "Pick up here" |
+| [docs/MANAGER.md](docs/MANAGER.md) | current Gateway controller and rig hardware contract: model loads, fit, reservations, runs, and refusal reasons |
 | [docs/WORKLOAD_COORDINATION.md](docs/WORKLOAD_COORDINATION.md) | migration from exclusive rig modes to gateway-coordinated requests and explicit commands |
 | [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | design notes and ideas: failure recovery, slots, sharing capacity (exploratory) |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | the dashboard |

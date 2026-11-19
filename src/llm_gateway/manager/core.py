@@ -327,34 +327,18 @@ class Manager:
         if bool(gpus_needed) == bool(gpu_ids):
             raise ManagerError(400, "give exactly one of gpus_needed or gpu_ids")
         async with self._place_lock:
-            obs = await self.observe(fresh=True)
-            leases, claims = obs.get("leases", []), obs.get("claims", [])
-            try:
-                free, why = placement.availability(obs, leases, claims, claim)
-            except KeyError as exc:
-                raise ManagerError(404, str(exc.args[0])) from exc
-            if gpu_ids:
-                gpus = sorted({int(g) for g in gpu_ids})
-                blocked = {g: why.get(g, "unknown GPU") for g in gpus if g not in {f["index"] for f in free}}
-                if blocked:
-                    raise ManagerError(409, "GPU(s) not available: " +
-                                       "; ".join(f"GPU {g} {r}" for g, r in blocked.items()), unavailable=blocked)
-            else:
-                gpus = placement.place(gpus_needed, free)
-                if gpus is None:
-                    raise ManagerError(503, f"no capacity for {gpus_needed}", free=[f["index"] for f in free],
-                                       unavailable=why)
-            port = placement.port_for(gpus)
-            conflict = placement.port_conflict(port, obs, leases)
-            if conflict:
-                raise ManagerError(409, conflict)
+            # The rig owns the live scan, placement, and atomic lease admission.
+            # The controller sends requirements or an explicit operator pin.
             lease = await self.record.acquire({
-                "controller": controller, "owner": owner, "run_id": run_id, "gpu_ids": gpus, "lane": lane,
-                "ttl_s": int(ttl_s), "ports": placement.lease_ports(gpus),
-                "metadata": {"port": port, "model": model, "purpose": purpose, "claim": claim,
+                "controller": controller, "owner": owner, "run_id": run_id,
+                **({"gpu_ids": gpu_ids} if gpu_ids is not None else {"gpus_needed": gpus_needed}),
+                "lane": lane, "ttl_s": int(ttl_s),
+                "metadata": {"model": model, "purpose": purpose, "claim": claim,
                              "by_controller": self.controller_id,
                              **({"requested_by": requested_by} if requested_by else {})}})
             self._obs = None  # the record changed
+        gpus = lease["gpu_ids"]
+        port = lease["metadata"]["port"]
         log.info("lease %s %s/%s GPU %s :%s %s", lease["lease_id"], controller, owner, gpus, port, model)
         return lease
 

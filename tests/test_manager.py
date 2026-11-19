@@ -178,7 +178,35 @@ FAKE_RIG = textwrap.dedent("""\
         match[0]["state"] = "cancelled"; save(); print(json.dumps({"item": match[0]})); sys.exit(0)
     if a[:2] == ["lease", "acquire"]:
         spec = json.loads(a[3]); require(opts(a[4:]))
-        gpus = spec["gpu_ids"]
+        if "gpus_needed" in spec:
+            pool = sorted(st["gpus"], key=lambda g: (g["total_mb"], g["index"]))
+            occupied = {g for l in st["leases"] for g in l["gpu_ids"]}
+            occupied |= {g for c in st.get("containers", []) for g in c["gpus"]}
+            wanted_claim = (spec.get("metadata") or {}).get("claim")
+            if wanted_claim and not any(c["name"] == wanted_claim for c in st["claims"]):
+                fail("not_found", f"no claim {wanted_claim}")
+            pool = [g for g in pool if g["index"] not in occupied and g.get("used_mb", 0) <= 1000
+                    and (not wanted_claim or any(c["name"] == wanted_claim and g["index"] in c["gpu_ids"]
+                                             for c in st["claims"]))
+                    and not any(g["index"] in c["gpu_ids"] and c["name"] != wanted_claim for c in st["claims"])]
+            chosen = {}
+            for pos, req in sorted(enumerate(spec["gpus_needed"]), key=lambda item: -item[1]["min_vram_mb"]):
+                match = next((g for g in pool if req["min_vram_mb"] <= g["total_mb"]
+                              <= req.get("max_vram_mb", 1 << 30)), None)
+                if not match: fail("capacity", f"no capacity for {spec['gpus_needed']}")
+                chosen[pos] = match["index"]; pool.remove(match)
+            gpus = [chosen[pos] for pos in range(len(chosen))]
+        else:
+            gpus = spec["gpu_ids"]
+            running = {g for c in st.get("containers", []) for g in c["gpus"]}
+            blocked = [g for g in gpus if g not in {row["index"] for row in st["gpus"]}
+                       or g in running or next((row["used_mb"] for row in st["gpus"]
+                                                if row["index"] == g), 1001) > 1000]
+            if blocked: fail("conflict", f"GPU(s) not available: {blocked}")
+        port = 11434 + min(gpus)
+        if str(port) in st.get("ports", {}): fail("conflict", f"port {port} is already serving a runtime")
+        spec["ports"] = [11434 + g for g in sorted(gpus)]
+        spec["metadata"] = {**(spec.get("metadata") or {}), "port": port}
         for l in st["leases"]:
             if set(gpus) & set(l["gpu_ids"]):
                 fail("conflict", f"GPU(s) {gpus} held by lease {l['lease_id']} ({l['controller']}/{l['owner']}, active)")
