@@ -10,13 +10,14 @@ Wants=network-online.target
 Type=simple
 User=bryan
 Group=bryan
+EnvironmentFile=/etc/llm-gateway/site/environment
 ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none \
   -L 127.0.0.1:11434:127.0.0.1:11434 -L 127.0.0.1:11435:127.0.0.1:11435 \
   -L 127.0.0.1:11436:127.0.0.1:11436 -L 127.0.0.1:11437:127.0.0.1:11437 \
   -L 127.0.0.1:11438:127.0.0.1:11438 -L 127.0.0.1:11439:127.0.0.1:11439 \
   -L 127.0.0.1:11440:127.0.0.1:11440 -L 127.0.0.1:11441:127.0.0.1:11441 \
-  bryan@10.0.0.3
+  ${RIG_SSH_TARGET}
 Restart=always
 RestartSec=5
 

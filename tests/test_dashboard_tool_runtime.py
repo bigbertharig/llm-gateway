@@ -106,3 +106,12 @@ def test_cloud_and_local_dashboard_use_same_catalog_and_servers(tmp_path, monkey
                                                    if row["approval"] == "automatic"]
     assert "rig_search" not in coding_cloud
     assert "rig_info" in chat_cloud
+
+
+def test_harness_script_root_is_configurable(tmp_path, monkeypatch):
+    script = tmp_path / "github_public_mcp.py"
+    script.write_text("# fixture\n")
+    monkeypatch.setenv("HARNESS_TOOLS_DIR", str(tmp_path))
+    monkeypatch.delenv("GITHUB_PUBLIC_MCP_SCRIPT", raising=False)
+    assert dashboard_mcp_servers.launch("github_public") == [
+        __import__("sys").executable, str(script)]

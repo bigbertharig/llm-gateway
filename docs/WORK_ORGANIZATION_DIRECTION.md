@@ -11,8 +11,8 @@ recent tests, and the repo-boundary decisions in this conversation.
 | Repo | Intended ownership | Current qualification |
 | --- | --- | --- |
 | **llm-gateway** | User-facing gateway and dashboard; work requests, steps, dependencies, model and recipe assignment, progress, retries, and run records. Its manager makes policy decisions using published benchmark evidence and live rig capacity. | The manager already handles fit, leases, loads, and requests. The dashboard still offers legacy Markdown plan submission. A new gateway job model has not been built. |
-| **llm_orchestration** | Hardware-facing execution: rig inventory, capacity, placement, admission, model lifecycle, reservations, telemetry, and low-level execution of concrete instructions. | It still contains the old plan-reading brain, worker queue, CPU workers, and private plan API. These are legacy compatibility surfaces, not the intended owner of new work planning. Some manager hardware policy is currently in gateway; moving code is a separate decision. |
-| **llm-harness** | Model-use layer: agent loops, tools (including `rig_search`), context and sessions, prompt/tool contracts, guardrails, retries within a model interaction, and harness comparison. It consumes a selected model route and tool permissions; it does not decide GPU placement. | Candidate harnesses and tool suites are under test. No single harness has been chosen for chat/dashboard integration. |
+| **llm_orchestration** | Hardware-facing execution: rig inventory, capacity, placement, admission, model lifecycle, reservations, telemetry, and low-level execution of concrete instructions. | It still contains the old plan-reading brain, worker queue, CPU workers, and private plan API. These are legacy compatibility surfaces, not the intended owner of new work planning. Gateway still implements part of hardware placement policy. The target moves physical admission, reservations, and placement into Orchestration; the code migration remains unfinished. |
+| **llm-harness** | The project-owned model-use layer: agent loops, tools (including `rig_search`), context and sessions, prompt/tool contracts, guardrails, retries within a model interaction, and harness comparison. It consumes a selected model route and tool permissions; it does not decide GPU placement. | Shared MCP tools and comparison runners operate today. Six external harnesses are tested as references; their useful behavior is adapted into the project-owned Harness rather than selected as a wholesale dashboard engine. |
 | **benchmarking** | Evidence: model and runtime evaluations, model roles, measured fit/speed/context/concurrency, hardware scans, and recipe validation. It publishes reviewed data that gateway imports. | The model library and roles are used now. `load_recipes.json` is evidence-linked but passive; executable recipe promotion and consumption are future work. |
 
 The gateway is the authority for *what work to do and which available model or
@@ -135,10 +135,10 @@ execution constraints. Bus bandwidth and storage latency affect performance.
 3. Promote one validated benchmarking recipe into a gateway-consumable offer;
    test model identity, fit, context, speed, and concurrent sessions on at least
    one rig. Preserve the benchmark receipt behind the offer.
-4. Connect a selected harness and `rig_search` to one gateway-managed research
-   job. Compare it with a saved research assistant run for search yield, answer
-   quality, latency, tool errors, and resource use. This can be a new workflow;
-   it need not migrate the old Markdown plan.
+4. Extend the project-owned Harness with `rig_search` for one gateway-managed
+   research job. Compare it with a saved research assistant run for search yield,
+   answer quality, latency, tool errors, and resource use. Adapt proven features
+   from the six candidate harnesses behind the common tool/session contract.
 5. Add a failure/resume test with an unavailable model and a busy rig. Confirm
    that the gateway records a waiting or blocked step and can continue when
    capacity returns.

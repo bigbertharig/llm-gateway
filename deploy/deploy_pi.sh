@@ -4,7 +4,12 @@
 #  2. copy the repo to the rig, where `rig start remote <id>` reads remote_profiles.json
 #  3. install and (re)start pi-rig-tunnel.service and pi-gateway.service on the Pi
 set -euo pipefail
-RIG="${RIG_HOST:-10.0.0.3}"
+SITE_ENV="${GATEWAY_SITE_ENV:-/etc/llm-gateway/site/environment}"
+test -r "$SITE_ENV" || { echo "Missing site config: $SITE_ENV" >&2; exit 1; }
+# The site file is operator-owned and contains only deployment settings.
+source "$SITE_ENV"
+RIG="${RIG_HOST:-${RIG_SSH_TARGET:-}}"
+test -n "$RIG" || { echo "Set RIG_SSH_TARGET in $SITE_ENV" >&2; exit 1; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 

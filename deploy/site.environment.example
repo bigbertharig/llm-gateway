@@ -1,0 +1,3 @@
+# Copy to /etc/llm-gateway/site/environment on the Pi.
+# The same target is used by Gateway, the SSH port tunnel, and deploy_pi.sh.
+RIG_SSH_TARGET=operator@192.168.50.3

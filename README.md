@@ -56,7 +56,7 @@ The core Gateway API and rig runtimes remain on loopback or the isolated rig lin
 tools/rigctl.py status                                  # every GPU, its lease or claim, the plan, recent events
 tools/rigctl.py fit MODEL [--cards N | --gpus 1,3]      # would it fit, at what context and split (nothing loads)
 tools/rigctl.py load-model MODEL [--gpus 1,3] [--wait S|forever] [--owner WHO]
-                                                        # no --gpus: the harness picks the cards; with --wait it
+                                                        # no --gpus: Gateway Manager selects the cards; with --wait it
                                                         # collects them as they free (MANAGER.md, Reservations)
 tools/rigctl.py unload PROFILE
 tools/rigctl.py run-start --run ID [--resume "CMD"] [--auto-resume] [--needs MIB[xN]] -- CMD...
@@ -156,10 +156,12 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 deploy/deploy_pi.sh                              # on the Pi: check profiles, copy repo to the rig, restart Pi services
 ```
 
-On the Pi it runs as `pi-gateway.service`, with `pi-rig-tunnel.service` forwarding the rig's
-model ports 11434-11441 to Pi loopback (both enabled at boot; nothing loads until asked). The deploy
-script restarts only when no load is in flight. On Windows (another controller machine):
-`deploy\run_windows.ps1`, with the Pi's gateway stopped first: one controller at a time.
+Before deploying on the Pi, copy `deploy/site.environment.example` to
+`/etc/llm-gateway/site/environment` and set `RIG_SSH_TARGET` for this site. Both service units and
+the deploy script read that private file. On the Pi Gateway runs as `pi-gateway.service`, with
+`pi-rig-tunnel.service` forwarding ports 11434-11441 to Pi loopback. The deploy script restarts
+these services; check active chats and loads before running it. On Windows (another controller machine):
+`deploy\run_windows.ps1`. Stop the Pi Gateway before taking over. The rig enforces one active controller; a second controller remains read-only until explicit handoff or the active heartbeat becomes stale.
 
 A load is never killed by the gateway: past `START_TIMEOUT_SECONDS` the request gets a 504 and the
 load continues on the rig; the next request finds it ready.
@@ -175,10 +177,9 @@ load continues on the rig; the next request finds it ready.
 | `tools/rig_stress.py` | power and thermal stress test: one model per card, ramp, hold, optional reload spikes (`--spikes`), factory limits until the next boot (`--uncap`); per-card temperature, fan, power, clock by GPU UUID, `--compare` against an earlier run |
 | `tools/power_cap_sweep.py` | speed and power of one card across a series of power caps (decode and prompt tok/s, J per token) |
 | `tools/split_sweep.py`, `tools/pcie_split_test.py` | split-load speed across cards and PCIe link settings |
+| `tools/multi_rig_tests.py`, `tools/dual_rig_bench.sh` | the tests in `docs/multi_rig_tests.md` |
 
 What these tools have found, where their results are kept and which question each answers: benchmarking `RIG_PERFORMANCE.md`; the measurements: benchmarking `results/RUNTIME_REFERENCE.md`.
-
-| `tools/multi_rig_tests.py`, `tools/dual_rig_bench.sh` | the tests in `docs/multi_rig_tests.md` |
 
 ## Repo layout
 
@@ -186,4 +187,4 @@ What these tools have found, where their results are kept and which question eac
 - `tools/`: operator tools (above)
 - `remote_profiles.json`: generated offer
 - `deploy/`: Pi systemd units and the deploy script
-- `docs/`: see "Start here"
+- `docs/`: start with [Read this repo](#read-this-repo)

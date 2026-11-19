@@ -9,7 +9,7 @@ This is the current operator-facing architecture of the integrated Big Bertha pr
 3. **Orchestration** observes the rig, enforces hardware admission and reservations, starts/stops admitted runtimes, and reports status. Its brain/worker Markdown-plan queue remains for legacy batch jobs; it is not the planned owner of new dashboard work organization.
 4. **Harness** develops and tests the model-use loop: shared tools, prompts, sessions, context, delegation, limits, and recovery. Gateway consumes its reviewed tool catalog. No candidate harness has been promoted as the sole dashboard work engine.
 
-The Gateway offers model routes, including cold offers. A route is *ready* only when the rig reports the matching running service, context, and port. The gateway's model list must not be read as a list of loaded models. The rig's admission and reservation record is authoritative for physical capacity. Clients may request a ready-only response to avoid waiting for a cold load; concurrent requests for the same cold offer use the Manager's single-flight load path.
+The Gateway offers model routes, including cold offers. A route is *ready* only when the rig reports the matching running service, context, and port. The gateway's model list must not be read as a list of loaded models. The Manager proposes a fit and route; the rig may refuse it when live leases, reservations, guards, or runtime state conflict. The rig's admission and reservation record is authoritative for physical capacity. Clients may request a ready-only response to avoid waiting for a cold load; concurrent requests for the same cold offer use the Manager's single-flight load path.
 
 ## Hardware and deployment boundary
 
