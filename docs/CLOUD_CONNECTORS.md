@@ -21,6 +21,8 @@ The OAuth grant includes `gmail.readonly`, `gmail.send`, `drive`, `documents`, a
 
 The surface supports bounded Gmail search/read/send; Drive search/read-text/create-folder/upload-text; Docs create/append; and Sheets create/read/update/append. It intentionally has no delete, trash, sharing, permission, arbitrary binary upload, or mailbox-modification operation. Every mutation requires `confirmed=true` and a caller-generated `request_id`. Gateway writes a private `pending` receipt before the external call and a `completed` receipt afterward. Reusing a completed request ID returns the original receipt without repeating the change; a pending receipt after interruption is treated as an uncertain outcome and must be inspected instead of retried under a new ID.
 
+Run the focused Gateway contracts with `.venv/bin/python tools/run_test_suite.py google_workspace`. The suite manifest is `tests/suites.json`; it excludes unrelated manager, UI, and provider tests. Harness has a separately owned suite of the same name for its MCP and delegated-child boundary.
+
 Current limitation: Gateway and Harness still run as the same Unix user. The model-facing tool interface does not expose the token, delegated Google children receive no shell or filesystem tools, and Coding mode does not receive the Google surface. A separate service identity with narrow local IPC remains the stronger production boundary. The dedicated account contains only rig data, which bounds the current personal deployment's account-level blast radius.
 
 ## Claude

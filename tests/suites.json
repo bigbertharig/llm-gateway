@@ -1,0 +1,10 @@
+{
+  "google_workspace": {
+    "purpose": "Gateway Google validation, idempotent receipts, imported catalog provenance, and dashboard MCP routing",
+    "tests": [
+      "tests/test_google_workspace.py",
+      "tests/test_tool_family_modes.py",
+      "tests/test_dashboard_tool_runtime.py"
+    ]
+  }
+}
