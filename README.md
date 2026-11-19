@@ -105,8 +105,11 @@ Harnesses should read `GET /v1/rig/ready-roster` before inference. Its `data` co
 published profiles whose rig status is `ready`, whose served model identity matches the published
 model, and whose actual `ctx_size` and port are known. Each entry gives the gateway route `id`,
 underlying `model`, `registry_profile` when available, `context_length` from the running server,
-and `/tokenize` as `tokenizer_path`. `output_limit` and `tool_call_format` are `null` until those
-capabilities have verified sources. An empty `data` array means no currently usable route; this
+and `/tokenize` as `tokenizer_path`. `capabilities.responses` is probed on the ready upstream with
+an invalid, non-generating request and reports `native`, `unsupported`, or `unknown`; shared chats
+report `adapter_limited`. The probe is cached for 60 seconds. Ordinary profile routes leave
+`output_limit` and `tool_call_format` null until those capabilities have verified sources. An empty
+`data` array means no currently usable route; this
 read does not start or alter a model. `GET /v1/models` remains the broader published offer and its
 context value may differ from the running server's context.
 

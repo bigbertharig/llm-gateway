@@ -291,8 +291,25 @@ def test_ready_roster_uses_served_context_and_matching_identity(client, env):
         "id": "gpu-rig/coder-7b", "model": "qwen2.5-coder:7b",
         "registry_profile": None, "state": "ready", "gpu_ids": [1, 2], "context_length": 8192,
         "output_limit": None, "tool_call_format": None, "tokenizer_path": "/tokenize",
+        "capabilities": {"responses": "native"},
     }]}
     assert env["starts"]() == []
+
+
+def test_ready_roster_reports_unsupported_responses_from_upstream(env):
+    state = Path(os.environ["FAKE_RIG_STATE"])
+    state.write_text(json.dumps({"profiles": [{"id": "coder-7b", "model": "qwen2.5-coder:7b",
+                                            "ctx_size": 8192, "port": UPSTREAM_PORT, "state": "ready"}]}))
+
+    def no_responses(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/responses":
+            return httpx.Response(404)
+        return fake_llama(request)
+
+    app = create_app(env["settings"], upstream_transport=httpx.MockTransport(no_responses))
+    with TestClient(app) as test_client:
+        roster = test_client.get("/v1/rig/ready-roster").json()["data"]
+    assert roster[0]["capabilities"]["responses"] == "unsupported"
 
 
 def test_agent_type_resolves_disjoint_ready_route_without_loading(env):

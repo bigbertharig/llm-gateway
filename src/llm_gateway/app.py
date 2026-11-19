@@ -577,6 +577,23 @@ def create_app(
                 continue
             yield loaded
 
+    responses_probe_cache: dict[int, tuple[float, str]] = {}
+
+    async def responses_capability(port: int) -> str:
+        """Probe a ready upstream with an invalid, non-generating request."""
+        cached = responses_probe_cache.get(port)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
+        try:
+            response = await app.state.http.post(
+                f"http://{s.upstream_host}:{port}/v1/responses", json={}, timeout=3.0)
+            capability = ("unsupported" if response.status_code in (404, 405) else
+                          "unknown" if response.status_code >= 500 else "native")
+        except httpx.HTTPError:
+            capability = "unknown"
+        responses_probe_cache[port] = (time.monotonic(), capability)
+        return capability
+
     @app.get("/v1/rig/ready-roster")
     async def ready_roster():
         """Read-only routes a harness may use without asking the rig to load a model."""
@@ -593,18 +610,21 @@ def create_app(
                 "output_limit": None,
                 "tool_call_format": None,
                 "tokenizer_path": "/tokenize",
+                "capabilities": {"responses": await responses_capability(loaded["port"])},
             })
         for loaded in dynamic_strata_ready(status):
             data.append({"id": f"{s.model_prefix}/{loaded['id']}", "model": loaded["model"],
                          "registry_profile": None, "state": "ready",
                          "gpu_ids": sorted(loaded.get("gpus") or []),
                          "context_length": loaded["ctx_size"], "output_limit": None,
-                         "tool_call_format": None, "tokenizer_path": None})
+                         "tool_call_format": None, "tokenizer_path": None,
+                         "capabilities": {"responses": await responses_capability(loaded["port"])}})
         for row in shared_ready(status):
             data.append({"id": row["id"], "model": row["model"], "registry_profile": None,
                          "state": "ready", "gpu_ids": row["gpu_ids"],
                          "context_length": row["context_length"], "output_limit": 512,
-                         "tool_call_format": "strict_json_bridge", "tokenizer_path": None})
+                         "tool_call_format": "strict_json_bridge", "tokenizer_path": None,
+                         "capabilities": {"responses": "adapter_limited"}})
         return {"object": "ready_roster", "version": 1, "data": data}
 
     async def dynamic_strata_route(pid: str) -> dict:
