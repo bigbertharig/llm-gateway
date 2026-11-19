@@ -1,10 +1,6 @@
 # Rig manager
 
-The manager coordinates GPU leases, placement, model loads, and work plans across
-the gateway controller and the rig executor. The controller exposes the manager
-API; the rig owns durable state and enforces hardware rules. Start with [the
-dashboard guide](DASHBOARD.md) for operator controls or [design notes](DESIGN_NOTES.md)
-for the resource model. The operator CLI is `tools/rigctl.py`.
+The Manager coordinates GPU leases, placement, model loads, and work plans across the Gateway controller and rig executor. The controller exposes the Manager API; the rig owns durable state and enforces hardware rules. Start with the [dashboard guide](DASHBOARD.md) for operator controls and [design notes](DESIGN_NOTES.md) for the resource model. The operator CLI is `tools/rigctl.py`.
 
 Implementation status and detailed flows follow.
 
@@ -120,7 +116,7 @@ coding/research role order and readiness checks without requiring a local parent
 parent GPUs. The harness MCP adapter exposes this as `delegate_task` and records a child receipt.
 This route does not make the child a file-editing agent; its current runtime has no tools.
 
-The harness never chooses a GPU or calls a profile load endpoint. It uses the returned route with `X-Require-Ready: true` and checks the ready roster before and after the child run. The first live control used `chat-27b` on GPU 0 and a cold `coding` request, which the manager placed as `coder-7b` on GPU 1. The native child and parent MCP handoff both returned `42`; receipts are kept in the private harness results. Gateway contract tests passed 33/33. This is one bounded Pi-harness integration, not a six-harness delegation comparison. Manager policy and child model quality still need broader evaluation.
+The harness never chooses a GPU or calls a profile load endpoint. It uses the returned route with `X-Require-Ready: true` and checks the ready roster before and after the child run. The first live control used `chat-27b` on GPU 0 and a cold `coding` request, which the manager placed as `coder-7b` on GPU 1. The native child and parent MCP handoff both returned `42`; receipts are kept with the harness trial results. Gateway contract tests passed 33/33. This is one bounded Pi-harness integration, not yet a six-harness delegation comparison. Manager policy and child model quality still need broader evaluation.
 
 A cold request for `gpu-rig/<id>`: the manager leases cards for the profile (`interactive`, owner
 `llm-gateway`), then queues a `load` item in the rig's plan (`rig plan add`) with the GPUs, port,
@@ -516,8 +512,38 @@ that owner when they end. Both start as runs (`rigctl run-start`). Open: drop
 
 As of 2026-11-14, a cloud Codex dashboard parent may request `candidate_id=qwen35_shared_1060` with `parent_route=cloud/codex`. The manager starts the shared service through rig orchestration if it is absent, attaches a fresh worker chat, and returns an ephemeral ready route. Release accepts the cloud parent and detaches its child. The rig controller chooses the worker GPU; the cloud chat and harness never name a card. `GET /v1/manager/local-agent-capabilities` supplies a small discovery catalog for the dashboard's `list_local_agents` MCP tool. Default delegation without a candidate uses an already-ready shared 35B service when available; otherwise it follows the existing role-based ready/cold profile policy. If automatic shared attachment has no worker capacity, the manager falls back to the ordinary profile policy.
 
-The benchmark subagent catalog (maintained in a private shared-drive workspace) is imported into `model_catalog.json`. `GET /v1/manager/subagent-candidates` lists the stable candidate IDs. `POST /v1/manager/agent-routes/resolve` accepts an optional `candidate_id`; for `qwen35_shared_1060` with a shared 35B parent, the manager attaches a fresh 1060 chat to the resident GPU0 weights and returns a ready route and `ephemeral: true`. `POST /v1/manager/agent-routes/release` detaches that child after the harness finishes. The local harness checks the ready roster after attachment and releases in a cleanup path. The parent route and model remain loaded.
+The Qwen shared candidate accepts `context_tokens` from 16,384 through 262,144 when a child is attached; omitting it uses the model-library default of 65,536. Context capacity is immutable after creation. The Qwen controller estimates admission from the observed 262K worker allocation: 1,029 MiB fixed compute, KV scaling to 1,009 MiB at 262K, plus a 256 MiB reserve. The accepted cap and estimated reservation are returned in the attach receipt. This curve is Qwen-topology-specific. Nemotron remains fixed at 262K until its current expert placement has its own sized-context memory matrix.
+
+The rig-side orchestration controller is authoritative for that reservation. It
+returns a service instance, context capacity, placement, reservation scope, and
+reserved memory in the attach receipt; Gateway persists and exposes those
+fields. `used_tokens` is reported alongside the reservation for utilization and
+speed decisions, but never reduces it. A 262K context remains a 262K reservation
+until detach even when only a small fraction is occupied.
+
+Agent route requests may set `worker_strategy` to `auto`, `shared_model`, or
+`separate_model`. `auto` prefers an attachable context in the currently loaded
+shared model and falls back to a reviewed small-model profile when that shared
+capacity is unavailable. `shared_model` requires that path and returns a typed
+capacity error instead of silently changing models. `separate_model` skips the
+shared service and asks for an independently loaded reviewed worker. None of
+these modes accepts a GPU identifier.
+
+The benchmark [subagent catalog](https://github.com/bigbertharig/benchmarking/blob/master/subagent_catalog.json) is imported into `model_catalog.json`. `GET /v1/manager/subagent-candidates` lists the stable candidate IDs. `POST /v1/manager/agent-routes/resolve` accepts an optional `candidate_id`; for `qwen35_shared_1060` with a shared 35B parent, the manager attaches a fresh 1060 chat to the resident GPU0 weights and returns a ready route and `ephemeral: true`. `POST /v1/manager/agent-routes/release` detaches that child after the harness finishes. The local harness checks the ready roster after attachment and releases in a cleanup path. The parent route and model remain loaded.
 
 Ready shared chats are exposed as `gpu-rig/shared-35b-<chat_id>` through `/v1/models`, `/v1/rig/ready-roster`, `/v1/chat/completions`, and a bounded `/v1/responses` adapter. Requests and tool calls use OpenAI-shaped JSON so the existing six harnesses can use the route. The adapter buffers generation before emitting SSE, accepts text and function calls, and caps a runtime turn at 512 output tokens. It is experimental: each chat is stateful on the rig, so clients must keep a stable route and aligned conversation history; it is not a stateless general OpenAI proxy. Long-running and arbitrary multimodal Responses operations are outside this contract. Codex Terra/Luna are separate online candidates selected by the harness through the live Codex model list, not rig routes.
 
-See the harness shared-model subagent matrix for scored outcomes and limitations (maintained in the private harness workspace).
+See the harness [shared 35B subagent matrix](https://github.com/bigbertharig/llm-harness/blob/main/docs/research/shared35_subagent_matrix_2026-11-12.md) for scored outcomes and limitations.
+
+## Plan model assignments
+
+For a structured plan task that declares `executor: worker`, `task_class: llm`,
+and `llm_role: <benchmarking role>`, gateway plan preparation reads the chosen
+starter and asks the Manager to fit that role's active model. An optional
+`llm_fallback_roles` list is tried in written order when a candidate does not
+fit or is busy. If every fitting choice is busy, the first fitting choice is
+assigned and the worker waits for capacity. Plan steps without `llm_role` retain their prior
+model behavior. The gateway submits a compact `GATEWAY_MODEL_ASSIGNMENTS`
+mapping with the prepared config; orchestration applies it to matching task
+definitions before making tasks and persists the chosen model in each task.
+The plan remains the workflow, and the Manager owns the model choice and fit.

@@ -1,11 +1,18 @@
 # Dashboard
 
-The gateway dashboard is the operator view for rig state, model inventory,
-benchmarks, orchestration, and chat. It is served locally at
-`http://127.0.0.1:8080/dashboard/`; enrolled devices can use the
-[local HTTPS front door](LOCAL_DASHBOARD_ACCESS.md). See [Rig manager](MANAGER.md)
-for placement and load behavior, and [mobile access](MOBILE_DASHBOARD.md) for the
-separate restricted phone view. The dashboard replaced the
+The Pi-hosted Gateway dashboard is the operator view for rig state, model evidence, orchestration, and saved conversations. An enrolled LAN browser reaches the full view through the [local certificate front door](LOCAL_DASHBOARD_ACCESS.md); the [mobile dashboard](MOBILE_DASHBOARD.md) has a separate private route and permissions. The [Manager guide](MANAGER.md) describes placement and load behavior.
+
+## Chat and Coding modes
+
+Chat and Coding share the same model chooser: Codex plus the gateway manager's local offers. Codex defaults to **Local + Full** on the Pi: direct filesystem, command, and network access without sandbox approval prompts. **Workspace bound** is an optional Codex setting that uses the selected Coding workspace or Chat research directory and on-request approvals. Built-in web search remains disabled; Chat research can use the `rig_search` MCP. Coding conversations bind to an allowlisted workspace for the browser tree, search, preview, versioned Save, and diff. Local models default to **Local**, with explicit **Workspace bound** and **Full** choices. Workspace bound exposes only the existing bounded tools; Local adds commands on the Pi, rig, and named CPU workers; Full adds commands targeting other trusted hosts on the trusted private rig network. These local-model levels are tool choices, not an OS isolation boundary: Local's Pi shell can also use the network. A conversation keeps its Chat or Coding mode. Older Codex conversations migrate to Coding.
+
+The full dashboard uses one blue terminal-style visual system: deep navy grid surfaces, cyan data and focus accents, monospace system labels, and shared panels, controls, tables, and scrollbars. Chat keeps assistant responses left-aligned and anchors user messages on the right with a narrow cyan edge so turns remain easy to scan without boxed message bubbles. Local and Codex conversations share the same single context meter; Codex reads the app-server's latest active-context token count (`last.totalTokens`), not its lifetime cumulative thread spend, updates it during active turns, and persists the latest values for reopened dashboard chats. When the context window is known but usage is temporarily missing or invalid after restart, the same meter stays visible with a striped pending fill until a valid live update arrives. Codex account rate-limit updates are tracked separately: for a 300-minute window the composer warns at 25% remaining and escalates at 10%, including the reported reset time and emitting one toast per severity and reset window.
+
+Coding uses a blue VS Code-style workbench: activity rail, collapsible Explorer/model sidebar, multi-file editor tabs and breadcrumbs, conversation pane, and status bar. Drag the two dividers or focus one and press Left/Right Arrow to resize; widths are saved in the browser. The far-left activity rail is the sole sidebar navigation for the expandable workspace tree, search/source-control actions, and model/conversation controls. Its top `«`/`»` action collapses or expands the sidebar. Folders load on expansion and stay open during the selected conversation. Opening files adds closable editor tabs; unsaved text buffers remain intact while switching tabs. Text previews wrap long lines and show source line numbers in a left gutter. PNG, JPEG, GIF, and WebP files up to 10 MB open in a contained image preview. Chat transcripts return to the newest content when Chat, Coding, or the browser tab regains focus. Below 1100 px the panes stack and dividers are hidden.
+
+The file editor saves only existing UTF-8 files at the selected workspace root, rejects hidden paths and symlinks, caps file size at 1 MB, and requires the version hash from the opened file. The separate image reader is read-only, signature-checks supported raster formats, and retains the same workspace confinement. Saving is an explicit browser action. In Workspace bound local-model mode this is the write path; Local and Full can also write through host command tools. Codex still uses a cloud provider. See [remote access design](REMOTE_SESSION_ACCESS_DESIGN.md) for the remaining service identity and outbound-policy work.
+
+The loopback dashboard is served at `http://127.0.0.1:8080/dashboard/`. It replaced the
 orchestration dashboard (port 8787) on 2026-10-20. Orchestration now serves its status and controls
 through a versioned local API on a private Unix socket; the gateway does not import its code.
 
@@ -18,18 +25,19 @@ operator devices for direct access.
 
 | Tab | Shows | Actions | Source |
 |---|---|---|---|
-| Rig | every card in board order (verdict, holder, temperature, fan, power against its limit, VRAM, load); claims drawn as brackets over the cards they reserve; loaded models; the rig plan; manager events | kill a card, unclaim, unload a model, cancel a plan item, load a model (cards, use, wait for busy cards, force) | the manager (`/v1/manager/status`, `docs/MANAGER.md`); actions are the manager's overrides, the same as `rigctl` |
-| Models | every registry model: status, placement, roles, profiles, the best result per key test (a limit-50 run over a smoke run, then the newest), pipeline mean, decode speed and context from the latest runtime characterization, download link | click any column header to sort; click again to reverse the order | benchmarking `model_registry.json`, `model_roles.json`, `results/model_benchmark_records.jsonl`, `results/runtime_experiments/` |
-| Benchmarks | lane runs (running while the lane holds its `lane-<cards>` claim) and campaign runs with their block states | none (start runs as before) | `logs/benchmarks/worker_lanes_*`, `logs/benchmarks/campaigns/history/*/*/status.json` on the drive |
-| Orchestration | current brain and worker heartbeats, loaded models, active batches, last-day completions, per-batch activity | gateway discovers and prepares plans, then submits prepared work; orchestration executes, resumes through gateway preparation, kills, shows outputs, cleans stale task files, and requeues workers | gateway `plan_requests.py` and `plan_catalog.py`; llm_orchestration `GET /v1/orchestration/{status,diagnostics,activity}` and `POST /v1/orchestration/actions/{submit_prepared,kill_plan,kill_all_active,batch_outputs,cleanup_stale,requeue_worker}` over `/run/llm-orchestration/api.sock` |
+| Rig | visual capacity, manager guard, GPU scan, orchestration health, GPU utilization, loaded models, active claims, and a collapsible operations/history area | manager-mediated load, unload, stop, release, and run controls; placement is automatic unless explicitly overridden | gateway manager status and `/dashboard/api/orchestration{,/diagnostics}` via the gateway's private API adapter |
+| Models | imported model library: status, placement, roles, profiles, best published results, speed, context, and source | sort columns | gateway's imported `model_catalog.json`; benchmarking owns the exported source |
+| Benchmarks | published test coverage, scores, decode speed, and context for models in the imported library | read-only | gateway's imported `model_catalog.json`; no live shared-log scan |
+| Orchestration | current brain and worker heartbeats, loaded models, active batches, last-day completions, per-batch activity | status and activity are read-only; existing batches can be resumed, stopped, or inspected; housekeeping is collapsible. The old plan-start form is removed from the dashboard while gateway planning is redesigned | gateway adapter; llm_orchestration `GET /v1/orchestration/{status,diagnostics,activity}` and `POST /v1/orchestration/actions/{submit_prepared,kill_plan,kill_all_active,batch_outputs,cleanup_stale,requeue_worker}` over `/run/llm-orchestration/api.sock` |
 
-The Benchmarks tab and `rig_info.get_benchmark_status` read the same gateway summary.
-It shows up to 12 recent finished lane entries, any claimed active lanes, and
-up to 12 campaign entries updated in the past 24 hours. A
-long-running campaign refreshes its status receipt every scheduler tick, so its
-full current-job block state remains available even when it started earlier.
-Old receipts left marked `running` after a crash do not stay in the recent list.
-Finished run details remain in the benchmarking results and campaign receipts.
+The Benchmarks tab and `rig_info.get_benchmark_status` read the same imported evidence snapshot.
+Live lane and campaign history needs a benchmarking-owned status export before it returns to the dashboard;
+the gateway no longer scans benchmarking's shared log folders at request time.
+
+The existing plan API still uses `PlanRequests` to inspect shared plan files and perform some GPU-host
+SSH preparation. The dashboard no longer invokes that path. When planning work resumes, replace those
+host-specific preparations with gateway-owned requests and the private orchestration API before
+restoring a plan creation UI.
 
 The old dashboard's GPU-level controls (`clear_runtime`, `reset_gpu`, `return_default`, remote runtime
 cleanup) are gone: they acted on the rig outside the manager. Kill or unload through the Rig tab, then
@@ -47,7 +55,7 @@ requeue that worker's tasks on the Orchestration tab.
 
 Settings (environment, all optional): `ORCHESTRATION_API_SOCKET` (default
 `/run/llm-orchestration/api.sock`), `SHARED_ROOT` (default the first of
-the configured shared-drive mount locations), `BENCHMARKING_ROOT` (as for model loads).
+configured shared-drive mount locations), `BENCHMARKING_ROOT` (as for model loads).
 `ORCHESTRATION_CONFIG` belongs to the orchestration API process, not the gateway.
 
 The orchestration socket is accessible only to the local service user. The gateway exposes the same
@@ -76,8 +84,11 @@ passed (gateway 47/47, harness 7/7), an isolated Codex app-server thread discove
 `local_agents.delegate_task`, and a live dashboard Codex turn delegated a task to route
 `gpu-rig/harness-ornith-9b`. The local child returned `42` with a successful receipt, and Codex
 returned `42` without an operator approval prompt. The bridge automatically accepts only the
-configured local-agent MCP tool request. The child currently has no file tools, so it is suitable
-for bounded analysis and review rather than editing the workspace. See
+configured local-agent MCP tool request. Coding children can receive the selected workspace's bounded
+read/search profile, explicit acceptance criteria, and a verification request. They remain unable to
+edit files or run shell commands, so they are suitable for bounded inspection and review rather than
+workspace mutation. Tool descriptions carry routing guidance; the bridge does not rewrite the user's
+prompt with an internal routing paragraph. See
 [Powerful gateway and local agents](POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md).
 
 Dashboard Codex sessions register the harness's `rig-search` MCP when
@@ -91,13 +102,77 @@ fetched page text are untrusted evidence candidates. The bridge accepts only
 the exact `rig_search.search_web` and `rig_search.fetch_page` tool requests.
 
 Local model and Codex dashboard turns use the same gateway-imported harness tool catalog
-and the same `dashboard_mcp_servers.py` launch definitions for `local_agents`, `rig_search`,
-and `rig_info`. The catalog decides automatic tool permissions for both. A local turn
-starts the MCP server with the selected model route as parent; a Codex turn uses its
-cloud-parent mode. The local turn
-advertises its live argument schemas, and runs at most two tool calls before saving
-the final answer and tool activity. A model-specific benchmarking receipt is still
-needed to establish that a route chooses and formats tool calls reliably.
+and `dashboard_mcp_servers.py` launch definitions. The mode policy exposes
+`local_agents` and `rig_info` in both tabs, `rig_search` in Chat, and `workspace_read`
+in Coding. Local-model Local and Full settings additionally expose `local_control`;
+Full adds `private_control`. Codex does not receive these command MCPs because its
+Local + Full permission profile already grants direct commands. The catalog decides
+automatic tool permissions. A local turn starts an MCP server with its selected model
+route as parent; a Codex turn uses cloud-parent mode. Chat advertises agent, search,
+or rig information tools only when the message asks for them; local-model command tools
+follow the selected access level. Coding's four read tools stay bound to the selected
+workspace. In Workspace bound mode, sibling repositories require a separate workspace
+selection. A local turn
+runs distinct successful tool calls as needed. An identical tool name and
+arguments are not executed twice in a turn; the model receives feedback to use
+the prior result or change its inputs. Three consecutive tool failures stop the
+turn with a specific error. A 64-step emergency ceiling catches endless turns
+with changing inputs. Failed local turns retain their
+completed tool activity in the saved failure card. Completed local tool steps
+are checkpointed to the running turn and
+sent to the dashboard as activity events, including for shared models whose
+answer text does not stream. Replies and failed turns save elapsed duration;
+the dashboard shows a running timer and finished reply time. Each completed
+tool step saves its bounded result (up to 16,000 characters) in an expandable
+activity entry, visible while the turn runs and after a later failure. Earlier
+records with only excerpts show those excerpts. Each step also keeps a short
+excerpt so retrying the same failed prompt
+can reuse completed reading work. The excerpt is partial; the model can call
+the tool again when it needs details. Live shared-model context still consumes
+tokens during unfinished tool exchanges, so the context meter may rise before
+an answer is saved. Local streamed generation is conversation-owned rather than
+browser-owned: closing or reloading the page stops delivery to that browser but
+the gateway continues the turn, saves its result, and the reopened page polls
+until it completes. A gateway process stop still interrupts the turn; its
+completed tool activity and prompt remain available for recovery.
+
+For a shared-model parent, `delegate_task` uses another chat of that already-loaded model;
+the model cannot select a different candidate or GPU. The shared gateway adapter
+translates tool requests after a prior tool result and repairs or rejects raw tool
+JSON when no tools are available, so it cannot be saved as a normal answer.
+
+On 2026-11-16 a Nemo poster question exposed the old two-step failure: the model
+called `list_local_agents`, then its `delegate_task` JSON was displayed instead of
+executed. After the fix, a hidden test chat asked a plain 44×44-inch poster question
+on a Nemo worker and received a normal answer with no tool activity. The user's saved
+conversation was not changed. Focused gateway and harness tests passed.
+
+Later the same day, a Coding request to inspect the orchestration repository
+returned a 502 from the shared adapter after it saw a tool-shaped JSON reply
+with no tools advertised. The live catalog and MCP launch check showed that all
+four workspace read tools were available, so a catalog omission was ruled out.
+The two-call turn budget had stopped advertising tools on the next answer step;
+the old failure record did not retain tool activity, so the exact preceding
+calls cannot be reconstructed. The bounded five-call path and saved failure
+activity made this case testable without relaxing the selected-workspace boundary.
+In a live retry after that change, Nemo completed five `read_workspace_file`
+calls and then requested a sixth, producing the explicit five-call limit error.
+The selected workspace was `llm-gateway`, while the requested orchestration
+repository is a sibling. The Coding prompt now states that scope and the other
+registered workspace choices; identical tool requests now receive retry feedback,
+and saved tool activity records
+relative paths for diagnosis. This is a model tool-use limitation, not an MCP
+availability failure. Reading the sibling repository requires a Coding chat
+bound to that registered workspace.
+
+The next live retry exposed the exact rejected call: Nemo requested
+`list_workspace_files` with the absolute sibling path
+a sibling orchestration checkout. The MCP server rejected it as outside the
+selected workspace. The gateway now saves that blocked call in the turn
+activity and returns a specific in-chat explanation with the registered
+orchestration workspace choice. That live retry returned HTTP 200. A direct
+MCP check with orchestration selected confirmed that file listing and filename
+search work in that workspace. The focused dashboard tests passed (27 tests).
 
 The `rig_info` server adds read-only `get_rig_status`,
 `get_model_status`, `get_benchmark_status`,
@@ -124,15 +199,13 @@ Completed agent answers and turn-completed notices are excluded from the activit
 same answer is already rendered in the saved transcript; command and file-change activity remains.
 The dashboard's device-code sign-in connects the Pi service user's Codex installation to the
 operator's ChatGPT account; the browser receives only the verification URL and one-time code.
-Credentials remain in Codex's Pi-local auth store. The agent starts with `workspace-write` access
-to its selected workspace, `networkAccess: false`, and on-request approvals. The sidebar keeps the
-top-level local/Codex choice. Within a Codex chat, the composer lists the available Codex models
-and each model's supported reasoning efforts from app-server. The approval selector offers
-**Ask for approval** or **Approve for me**; the latter sets Codex's `approvals_reviewer` to
-`auto_review` without expanding the workspace sandbox. Full access is shown as unavailable in
-the gateway dashboard. These settings are saved per conversation and affect future turns.
-Opening a saved conversation from the sidebar restores its top-level model, Codex model,
-reasoning effort, approval mode, and fixed workspace in the chat controls.
+Credentials remain in Codex's Pi-local auth store. New Codex conversations default to
+**Local + Full** (`:danger-full-access`, approval policy `never`), including command network
+access. The access picker also offers **Workspace bound** (`:workspace`, on-request approvals).
+Only Workspace bound Coding shows the **Ask for approval** / **Approve for me** reviewer
+selector. The model and reasoning controls come from app-server. Access, model, effort,
+reviewer, and fixed workspace are saved per conversation and restored when it reopens.
+Local-model conversations separately save Workspace bound, Local, or Full tool access.
 The dashboard shows pending command or file-change approvals in the conversation and offers
 one-time Approve or Decline when manual approval is needed. Other
 app-server interaction types are currently rejected. The workspace allowlist comes from
@@ -146,11 +219,31 @@ polls saved turn state and agent activity, so switching tabs or closing the page
 the turn. A successful reply and completed state are committed together. Failure details are saved
 with the turn and shown when the chat is reopened. Live activity and approvals share the transcript's
 single scroll area; completed activity is saved beside its answer in an expandable group.
-A gateway restart
-marks any unfinished turn interrupted and shows its prompt when reopened. The gateway never
+While a Codex turn is running, sending more text uses app-server `turn/steer` to guide that exact
+active turn. Accepted guidance is stored with the turn and becomes part of the saved transcript.
+**Stop** uses `turn/interrupt` for that conversation and records the outcome as interrupted rather
+than as a failed reply. Codex model, effort, reviewer, and access controls remain editable while work
+is active; changes apply to the next turn. Separate saved conversations can run concurrently because
+active Codex work is tracked per conversation/thread rather than by one dashboard-wide busy flag.
+The active transcript merges live and checkpointed activity monotonically, displays tool actions as
+individual timeline lines, and interleaves steered user messages by timestamp. Refreshing or steering
+therefore does not temporarily replace the visible tool history with a shorter snapshot.
+A running turn records the PID, boot ID, and process start identity of the gateway
+that owns it. Another gateway or isolated preview opening the same SQLite history
+does not alter that live turn. When the owning process is actually gone, the next
+gateway marks the turn interrupted and shows its prompt when reopened. The gateway never
 automatically resends an interrupted prompt because the agent may already have performed actions.
+For Codex, the recovery card offers **Continue thread**, which asks the persisted
+thread to finish from completed work without replaying the original tool actions.
 Check the workspace and service state before choosing whether to send a follow-up. This is turn
-recovery visibility; a gateway process restart still interrupts an in-flight agent run.
+recovery visibility; an ordinary gateway process restart still interrupts an in-flight agent run.
+The narrow `gateway_reset.restart_gateway_and_resume` MCP tool is the deliberate exception. It is
+available only inside a saved Codex conversation, requires the exact confirmation string
+`restart pi-gateway`, writes a durable reset receipt under `CHAT_DATA_ROOT/reset-requests`, and
+starts a separate transient systemd unit. That unit waits for the invoking turn to settle (up to
+its deadline), restarts `pi-gateway.service`, waits for health, and submits one recovery turn to
+the saved conversation. Because the worker is outside the gateway service cgroup, it survives the
+restart.
 
 Typing `/` in a Codex chat opens the browser command picker. `/new` opens a new Codex tab;
 `/resume` lists saved Codex chats and `/resume <ID or unique title>` opens one. `/status` shows
@@ -201,7 +294,9 @@ checkpoint's committed turn. The current prototype has not solved that
 delivery transaction or on-disk compaction. Keep this integration behind
 speed/capacity validation of the worker path.
 
-Conversations and messages are saved in SQLite under `CHAT_DATA_ROOT` (default `~/.local/share/llm-gateway/chat`). A deployment may set this to a mounted shared volume and require that mount before startup. Change that environment value to relocate history; stop the service and move the directory as a unit. The directory is mode 0700 and the database mode 0600. The dashboard provides new, list, open, send, and delete operations. Remote access is provided only through separately configured front doors; see [mobile access](MOBILE_DASHBOARD.md).
+Conversations and messages are saved in SQLite under `CHAT_DATA_ROOT` (default `~/.local/share/llm-gateway/chat`). A deployment may set this to a mounted shared volume and require that mount before startup. Change that environment value to relocate history; stop the service and move the directory as a unit. The directory is mode 0700 and the database mode 0600. The dashboard provides new, list, open, send, and delete operations. Remote access uses separately configured LAN and mobile front doors.
+
+The dashboard lists only the main `conversations.sqlite3`. Integration checks create conversations with `"history":"tests"`; those live in `CHAT_DATA_ROOT/tests/conversations.sqlite3` and are omitted from the normal dashboard list. `GET /dashboard/api/chat/conversations?history=tests` lists them explicitly, and conversation IDs resolve in either store for follow-up reads, turns, and deletion. Existing test chats were archived there on 2026-11-16 after a full SQLite backup under `CHAT_DATA_ROOT/backups`. Closing a browser tab only closes its view; the saved conversation remains in its history store. With the last tab closed, the transcript and editor view clear and stay cleared when the page reloads.
 
 For now, the Chat tab displays a manager-owned "Rig busy" signal and a cold turn returns 409 before loading when another job, profile, claim, lease, runtime, or GPU load is present. The same ready chat profile can continue alone. A failed preparation or turn does not add messages to the saved conversation. This guard does not stop or replace other work, and the manager's lease checks still arbitrate any race after the signal. When idle, cold Chat loads use the manager's automatic placement. The manager plans the largest context that fits its selected fast placement; the UI does not yet present a capacity negotiation when the 3090 is busy. A future manager response should offer choices such as "use free 1060s now" versus "wait for 3090" with projected context and measured speed when available. Chat should render the manager's options without deciding placement or fallback itself. It must never silently stop existing work or switch the conversation's model. See `docs/MANAGER.md` for the proposed offer contract and tests. Loading a large context does not expand this basic UI's 16-message history limit; context use and truncation need separate work before the UI can claim full-history use.
 
@@ -210,3 +305,9 @@ Live verification on 2026-11-06: the LAN mTLS path served the Chat tab and four 
 Live integration check on 2026-11-06 after sharing the inference forwarding path: the rig started with an empty ready roster. Explicit manager loads reached ready on GPU 1 for `harness-gemma4-e4b-64k` (26.8 s), GPUs 2 and 3 for `harness-gemma4-12b-64k` (143.2 s), and GPU 0 for `gpt-oss-20b` (44.5 s). The ready-roster GPU IDs matched each request, a Chat turn through the gateway returned `OK` for each, each test conversation was deleted, and each profile was unloaded. The final ready roster was empty. These were basic completion checks; they do not validate harness agent sessions or the browser's visual presentation.
 
 On 2026-11-06, after enabling maximum-fit context for published Chat loads, a live cold turn with `harness-gemma4-e4b-64k` served 131,072 context on GPU 0 and answered `OK`. The manager's rig load item took 252 seconds and the whole turn 257.7 seconds; the profile was unloaded and the final ready roster was empty. The visible Chat menu now comes from `dashboard_chat` flags in the generated published offer; live options still listed the same four profiles.
+
+### Local Coding chat tool context (2026-11-16)
+
+Successful tool results remain in the saved turn activity for dashboard inspection (up to 16,000 characters each). The model receives a readable result capped at 6,000 characters for shared chats, or a context-scaled smaller result for ordinary local requests. Older ordinary-request tool results are compacted when their combined text exceeds a context-scaled budget. Coding prompts tell the model to search before reading, use the returned line numbers for targeted `start_line`/`max_lines` reads, treat `requested_range_complete` as completion even when the file has more lines, and avoid repeating an identical call. Failed call details remain in activity and the model receives the bounded concrete error so it can correct its arguments. A successful call resets the consecutive-failure counter. Three consecutive failed or repeated calls stop tool use and request a final answer from completed work; eight reads of the same file also force synthesis instead of allowing a blind range scan. Shared chats reject whitespace-heavy repeated planning output and stop tool use with a context reserve.
+
+Shared Strata chats use a persistent KV context. Tokens already sent to that runtime cannot be removed by the gateway; the measures above reduce future growth. Parking and reattaching a chat is the separate way to obtain a fresh hot context while retaining the saved conversation. The focused dashboard chat suite passed 16 tests after this change. A live Nemo answer was not rerun as part of this check.
