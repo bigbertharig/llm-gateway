@@ -17,8 +17,8 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
     rigctl kill --gpus 1,3 [--reason TEXT]                 OVERRIDE: stop every runtime on the cards,
                                                            release their leases, drop claims on them
     rigctl load PROFILE [--claim NAME]                     rigctl unload PROFILE
-    rigctl fit MODEL [--cards 2 | --gpus 1,3] [--ctx N | --context-mode min|max] [--use benchmark|chat|worker] [--profile P]
-    rigctl load-model MODEL [--cards 2 | --gpus 1,3] [--ctx N | --context-mode min|max] [--use ...] [--args "--reasoning on"] [--json]
+    rigctl fit MODEL [--cards 2 | --gpus 1,3] [--ctx N | --context-mode min|max] [--placement-policy smallest_fit|fastest_fit] [--use benchmark|chat|worker] [--profile P]
+    rigctl load-model MODEL [--cards 2 | --gpus 1,3] [--ctx N | --context-mode min|max] [--placement-policy smallest_fit|fastest_fit] [--use ...] [--args "--reasoning on"] [--json]
                       [--wait S]                           busy cards: reserve them and wait up to S seconds
                       [--force]                            OVERRIDE: kill what runs on --gpus first
                                                            no cards given: the harness takes the fewest free
@@ -180,6 +180,8 @@ def main() -> int:
                             "context on chosen cards (all free cards if none named)")
         s.add_argument("--ctx-min", type=int, help="smallest acceptable context for auto (default 4096)")
         s.add_argument("--use", default="benchmark", choices=("benchmark", "chat", "worker"))
+        s.add_argument("--placement-policy", choices=("smallest_fit", "fastest_fit"),
+                       help="smallest_fit preserves larger cards; fastest_fit prioritizes response speed")
         s.add_argument("--profile", help="registry profile (default: by use)")
         s.add_argument("--claim"); s.add_argument("--margin-mb", type=int)
         s.add_argument("--batch-size", type=int, help="override the profile's batch (sets the micro-batch, up to 512)")
@@ -250,7 +252,7 @@ def main() -> int:
         body = {"model": a.model, "cards": a.cards, "ctx": a.ctx, "ctx_min": a.ctx_min, "use": a.use,
                 "profile": a.profile, "claim": a.claim, "margin_mb": a.margin_mb, "batch_size": a.batch_size,
                 "gpu_ids": [int(g) for g in a.gpus.split(",")] if a.gpus else None,
-                "context_mode": a.context_mode}
+                "context_mode": a.context_mode, "placement_policy": a.placement_policy}
         timeout = 1000.0
         if a.cmd == "load-model":
             body["extra_args"] = shlex.split(a.args)

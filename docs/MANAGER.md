@@ -144,15 +144,17 @@ The code was staged without restarting the live gateway while GPU 0 was kept ava
 
 1. **The manager decides** (`manager/fit.py`, `manager/models.py`). The request names a catalog model,
    optionally a card count (smallest free cards first) or explicit GPUs, a context, and a use (benchmark,
-   chat, worker) that picks the registry profile and the prompt cache. With no cards named the harness
-   chooses by use: chat first tries the largest single free card (the 3090 on this rig) for lower
-   latency, then falls back to the usual split fit. Benchmark and worker loads compare measured response
-   speed across fitting, available card sets when
-   two comparable observations exist; otherwise they use the smallest card class that holds the model
-   on up to two cards, then the next class, then the fewest cards of any mix (`fit.choose`). Explicit GPU
-   requests always keep their named cards.
-   For example, a benchmark Ornith-9B goes on one 1060 at ctx 26880, or two 1060s when asked
-   for 100k; a 27B goes on the 3090 instead of three 1060s. Chat Ornith-9B uses the 3090 when free. The manager reads the model's GGUF header
+   chat, worker) that picks the registry profile and the prompt cache. With no cards named, the request
+   may set `placement_policy=smallest_fit` to preserve larger cards or `placement_policy=fastest_fit`
+   to prioritize response speed. The explicit policy is returned in every fit/load receipt. When omitted,
+   chat keeps its historical `fastest_fit` default while benchmark and worker use `smallest_fit`.
+   `fastest_fit` first tries the largest single free card (the 3090 on this rig), then adds the fewest
+   other cards needed. `smallest_fit` ignores speed observations and uses the smallest card class that
+   holds the model on up to two cards, then the next class, then the fewest cards of any mix
+   (`fit.choose_smallest`). Explicit GPU requests always
+   keep their named cards.
+   For example, a smallest-fit Ornith-9B goes on one 1060 at ctx 26880, or two 1060s when asked
+   for 100k; a 27B goes on the 3090 instead of three 1060s. Fastest-fit Ornith-9B uses the 3090 when free. The manager reads the model's GGUF header
    from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
    embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
    nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent

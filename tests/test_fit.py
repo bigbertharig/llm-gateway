@@ -137,6 +137,7 @@ def test_measured_response_speed_can_choose_the_3090_for_a_worker(tmp_path):
                         prefill_tps=2000, decode_tps=120, record="one-3090")
     chosen = fit.choose(s, free, ctx=8192, ubatch=64)
     assert chosen["gpus"] == [0] and chosen["performance_basis"] == "one-3090"
+    assert fit.choose_smallest(s, free, ctx=8192, ubatch=64)["gpus"] == [1]
     assert fit.choose(s, free[:2], ctx=8192, ubatch=64)["gpus"] == [1]  # unavailable GPU never chosen
     assert fit.choose(s, free, ctx=8192, ubatch=128)["gpus"] == [1]  # unrelated batch retains fallback
     assert fit.choose(s, free, ctx=8192, ubatch=64, runtime_image="new-image")["gpus"] == [1]
@@ -209,7 +210,8 @@ def test_fit_endpoint_answers_without_loading(menv, registry):  # noqa: F811
     assert "GPU [0]" in r.json()["error"]["message"] or "GPU 0" in r.json()["error"]["message"]
     assert menv["leases"]() == [] and not menv["rig"]().get("plan_items")
     r = c.post("/v1/manager/models/fit", json={"model": "big:30b"})  # no cards: the harness chooses
-    assert r.status_code == 200 and r.json()["gpus"] == [0] and r.json()["chosen_by"].startswith("harness")
+    assert r.status_code == 200 and r.json()["gpus"] == [0]
+    assert r.json()["chosen_by"] == "policy: smallest available fit"
 
 
 def test_chat_auto_placement_uses_big_card_but_explicit_cards_win(menv, registry):  # noqa: F811
@@ -217,7 +219,8 @@ def test_chat_auto_placement_uses_big_card_but_explicit_cards_win(menv, registry
     chat = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "chat", "ctx": 8192})
     assert chat.status_code == 200, chat.text
     assert chat.json()["gpus"] == [0]
-    assert chat.json()["chosen_by"] == "harness: fastest single free card for chat"
+    assert chat.json()["chosen_by"] == "policy: fastest available fit"
+    assert chat.json()["placement_policy"] == "fastest_fit"
     benchmark = c.post("/v1/manager/models/fit", json={"model": "small:9b", "use": "benchmark", "ctx": 8192})
     assert benchmark.status_code == 200, benchmark.text
     assert benchmark.json()["gpus"] == [1]
@@ -225,6 +228,29 @@ def test_chat_auto_placement_uses_big_card_but_explicit_cards_win(menv, registry
                     json={"model": "small:9b", "use": "chat", "ctx": 8192, "gpu_ids": [1]})
     assert pinned.status_code == 200, pinned.text
     assert pinned.json()["gpus"] == [1]
+
+
+def test_auto_placement_policy_can_preserve_or_prioritize_big_card(menv, registry):  # noqa: F811
+    c = menv["client"]
+    smallest = c.post("/v1/manager/models/fit", json={
+        "model": "small:9b", "use": "chat", "ctx": 8192,
+        "placement_policy": "smallest_fit"})
+    assert smallest.status_code == 200, smallest.text
+    assert smallest.json()["gpus"] == [1]
+    assert smallest.json()["placement_policy"] == "smallest_fit"
+    assert smallest.json()["chosen_by"] == "policy: smallest available fit"
+
+    fastest = c.post("/v1/manager/models/fit", json={
+        "model": "small:9b", "use": "worker", "ctx": 8192,
+        "placement_policy": "fastest_fit"})
+    assert fastest.status_code == 200, fastest.text
+    assert fastest.json()["gpus"] == [0]
+    assert fastest.json()["placement_policy"] == "fastest_fit"
+    assert fastest.json()["chosen_by"] == "policy: fastest available fit"
+
+    invalid = c.post("/v1/manager/models/fit", json={
+        "model": "small:9b", "placement_policy": "random"})
+    assert invalid.status_code == 400
 
 
 def test_chat_ram_fallback_reaches_rig_with_explicit_partial_spec(menv, registry, tmp_path):  # noqa: F811

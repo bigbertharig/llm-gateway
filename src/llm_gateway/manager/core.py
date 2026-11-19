@@ -470,12 +470,13 @@ class Manager:
         return need
 
     def _keep_for_demand(self, model: str, shape, kw: dict, obs: dict, free: list[dict], result: dict,
-                         requester: str) -> dict:
+                         requester: str, placement_policy: str) -> dict:
         """A load that names no cards takes the smallest cards that hold it. When the smaller cards are busy that
         can mean a bigger card (the 3090 for a 1060 model). Take it only if no other work is waiting for that
         size; otherwise use other free cards, or refuse (409) saying what was kept free and for whom."""
         size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}
-        idle = fit.choose(shape, [{**g, "used_mb": 0} for g in obs.get("gpus", [])], **kw)
+        chooser = fit.choose_chat if placement_policy == "fastest_fit" else fit.choose_smallest
+        idle = chooser(shape, [{**g, "used_mb": 0} for g in obs.get("gpus", [])], **kw)
         natural = {size[g] for g in (idle or {}).get("gpus", [])}
         extra = {size[g] for g in result.get("gpus", [])} - natural
         demand = self._demand(obs, requester)
@@ -483,7 +484,7 @@ class Manager:
         if not kept:
             return result
         others = [g for g in free if int(g["total_mb"]) not in kept]
-        alt = fit.choose(shape, others, **kw)
+        alt = chooser(shape, others, **kw)
         why = "; ".join(f"{mb} MiB cards for {', '.join(sorted(set(who)))}" for mb, who in kept.items())
         if alt:
             alt["chosen_by"] = f"harness: fewest free cards that fit, keeping {why}"
@@ -908,7 +909,7 @@ class Manager:
                         profile: str | None = None, claim: str | None = None,
                         margin_mb: int = fit.MARGIN_MB_DEFAULT, requester: str = "",
                         batch_size: int | None = None, context_mode: str = "working",
-                        engine: str = "auto") -> dict:
+                        engine: str = "auto", placement_policy: str | None = None) -> dict:
         """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`, or, with neither, on the
         fewest free cards that give `ctx` / at least `ctx_min`)": will it fit, at what context and split.
         Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
@@ -916,6 +917,9 @@ class Manager:
             raise ManagerError(400, "give cards (a count) or gpu_ids, not both")
         if use not in memory.USES:
             raise ManagerError(400, f"use must be one of {memory.USES}")
+        policy = placement_policy or ("fastest_fit" if use == "chat" else "smallest_fit")
+        if policy not in fit.PLACEMENT_POLICIES:
+            raise ManagerError(400, f"placement_policy must be one of {fit.PLACEMENT_POLICIES}")
         if engine not in ("auto", "llama", "strata"):
             raise ManagerError(400, "engine must be auto, llama, or strata")
         try:
@@ -935,7 +939,7 @@ class Manager:
             if not result["fits"]:
                 raise ManagerError(422, result["reason"], fit=result)
             return {**result, "registry_profile": selected["profile"], "status": selected["status"],
-                    "use": use, "gguf_path": selected["gguf_path"]}
+                    "use": use, "gguf_path": selected["gguf_path"], "placement_policy": policy}
         r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb, batch_size, context_mode)
         obs = await self.observe(fresh=True)
         try:
@@ -964,21 +968,23 @@ class Manager:
         else:
             chosen = None
         if chosen is None:
-            choice = (fit.choose_chat(shape, free, **kw) if context_mode == "max" and use == "chat" else
+            fastest = policy == "fastest_fit"
+            choice = (fit.choose_chat(shape, free, **kw) if context_mode == "max" and fastest else
                       fit.plan(shape, free, **kw) if context_mode == "max" else
                       fit.choose_min(shape, free, **kw) if context_mode == "min" else
-                      fit.choose_chat(shape, free, **kw) if use == "chat" else
-                      fit.choose(shape, free, **kw))
+                      fit.choose_chat(shape, free, **kw) if fastest else
+                      fit.choose_smallest(shape, free, **kw))
             result = choice or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
-            result["chosen_by"] = ("chat: largest context on fastest available fit"
-                                   if context_mode == "max" and use == "chat" else
+            result["chosen_by"] = ("policy: fastest fit at largest available context"
+                                   if context_mode == "max" and fastest else
                                    "harness: largest context across free cards" if context_mode == "max" else
                                    "harness: fewest free cards at profile minimum" if context_mode == "min" else
                                    "harness: measured response speed" if result.get("performance_basis") else
-                                   "harness: fastest single free card for chat" if use == "chat" and
-                                   len(result["gpus"]) == 1 else "harness: fewest free cards that fit")
+                                   "policy: fastest available fit" if fastest else
+                                   "policy: smallest available fit")
             if result.get("fits"):
-                result = self._keep_for_demand(r["model"], shape, kw, obs, free, result, requester)
+                result = self._keep_for_demand(
+                    r["model"], shape, kw, obs, free, result, requester, policy)
         else:
             result = fit.plan(shape, chosen, **kw)
         # Only interactive, unpinned requests may spill to host RAM. Preserve
@@ -987,7 +993,10 @@ class Manager:
                 and kw["ctx"] is not None):
             available = (obs.get("guard") or {}).get("mem_available_mb")
             if available is not None:
-                for card in sorted(free, key=lambda g: (-int(g["total_mb"]), int(g["index"]))):
+                card_order = (lambda g: (-int(g["total_mb"]), int(g["index"]))) \
+                    if policy == "fastest_fit" else \
+                    (lambda g: (int(g["total_mb"]), int(g["index"])))
+                for card in sorted(free, key=card_order):
                     ram = fit.plan_ram(shape, card, ctx=int(kw["ctx"]), ubatch=int(kw["ubatch"]),
                                        mem_available_mb=int(available), margin_mb=margin_mb)
                     if ram["fits"]:
@@ -999,14 +1008,14 @@ class Manager:
             if tier["fits"]:
                 result = tier
         result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"],
-                      ubatch=kw["ubatch"], context_mode=context_mode,
+                      ubatch=kw["ubatch"], context_mode=context_mode, placement_policy=policy,
                       context_bounds={"min": kw["ctx_min"], "working": r.get("runtime", {}).get("ctx_size"),
                                       "max": kw["ctx_max"], "max_basis": (r.get("context_bounds") or {}).get("max_basis", "gguf_train")})
         if not result["fits"]:
             # A model that fits the rig when its cards are free is waiting on
             # capacity, not intrinsically too large for the hardware.
             idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
-            if why and fit.choose(shape, idle_cards, **kw):
+            if why and fit.choose_smallest(shape, idle_cards, **kw):
                 raise ManagerError(503, f"{model}: no capacity while GPUs are occupied or reserved",
                                    unavailable=why, fit=result)
             alts = fit.suggest(shape, free, **kw)
@@ -1038,10 +1047,12 @@ class Manager:
         # Planned on empty cards: a busy card reports the memory its current model uses, which would make
         # the set look bigger than the model needs once those cards free.
         idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
-        target = (fit.plan(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "max" else
+        policy = fit_kw.get("placement_policy") or ("fastest_fit" if use == "chat" else "smallest_fit")
+        target = (fit.plan(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "max" and policy == "smallest_fit" else
+                  fit.choose_chat(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "max" else
                   fit.choose_min(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "min" else
-                  fit.choose_chat(shape, idle_cards, **kw) if use == "chat" else
-                  fit.choose(shape, idle_cards, **kw))
+                  fit.choose_chat(shape, idle_cards, **kw) if policy == "fastest_fit" else
+                  fit.choose_smallest(shape, idle_cards, **kw))
         if target is None or not target["fits"]:
             raise ManagerError(422, f"{model} won't fit on this rig even with every card free")
         size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}

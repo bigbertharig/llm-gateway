@@ -510,6 +510,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 "ctx": None if ctx in (None, "", "auto") else int(ctx),
                 "ctx_min": int(b.get("ctx_min") or fit.CTX_MIN_DEFAULT), "use": b.get("use", "benchmark"),
                 "profile": b.get("profile"), "claim": b.get("claim"),
+                "placement_policy": b.get("placement_policy"),
                 "margin_mb": int(b["margin_mb"]) if b.get("margin_mb") is not None else fit.MARGIN_MB_DEFAULT,
                 "batch_size": int(b["batch_size"]) if b.get("batch_size") else None,
                 "context_mode": b.get("context_mode", "working"),

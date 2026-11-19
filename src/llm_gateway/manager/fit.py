@@ -43,6 +43,7 @@ MARGIN_MB_FALLBACK = 512
 MARGIN_MB_MIN = 128           # protects against sparse probe sampling and allocator variation
 COMPUTE_BASE_MB = 64         # compute buffer at tiny context (measured 39 MiB on Ornith-9B)
 CUDA_CONTEXT_MB = 150        # per card per process (CUDA context, cuBLAS workspace), not in llama.cpp's sums
+PLACEMENT_POLICIES = ("smallest_fit", "fastest_fit")
 
 # ggml type id -> (elements per block, bytes per block). Unknown ids count as 4 bytes per element.
 GGML_BLOCKS = {
@@ -612,13 +613,8 @@ def _measured_placement(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -
     return result
 
 
-def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
-    """The plan the harness picks when the request names no cards: the smallest card class that holds it on
-    up to SAME_CLASS_MAX_CARDS cards (one card first), so big cards stay free for big models; failing that,
-    the fewest cards of any mix. With an exact `ctx` that context must fit, otherwise at least ctx_min."""
-    measured = _measured_placement(s, free_cards, **kw)
-    if measured is not None:
-        return measured
+def choose_smallest(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+    """Strict smallest-fit placement, independent of measured speed."""
     classes: dict[int, list[dict[str, Any]]] = {}
     for g in free_cards:
         classes.setdefault(int(g["total_mb"]), []).append(g)
@@ -634,6 +630,12 @@ def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, A
             if p["fits"]:
                 return p
     return None
+
+
+def choose(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+    """Measured fastest placement when comparable evidence exists; otherwise strict smallest-fit."""
+    measured = _measured_placement(s, free_cards, **kw)
+    return measured if measured is not None else choose_smallest(s, free_cards, **kw)
 
 
 def choose_min(s: Shape, free_cards: list[dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
