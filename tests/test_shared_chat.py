@@ -93,6 +93,7 @@ def test_manager_spawns_child_of_loaded_nemo_and_releases_it(monkeypatch):
             return {"shared_kv_service": {"status": "ready", "model": model,
                     "instance_id": "load-1", "chats": [dict(row) for row in self.chats],
                     "worker_capacity": {"status": "observed", "context_capacity": 262144,
+                                        "available_chat_slots": 5 - len(self.chats),
                                         "free_gpu_count": 1 if len(self.chats) == 1 else 0,
                                         "free_gpu_ids": [1] if len(self.chats) == 1 else []}}}
 
@@ -113,7 +114,11 @@ def test_manager_spawns_child_of_loaded_nemo_and_releases_it(monkeypatch):
         "subagent_catalog": {"schema_version": 1, "candidates": {
             "nemotron74_shared_1060": {"provider": "rig_shared_chat", "model": model,
                 "agent_types": ["coding", "research"], "context_cap": 262144,
-                "context_allocation": "fixed_per_chat", "max_attached_chats": 1}}}})
+                "context_allocation": "dynamic_at_attach", "context_min": 16384,
+                "context_default": 262144,
+                "memory_estimate": {"fixed_compute_mib": 6, "kv_mib_at_262144": 2048,
+                                    "admission_reserve_mib": 256},
+                "max_attached_chats": 4}}}})
     rig = NemoRig()
     class Manager:
         pass
@@ -127,9 +132,13 @@ def test_manager_spawns_child_of_loaded_nemo_and_releases_it(monkeypatch):
         assert found["candidates"][0] == {
             "candidate_id": "nemotron74_shared_1060", "agent_types": ["coding", "research"],
             "model": model, "status": "experimental", "context_length": 262144,
-            "context_allocation": "fixed_per_chat", "max_concurrent_children": 1,
+            "context_allocation": "dynamic_at_attach", "context_min": 16384,
+            "context_default": 262144,
+            "memory_estimate": {"fixed_compute_mib": 6, "kv_mib_at_262144": 2048,
+                                "admission_reserve_mib": 256},
+            "max_concurrent_children": 4,
             "loaded": True, "service_instance_id": "load-1", "active_reservations": [],
-            "active_children": 0, "available_worker_slots": 1,
+            "active_children": 0, "available_worker_slots": 4,
             "available_worker_gpu_ids": [1], "capacity_context_tokens": 262144}
         got = client.post("/v1/manager/agent-routes/resolve", json={
             "parent_route": "gpu-rig/shared-nemo-main", "agent_type": "coding"})
@@ -142,7 +151,7 @@ def test_manager_spawns_child_of_loaded_nemo_and_releases_it(monkeypatch):
         assert child["admission"]["mode"] == "shared_model"
         occupied = client.get("/v1/manager/local-agent-capabilities").json()["candidates"][0]
         assert occupied["active_children"] == 1
-        assert occupied["available_worker_slots"] == 0
+        assert occupied["available_worker_slots"] == 3
         assert occupied["active_reservations"][0]["route"] == child["route"]
         assert occupied["active_reservations"][0]["reservation_id"] == child["reservation"]["reservation_id"]
         released = client.post("/v1/manager/agent-routes/release", json={
@@ -370,6 +379,58 @@ def test_manager_attaches_and_releases_cataloged_child(monkeypatch):
             "parent_route": "gpu-rig/shared-35b-main", "route": child["route"]})
         assert released.status_code == 200, released.text
         assert len(rig.chats) == 1
+
+
+def test_headless_pool_is_mode_matched_and_can_serve_cloud_parent(monkeypatch):
+    class HeadlessRig(SharedRig):
+        def __init__(self):
+            super().__init__()
+            self.chats = []
+
+        async def status(self):
+            return {"profiles": [], "shared_kv_service": {
+                "status": "ready", "model": "qwen3.6:35b-a3b-xl",
+                "mode": "gpu0-worker-pool-q4", "instance_id": "qwen-load-1",
+                "chats": [dict(row) for row in self.chats],
+                "reservations": {"main": {"context_capacity": 0,
+                    "placement": {"gpus": [0]}, "reservation_scope": "service_parent"}},
+                "worker_capacity": {"status": "observed", "context_capacity": 65536,
+                    "available_chat_slots": 32, "free_gpu_ids": [1, 2, 3, 4, 5]}}}
+
+        async def shared_kv(self, action, **kwargs):
+            result = await super().shared_kv(action, **kwargs)
+            if action == "attach":
+                result["reservation"]["placement"]["runtime_gpu"] = result["gpu"]
+            return result
+
+    catalog = {"subagent_catalog": {"schema_version": 1, "candidates": {
+        "qwen35_shared_1060": {"provider": "rig_shared_chat",
+            "model": "qwen3.6:35b-a3b-xl", "agent_types": ["coding"],
+            "requires": {"mode": "gpu0-main-q4"}},
+        "qwen35_headless_worker_pool": {"provider": "rig_shared_chat",
+            "model": "qwen3.6:35b-a3b-xl", "agent_types": ["coding"],
+            "context_cap": 262144, "context_default": 65536,
+            "context_allocation": "dynamic_at_attach",
+            "requires": {"mode": "gpu0-worker-pool-q4"}}}}}
+    rig = HeadlessRig()
+    class Manager:
+        pass
+    manager = Manager()
+    manager.rig = rig
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: catalog)
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        capabilities = client.get("/v1/manager/local-agent-capabilities").json()["candidates"]
+        loaded = {row["candidate_id"]: row["loaded"] for row in capabilities}
+        assert loaded == {"qwen35_shared_1060": False,
+                          "qwen35_headless_worker_pool": True}
+        got = client.post("/v1/manager/agent-routes/resolve", json={
+            "parent_route": "cloud/codex", "agent_type": "coding",
+            "candidate_id": "qwen35_headless_worker_pool"})
+        assert got.status_code == 200, got.text
+        assert got.json()["candidate_id"] == "qwen35_headless_worker_pool"
+        assert got.json()["reservation"]["placement"]["runtime_gpu"] == 1
 
 
 def test_cloud_parent_starts_shared_service_and_releases_worker(monkeypatch):

@@ -1,35 +1,35 @@
-// Example for a dedicated tailnet or a carefully merged existing policy.
+// Second stage for the dedicated mobile tailnet, after the mobile listener works.
 // Replace the synthetic identities. Review all existing grants and ACLs first.
 // A broad existing ACL still grants access even if these grants are narrow.
 {
   "tagOwners": {
-    "tag:pi-session": ["operator@example.invalid"],
+    "tag:pi-mobile": ["operator@example.invalid"],
   },
   "acls": [],
   "grants": [
     {
       "src": ["operator@example.invalid"],
-      "dst": ["tag:pi-session"],
+      "dst": ["tag:pi-mobile"],
       "ip": ["tcp:443"],
     },
   ],
   "tests": [
     {
       "src": "operator@example.invalid",
-      "accept": ["tag:pi-session:443"],
+      "accept": ["tag:pi-mobile:443"],
       "deny": [
-        "tag:pi-session:22",
-        "tag:pi-session:8080",
-        "tag:pi-session:2049",
+        "tag:pi-mobile:22",
+        "tag:pi-mobile:8080",
+        "tag:pi-mobile:2049",
       ],
     },
     {
       "src": "unapproved@example.invalid",
       "deny": [
-        "tag:pi-session:22",
-        "tag:pi-session:443",
-        "tag:pi-session:8080",
-        "tag:pi-session:2049",
+        "tag:pi-mobile:22",
+        "tag:pi-mobile:443",
+        "tag:pi-mobile:8080",
+        "tag:pi-mobile:2049",
       ],
     },
   ],

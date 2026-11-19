@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -149,6 +150,16 @@ def create_app(
     @app.middleware("http")
     async def _auth(request: Request, call_next):
         """Bearer keys, when configured. /health stays open for liveness checks."""
+        mobile_token = request.headers.get("x-mobile-proxy-token")
+        if mobile_token is not None:
+            expected = os.getenv("MOBILE_PROXY_TOKEN", "")
+            if len(expected) < 32 or not hmac.compare_digest(mobile_token, expected):
+                return error_response(403, "invalid mobile proxy identity", "forbidden")
+            if not request.url.path.startswith("/dashboard/api/"):
+                return error_response(403, "mobile proxy cannot use this API", "forbidden")
+            request.state.surface = "mobile"
+        else:
+            request.state.surface = "local"
         if s.api_keys and request.url.path != "/health":
             header = request.headers.get("authorization", "")
             token = header[7:].strip() if header[:7].lower() == "bearer " else ""
@@ -217,7 +228,8 @@ def create_app(
                                  headers={"Cache-Control": "no-cache"})
 
     if manager is not None:
-        app.include_router(chat_router(manager, profiles, forward, codex_bridge))
+        app.include_router(chat_router(manager, profiles, forward, codex_bridge,
+                                       shared_inference=lambda pid, body: shared_completion(pid, body)))
 
     @app.get("/health")
     async def health():

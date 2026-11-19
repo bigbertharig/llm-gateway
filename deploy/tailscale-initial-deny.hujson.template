@@ -1,0 +1,21 @@
+// New dedicated tailnet: apply before enrolling the Pi or Android phone.
+// Replace the synthetic operator identity with the real tailnet login.
+// Do not apply unchanged to a tailnet with other devices or existing policy.
+{
+  "tagOwners": {
+    "tag:pi-mobile": ["operator@example.invalid"],
+  },
+  "acls": [],
+  "grants": [],
+  "tests": [
+    {
+      "src": "operator@example.invalid",
+      "deny": [
+        "tag:pi-mobile:22",
+        "tag:pi-mobile:443",
+        "tag:pi-mobile:8080",
+        "tag:pi-mobile:2049",
+      ],
+    },
+  ],
+}

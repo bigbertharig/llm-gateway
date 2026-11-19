@@ -30,3 +30,23 @@ def test_only_dashboard_routes_are_forwarded(monkeypatch):
         assert client.post("/dashboard/api/rig/kill", headers=post_headers,
                            content=b"x" * (MAX_BODY + 1)).status_code == 413
         assert calls == [("GET", "/dashboard/"), ("POST", "/dashboard/api/rig/kill")]
+
+
+def test_chat_stream_passes_through_lan_front_door(monkeypatch):
+    monkeypatch.setenv("LAN_DASHBOARD_ALLOWED_HOSTS", "raspberrypi.local")
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"type":"delta","text":"Hi"}\n\n'
+    transport = httpx.MockTransport(lambda request: httpx.Response(200,
+        headers={"content-type": "text/event-stream"},
+        stream=Chunks()))
+    headers = {"host": "raspberrypi.local", "origin": "https://raspberrypi.local",
+               "content-type": "application/json", "accept": "text/event-stream",
+               "sec-fetch-site": "same-origin"}
+    with TestClient(create_app(transport)) as client:
+        response = client.post("/dashboard/api/chat/conversations/" + "a" * 32 + "/turn",
+                               headers=headers, json={"model": "local", "stream": True})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-accel-buffering"] == "no"
+    assert '"text":"Hi"' in response.text

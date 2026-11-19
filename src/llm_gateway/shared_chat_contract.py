@@ -47,7 +47,8 @@ def validate_admission(attached: dict, *, expected_instance: str, parent_gpu: in
         raise ValueError("shared child reservation belongs to another service instance")
     if reservation.get("context_capacity") != capacity:
         raise ValueError("shared child capacity differs from its reservation")
-    if reservation.get("placement") != {"gpus": [gpu]}:
+    placement = reservation.get("placement")
+    if not isinstance(placement, dict) or placement.get("gpus") != [gpu]:
         raise ValueError("shared child placement differs from its reservation")
     if type(reservation.get("reserved_mib")) is not int or reservation["reserved_mib"] < 1:
         raise ValueError("shared child reservation has no memory allocation")

@@ -32,6 +32,13 @@ def _shared_candidates(catalog: dict) -> dict[str, dict]:
             and serving_approved(catalog, entry["model"])}
 
 
+def _candidate_loaded(service: dict, entry: dict) -> bool:
+    required = entry.get("requires") or {}
+    return (service.get("status") == "ready"
+            and service.get("model") == entry.get("model")
+            and (not required.get("mode") or service.get("mode") == required["mode"]))
+
+
 def _agent_profile_order(agent_type: str, published: dict[str, dict], *, cold: bool = False) -> list[str]:
     catalog = models.catalog()
     entries = catalog.get("models", {})
@@ -117,7 +124,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             service = {}
         candidates = []
         for candidate_id, entry in _shared_candidates(full_catalog).items():
-            loaded = service.get("status") == "ready" and service.get("model") == entry.get("model")
+            loaded = _candidate_loaded(service, entry)
             active = sum(isinstance(chat, dict) and
                          str(chat.get("chat_id", "")).startswith("child-")
                          for chat in (service.get("chats") or [])) if loaded else 0
@@ -149,8 +156,10 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                                "service_instance_id": service.get("instance_id") if loaded else None,
                                "active_reservations": live_reservations,
                                "active_children": active,
-                               "available_worker_slots": worker_capacity.get("free_gpu_count")
-                                   if authoritative else None,
+                               "available_worker_slots": (
+                                   worker_capacity.get("available_chat_slots",
+                                                       worker_capacity.get("free_gpu_count"))
+                                   if authoritative else None),
                                "available_worker_gpu_ids": worker_capacity.get("free_gpu_ids")
                                    if authoritative else None,
                                "capacity_context_tokens": worker_capacity.get("context_capacity")
@@ -244,11 +253,12 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 selected = candidate_id if candidate_id in shared else None
             elif service.get("status") == "ready":
                 selected = next((cid for cid, row in shared.items()
-                                 if row["model"] == service.get("model")), None)
+                                 if _candidate_loaded(service, row)), None)
                 inferred_shared = selected is not None
         elif worker_strategy != "separate_model":
             selected = next((cid for cid, row in shared.items()
-                             if parent_id.startswith(prefix + row["route_prefix"])), None)
+                             if parent_id.startswith(prefix + row["route_prefix"])
+                             and _candidate_loaded(service, row)), None)
             if selected and candidate_id not in (None, selected):
                 raise ManagerError(400, "candidate is incompatible with the loaded shared model")
         if selected:
@@ -259,16 +269,31 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             shared_prefix = prefix + entry["route_prefix"]
             model_arg = {"model": model}
             if cloud_parent and service.get("status") != "ready":
-                await manager.rig.shared_kv("start", **model_arg)
+                required_mode = (entry.get("requires") or {}).get("mode")
+                await manager.rig.shared_kv(
+                    "start", **model_arg,
+                    **({"main_context_cap": 0} if required_mode == "gpu0-worker-pool-q4" else {}))
                 service = (await manager.rig.status()).get("shared_kv_service") or {}
+            if not _candidate_loaded(service, entry):
+                raise ManagerError(409, "candidate requires a different loaded shared-model mode")
             chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
-            parent_chat = "main" if cloud_parent else parent_id[len(shared_prefix):]
-            parent = chats.get(parent_chat)
-            if (service.get("status") != "ready" or service.get("model") != model
-                    or not parent or type(parent.get("gpu")) is not int):
+            headless = ((entry.get("requires") or {}).get("mode") == "gpu0-worker-pool-q4")
+            parent = None if cloud_parent and headless else chats.get(
+                "main" if cloud_parent else parent_id[len(shared_prefix):])
+            if parent is not None:
+                if type(parent.get("gpu")) is not int:
+                    raise ManagerError(409, "parent shared chat has no GPU placement")
+                if parent.get("context_cap", 0) < min_context:
+                    raise ManagerError(409, "parent shared chat has insufficient context")
+                parent_gpu = parent["gpu"]
+            elif cloud_parent and headless:
+                parent_gpus = (((service.get("reservations") or {}).get("main") or {})
+                               .get("placement", {}).get("gpus") or [0])
+                if type(parent_gpus[0]) is not int:
+                    raise ManagerError(409, "headless shared service has no parent GPU placement")
+                parent_gpu = parent_gpus[0]
+            else:
                 raise ManagerError(409, "parent shared chat is not ready")
-            if parent.get("context_cap", 0) < min_context:
-                raise ManagerError(409, "parent shared chat has insufficient context")
             child_id = "child-" + uuid.uuid4().hex[:16]
             try:
                 attach_args = {**model_arg, "chat_id": child_id}
@@ -278,7 +303,8 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                     attach_args["context_tokens"] = entry.get("context_default", entry["context_cap"])
                 attached = await manager.rig.shared_kv("attach", **attach_args)
             except RigUnavailable as exc:
-                if "no eligible free GPU" in str(exc):
+                if ("no eligible free GPU" in str(exc)
+                        or "no admissible placement" in str(exc)):
                     if worker_strategy == "auto" and inferred_shared and candidate_id is None:
                         selected = None
                     else:
@@ -290,7 +316,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 try:
                     admission = validate_admission(
                         attached, expected_instance=service.get("instance_id"),
-                        parent_gpu=parent["gpu"])
+                        parent_gpu=parent_gpu)
                 except ValueError as exc:
                     try:
                         await manager.rig.shared_kv("detach", model=model, chat_id=child_id)

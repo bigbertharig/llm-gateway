@@ -47,9 +47,9 @@ class PlanRequests:
 
     def start_plan(self, plan_name: str, config_json: str = "", plan_scope: str = "shoulders",
                    starter_file: str = "", repo_path: str = "", repo_url: str = "", claimed_behavior: str = "",
-                   inline_query_text: str = "") -> dict[str, Any]:
+                   inline_query_text: str = "", gateway_model_assignments: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._start_plan(plan_name, config_json, plan_scope, starter_file, repo_path, repo_url,
-                                claimed_behavior, inline_query_text)
+                                claimed_behavior, inline_query_text, gateway_model_assignments)
 
 
     def resume_plan(self, batch_id: str) -> dict[str, Any]:
@@ -281,6 +281,7 @@ class PlanRequests:
         repo_url: str = "",
         claimed_behavior: str = "",
         inline_query_text: str = "",
+        gateway_model_assignments: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not plan_name:
             return {"ok": False, "message": "plan_name is required"}
@@ -314,6 +315,14 @@ class PlanRequests:
             cfg_obj = sanitize_config_object(cfg_obj)
         except Exception as e:
             return {"ok": False, "message": f"invalid config values: {e}"}
+        if gateway_model_assignments is not None:
+            encoded_assignments = json.dumps(gateway_model_assignments, separators=(",", ":"))
+            if len(encoded_assignments) > 4000:
+                return {"ok": False, "message": "plan has too many model assignments for one submission"}
+            cfg_obj["GATEWAY_MODEL_ASSIGNMENTS"] = encoded_assignments
+        elif str(cfg_obj.get("RUN_MODE") or "").lower() != "resume":
+            # Only the gateway's assignment pass may create this internal field.
+            cfg_obj.pop("GATEWAY_MODEL_ASSIGNMENTS", None)
 
         repo_path_clean = sanitize_text(repo_path, max_len=800, single_line=True) if str(repo_path).strip() else ""
         try:

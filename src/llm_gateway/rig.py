@@ -78,7 +78,8 @@ class Rig:
 
     async def shared_kv(self, action: str, *, model: str | None = None, chat_id: str | None = None,
                         message: str | None = None, max_tokens: int | None = None,
-                        context_tokens: int | None = None) -> dict:
+                        context_tokens: int | None = None,
+                        main_context_cap: int | None = None) -> dict:
         if action not in ("status", "start", "attach", "detach", "turn", "stop"):
             raise ValueError("unsupported shared chat action")
         args = ["shared-kv", action]
@@ -87,6 +88,7 @@ class Rig:
         if message is not None: args += ["--message", message]
         if max_tokens is not None: args += ["--max-tokens", str(max_tokens)]
         if context_tokens is not None: args += ["--context-cap", str(context_tokens)]
+        if main_context_cap is not None: args += ["--main-context-cap", str(main_context_cap)]
         code, out = await self._run(*args, timeout=900 if action in ("start", "turn") else 180)
         if code != RIG_OK:
             raise RigUnavailable(503 if action == "attach" else 502,

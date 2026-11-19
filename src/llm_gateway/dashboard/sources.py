@@ -1,31 +1,18 @@
-"""What the dashboard shows beyond the rig manager's own status (docs/DASHBOARD.md).
-
-- models: the summary in the gateway's `model_catalog.json`, which the importer (tools/generate_profiles.py)
-  imports from benchmarking's versioned model-library export; the dashboard itself never reads benchmarking;
-- benchmarks: lane runs (`logs/benchmarks/worker_lanes_*`) and campaign runs (`campaigns/history`) on the
-  shared drive;
-- orchestration: llm_orchestration's versioned private API over a Unix socket.
-
-All readers are plain functions over files (blocking): the routes run them in a thread.
-"""
+"""Gateway-owned dashboard reads and the orchestration private API adapter."""
 
 from __future__ import annotations
 
 import http.client
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
 from ..manager import models as registry_models
 
-SHARED_ROOTS = (Path("/media/bryan/shared"), Path("/mnt/shared"))
 ORCHESTRATION_API_SOCKET = Path("/run/llm-orchestration/api.sock")
 
-LANE_ACTIVE_S = 1200     # a lane log written to within this long counts as running
-RECENT_RUNS = 12
-RECENT_HISTORY_S = 24 * 60 * 60
+SHARED_ROOTS = (Path("/media/bryan/shared"), Path("/mnt/shared"))  # gateway-owned plan source
 
 
 def shared_root() -> Path:
@@ -53,71 +40,14 @@ def models_summary() -> dict:
         return {"models": [], "roles": {}, "key_tests": [], "error": "model_catalog.json missing: run the importer"}
 
 
-# ------------------------------------------------------------------ benchmarks
-
-def _last_line(path: Path) -> str:
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, 2)
-            fh.seek(max(0, fh.tell() - 4096))
-            lines = [ln for ln in fh.read().decode("utf-8", "replace").splitlines() if ln.strip()]
-        return lines[-1] if lines else ""
-    except OSError:
-        return ""
-
-
-def benchmarks_summary(shared: Path | None = None, claims: set[str] | None = None) -> dict:
-    """Lane and campaign runs. A lane is running while it holds its claim (`lane-<cards>`, taken at
-    start and released at LANE_DONE); its log is written only at phase changes, so log age says little.
-    Only the newest run per card group can be the running one. Without `claims`, log age decides."""
-    logs = (shared or shared_root()) / "logs" / "benchmarks"
-    now = time.time()
-    lanes = []
-    seen_groups: set[str] = set()
-    recent_lane_count = 0
-    for run in sorted(logs.glob("worker_lanes_*"), key=lambda p: p.stat().st_mtime, reverse=True):
-        queue = run / "queue.txt"
-        queued = [q for q in queue.read_text(encoding="utf-8").splitlines() if q.strip()] if queue.exists() else []
-        for log in sorted(run.glob("lane_gpu*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
-            last = _last_line(log)
-            age = int(now - log.stat().st_mtime)
-            group = log.stem.replace("lane_gpu", "")
-            newest = group not in seen_groups
-            seen_groups.add(group)
-            if claims is not None:
-                active = newest and f"lane-{group}" in claims and "LANE_DONE" not in last
-            else:
-                active = newest and age < LANE_ACTIVE_S and "LANE_DONE" not in last
-            if not active and (age > RECENT_HISTORY_S or recent_lane_count >= RECENT_RUNS):
-                continue
-            if not active:
-                recent_lane_count += 1
-            lanes.append({"run": run.name, "lane": "gpu " + group, "last": last[-240:], "age_s": age,
-                          "active": active, "queued": queued})
-    campaigns = []
-    statuses = sorted((logs / "campaigns" / "history").glob("*/*/status.json"),
-                      key=lambda p: p.stat().st_mtime, reverse=True)
-    recent_campaign_count = 0
-    for path in statuses:
-        d = _json(path) or {}
-        age = int(now - path.stat().st_mtime)
-        # A status left as "running" after a crash is not evidence of a live job.
-        # Active campaigns refresh this receipt, including jobs started days ago.
-        if age > RECENT_HISTORY_S or recent_campaign_count >= RECENT_RUNS:
-            continue
-        recent_campaign_count += 1
-        blocks = d.get("blocks") or {}
-        counts: dict[str, int] = {}
-        current = []
-        for bid, b in blocks.items():
-            st = str((b or {}).get("status", "?"))
-            counts[st] = counts.get(st, 0) + 1
-            if st not in ("completed", "failed", "pending", "waiting_deps", "waiting_gpu"):
-                current.append(f"{bid} ({st})")
-        campaigns.append({"campaign": d.get("campaign") or path.parent.parent.name, "run_id": d.get("run_id"),
-                          "status": d.get("status"), "blocks": counts, "current": current,
-                          "updated_age_s": age})
-    return {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "lanes": lanes, "campaigns": campaigns}
+def benchmark_evidence_summary() -> dict:
+    """Read published model evidence from this repo's imported catalog snapshot."""
+    summary = models_summary()
+    models = summary.get("models") or []
+    return {"source": "gateway_model_catalog", "models": [
+        {"model": m.get("model"), "status": m.get("status"), "scores": m.get("scores") or {},
+         "runtime": m.get("runtime") or {}, "profiles": m.get("profiles") or []}
+        for m in models], "key_tests": summary.get("key_tests") or [], "error": summary.get("error")}
 
 
 # ------------------------------------------------------------------ orchestration

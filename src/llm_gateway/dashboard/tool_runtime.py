@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from . import dashboard_mcp_servers
 
 
@@ -11,9 +12,9 @@ class DashboardToolError(RuntimeError):
     pass
 
 
-def _launch(server: str, parent_route: str) -> list[str] | None:
+def _launch(server: str, parent_route: str, workspace: Path | None = None) -> list[str] | None:
     try:
-        return dashboard_mcp_servers.launch(server, parent_route)
+        return dashboard_mcp_servers.launch(server, parent_route, workspace=workspace)
     except ValueError as exc:
         raise DashboardToolError(str(exc)) from exc
 
@@ -35,15 +36,19 @@ def _request(command: list[str], method: str, params: dict | None = None, timeou
         raise DashboardToolError(f"MCP {method} failed: {type(exc).__name__}") from exc
 
 
-def available(parent_route: str) -> tuple[list[dict], dict[str, tuple[list[str], dict]]]:
+def available(parent_route: str, allowed_servers: frozenset[str] | None = None,
+              workspace: Path | None = None) -> tuple[list[dict], dict[str, tuple[list[str], dict]]]:
     """Use the gateway snapshot for permission and live tools/list for schemas."""
     try:
         catalog = dashboard_mcp_servers.catalog_servers()
     except ValueError as exc:
         raise DashboardToolError("Dashboard tool catalog is unavailable") from exc
     advertised, dispatch = [], {}
+    allowed_servers = allowed_servers or frozenset()
     for server, entry in catalog.items():
-        command = _launch(server, parent_route)
+        if allowed_servers is not None and server not in allowed_servers:
+            continue
+        command = _launch(server, parent_route, workspace)
         if command is None:
             continue
         live = _request(command, "tools/list")
@@ -71,5 +76,9 @@ def call(dispatch: dict, name: str, arguments: dict) -> dict:
         raise DashboardToolError("Tool arguments do not match the published schema")
     result = _request(command, "tools/call", {"name": name, "arguments": arguments}, timeout=480)
     if result.get("isError"):
-        raise DashboardToolError(f"Tool {name} reported an error")
+        details = result.get("content") or []
+        reason = next((item.get("text", "") for item in details
+                       if isinstance(item, dict) and item.get("type") == "text"), "")
+        raise DashboardToolError(f"Tool {name} reported an error" +
+                                 (f": {reason[:240]}" if isinstance(reason, str) and reason else ""))
     return result

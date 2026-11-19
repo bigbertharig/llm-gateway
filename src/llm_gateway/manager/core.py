@@ -275,7 +275,8 @@ class Manager:
             blockers.append("active rig plan")
         if any(pid != profile_id or not own_ready for pid in profiles):
             blockers.append("loaded or loading profile")
-        if obs.get("claims"):
+        claims = obs.get("claims") or []
+        if claims:
             blockers.append("GPU claim")
         if any(lease.get("lease_id") != own_lease for lease in obs.get("leases") or []):
             blockers.append("GPU lease")
@@ -287,9 +288,19 @@ class Manager:
             blockers.append("GPU memory in use")
         if not own_ready and (obs.get("guard") or {}).get("loads_admitted") is False:
             blockers.append("rig load guard")
+        chat_claims = [claim for claim in claims if claim.get("purpose") == "chat"]
+        chat_cards = {gpu for claim in chat_claims for gpu in claim.get("gpu_ids") or []}
+        other_busy_cards = any(
+            int(gpu.get("used_mb") or 0) > placement.FREE_MAX_USED_MB
+            and gpu.get("index") not in own_gpus | chat_cards
+            for gpu in obs.get("gpus") or []
+        )
+        chat_reservation_only = bool(chat_claims) and len(chat_claims) == len(claims) and not other_busy_cards and set(blockers) <= {"GPU claim", "GPU memory in use"}
         return {"busy": bool(blockers), "reason": ", ".join(dict.fromkeys(blockers)),
                 "ready_profiles": [pid for pid, row in profiles.items() if row.get("state") == "ready"],
-                "requested_ready": own_ready}
+                "requested_ready": own_ready, "chat_reservation_only": chat_reservation_only,
+                "chat_reservations": [{"name": claim.get("name"), "model": claim.get("model"),
+                                       "gpu_ids": claim.get("gpu_ids") or []} for claim in chat_claims]}
 
     async def prepare_chat_profile(self, profile_id: str, profile: dict) -> dict:
         """Prepare one published chat profile without starting a cold load over existing work."""

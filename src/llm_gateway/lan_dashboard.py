@@ -7,11 +7,12 @@ certificates and advertises the trusted CA; this app limits HTTP routes.
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 UPSTREAM = "http://127.0.0.1:8080"
 GET_PATHS = frozenset({
@@ -21,6 +22,7 @@ GET_PATHS = frozenset({
     "/dashboard/api/orchestration/diagnostics", "/dashboard/api/orchestration/activity",
     "/dashboard/api/chat/options", "/dashboard/api/chat/conversations",
     "/dashboard/api/chat/codex/account",
+    "/dashboard/api/chat/codex/models",
 })
 RIG_ACTIONS = frozenset({"kill", "unload", "unclaim", "cancel", "load"})
 RUN_ACTIONS = frozenset({"recover", "dismiss", "stop"})
@@ -45,6 +47,9 @@ SECURITY_HEADERS = {
 
 
 def _allowed(method: str, path: str) -> bool:
+    workspace = re.fullmatch(r'/dashboard/api/chat/conversations/[0-9a-f]{32}/workspace/(tree|file|image|search)', path)
+    if workspace:
+        return method in ('GET', 'HEAD') or (method == 'POST' and path.endswith('/file'))
     if method in ("GET", "HEAD"):
         return path in GET_PATHS or (path.startswith("/dashboard/api/chat/conversations/")
                                      and (len(path.rsplit("/", 1)[-1]) == 32 or
@@ -55,11 +60,15 @@ def _allowed(method: str, path: str) -> bool:
         return False
     if path == "/dashboard/api/chat/conversations":
         return True
+    if path == "/dashboard/api/chat/loaded-model/reset":
+        return True
     if path in ("/dashboard/api/chat/codex/login", "/dashboard/api/chat/codex/logout"):
         return True
-    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith(("/agent/approval", "/agent/command")):
+    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith((
+            "/agent/approval", "/agent/command", "/agent/steer", "/agent/interrupt",
+            "/codex/settings", "/local/access")):
         return len(path.split("/")[-3]) == 32
-    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith(("/turn", "/model", "/prepare")):
+    if path.startswith("/dashboard/api/chat/conversations/") and path.endswith(("/turn", "/model", "/prepare", "/park")):
         return len(path.split("/")[-2]) == 32
     if path.startswith("/dashboard/api/rig/run/"):
         return path.rsplit("/", 1)[-1] in RUN_ACTIONS
@@ -115,6 +124,25 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
             body = b""
         try:
             upstream_route = "/dashboard/" if route in ("/gpurig", "/gpurig/") else route
+            if route.endswith("/turn") and request.headers.get("accept", "").startswith("text/event-stream"):
+                client = request.app.state.client
+                upstream_request = client.build_request(request.method, upstream_route,
+                    params=request.url.query, content=body,
+                    headers={"content-type": "application/json", "accept": "text/event-stream"},
+                    timeout=3600)
+                upstream = await client.send(upstream_request, stream=True)
+                if upstream.status_code >= 400:
+                    content = await upstream.aread()
+                    await upstream.aclose()
+                    return Response(content, status_code=upstream.status_code, headers=SECURITY_HEADERS)
+                async def relay():
+                    try:
+                        async for chunk in upstream.aiter_raw():
+                            yield chunk
+                    finally:
+                        await upstream.aclose()
+                return StreamingResponse(relay(), media_type="text/event-stream",
+                    headers={**SECURITY_HEADERS, "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
             result = await request.app.state.client.request(
                 request.method, upstream_route, params=request.url.query,
                 content=body, headers={"content-type": "application/json"} if body else {},

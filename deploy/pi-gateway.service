@@ -35,6 +35,8 @@ Environment=CODEX_SEARCH_MCP_SCRIPT=/home/bryan/llm-harness/mcp_servers/rig_sear
 Environment=CODEX_SEARCH_MCP_ENDPOINT=http://127.0.0.1:8888
 Environment=CODEX_SEARCH_MCP_ENV_FILE=/home/bryan/llm-harness/.env
 Environment=RIG_SEARCH_ALLOW_DIRECT_EGRESS=1
+# Optional mobile proxy token and mobile tool policy. Local behavior is unchanged when absent.
+EnvironmentFile=-/etc/llm-gateway/mobile/environment
 ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m llm_gateway
 Restart=on-failure
 RestartSec=5

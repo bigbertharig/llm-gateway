@@ -1,9 +1,4 @@
-"""The dashboard (docs/DASHBOARD.md): one page at /dashboard, its data under /dashboard/api.
-
-Rig: the manager's status, and the operator overrides, which go through the manager like `rigctl`
-(kill, unload, unclaim, cancel, load). Models and Benchmarks: read-only summaries from the benchmarking
-repo and the shared drive. Orchestration: llm_orchestration's own summary and plan controls.
-"""
+"""Gateway dashboard routes: manager status/actions, imported evidence, and private orchestration API."""
 
 from __future__ import annotations
 
@@ -68,7 +63,14 @@ def router(manager: Manager) -> APIRouter:
 
     @r.get("/api/rig")
     async def rig():
-        return await manager.status()
+        status = await manager.status()
+        # Shared-weight runtimes are owned by orchestration and do not appear in
+        # the manager's ordinary profile list. Include their read-only status.
+        try:
+            service = (await manager.rig.status()).get("shared_kv_service")
+        except Exception:
+            service = None
+        return {**status, "shared_model_service": service}
 
     @r.post("/api/rig/kill")
     async def kill(request: Request):
@@ -134,11 +136,7 @@ def router(manager: Manager) -> APIRouter:
     @r.get("/api/benchmarks")
     async def benchmarks():
         try:
-            claims = {c["name"] for c in (await manager.status()).get("claims", [])}
-        except Exception:
-            claims = None  # rig unreachable: fall back to log age
-        try:
-            return await asyncio.to_thread(sources.benchmarks_summary, None, claims)
+            return await asyncio.to_thread(sources.benchmark_evidence_summary)
         except (OSError, ValueError) as exc:
             return _unavailable(exc)
 
@@ -185,11 +183,25 @@ def router(manager: Manager) -> APIRouter:
                 from .plan_requests import PlanRequests
                 plans = PlanRequests(sources.shared_root(), {})
                 if action == "start_plan":
-                    return await asyncio.to_thread(
+                    from .plan_assignments import assign_plan_models, plan_role_requests
+                    plan_name = str(b.get("plan_name") or "")
+                    plan_scope = str(b.get("plan_scope") or "shoulders")
+                    starter_file = str(b.get("starter_file") or "")
+                    try:
+                        requests = await asyncio.to_thread(plan_role_requests, plans.shared_path,
+                                                           plan_name, plan_scope, starter_file)
+                        assignment_doc, decisions = await assign_plan_models(manager, requests) if requests else (None, [])
+                    except ValueError as exc:
+                        return {"ok": False, "message": str(exc)}
+                    out = await asyncio.to_thread(
                         plans.start_plan, str(b.get("plan_name") or ""), str(b.get("config_json") or ""),
                         str(b.get("plan_scope") or "shoulders"), str(b.get("starter_file") or ""),
                         str(b.get("repo_path") or ""), str(b.get("repo_url") or ""),
-                        str(b.get("claimed_behavior") or ""), str(b.get("inline_query_text") or ""))
+                        str(b.get("claimed_behavior") or ""), str(b.get("inline_query_text") or ""),
+                        assignment_doc)
+                    if out.get("ok") and decisions:
+                        out["model_assignments"] = decisions
+                    return out
                 return await asyncio.to_thread(plans.resume_plan, str(b.get("batch_id") or ""))
             return await asyncio.to_thread(sources.orchestration_action, action, b)
         except Exception as exc:

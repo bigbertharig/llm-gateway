@@ -1,7 +1,16 @@
 {
-  "imported_at": "2026-11-15T23:33:53+00:00",
+  "imported_at": "2026-11-18T19:02:38+00:00",
   "schema_version": 1,
   "servers": {
+    "gateway_reset": {
+      "purpose": "Durably restart the dashboard gateway and resume the invoking saved Codex conversation",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "restart_gateway_and_resume"
+        }
+      ]
+    },
     "local_agents": {
       "purpose": "Discover agent roles and delegate bounded tasks from cloud or local models",
       "tools": [
@@ -12,6 +21,24 @@
         {
           "approval": "automatic",
           "name": "delegate_task"
+        }
+      ]
+    },
+    "local_control": {
+      "purpose": "Broad Pi, rig, and named CPU worker commands for trusted local models",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "run_local_command"
+        }
+      ]
+    },
+    "private_control": {
+      "purpose": "SSH commands to other trusted 10.0.0.0/24 hosts in Full mode",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "run_private_command"
         }
       ]
     },
@@ -56,7 +83,28 @@
           "name": "fetch_page"
         }
       ]
+    },
+    "workspace_read": {
+      "purpose": "Bounded read-only access to the selected Coding workspace",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "list_workspace_files"
+        },
+        {
+          "approval": "automatic",
+          "name": "find_workspace_files"
+        },
+        {
+          "approval": "automatic",
+          "name": "read_workspace_file"
+        },
+        {
+          "approval": "automatic",
+          "name": "search_workspace_text"
+        }
+      ]
     }
   },
-  "source_sha256": "b77538cab9edcfcd80616f64ca98d271477426d9b880d56b36ccbafef3de4831"
+  "source_sha256": "93b867f52daa8da25114234531f86ee17441f31c97adf769823aca52880800ce"
 }

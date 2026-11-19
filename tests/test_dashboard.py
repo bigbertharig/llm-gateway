@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import time
 
 from llm_gateway.dashboard import sources
 from test_manager import menv  # noqa: F401  (fixture: the gateway with the manager and a fake rig)
@@ -14,6 +12,15 @@ def test_page_and_rig_status(menv):  # noqa: F811
     c = menv["client"]
     page = c.get("/dashboard/")
     assert page.status_code == 200 and "Rig dashboard" in page.text and "/dashboard/api/" in page.text
+    assert page.text.count('id="chat-context-meter"') == 1
+    assert "Updating through the current tool/model step." in page.text
+    assert 'api("chat/options")' in page.text
+    assert "new EventSource" in page.text
+    assert 'assistant · progress' in page.text
+    assert 'aria-valuetext", "Context usage pending"' in page.text
+    assert 'windowDurationMins === 300' in page.text
+    assert 'remaining <= 10 ? "bad" : remaining <= 25 ? "warn"' in page.text
+    assert 'id="chat-limit-alert"' in page.text
     assert "renderChatMarkdown" in page.text and "Attach images" in page.text and "Enter sends" in page.text
     assert c.get("/dashboard", follow_redirects=False).status_code in (301, 302, 307)
     rig = c.get("/dashboard/api/rig").json()
@@ -43,55 +50,15 @@ def test_models_summary_is_read_from_the_catalog_not_benchmarking(tmp_path, monk
     assert "error" in sources.models_summary()
 
 
-def test_benchmarks_summary_finds_lanes_and_campaigns(tmp_path):
-    logs = tmp_path / "logs" / "benchmarks"
-    run = logs / "worker_lanes_20261020_120000"
-    run.mkdir(parents=True)
-    (run / "queue.txt").write_text("phi-4:14b\n")
-    (run / "lane_gpu1-2.log").write_text("12:00:00 [gpu1-2] Phase 4 smoke\n")
-    (run / "lane_gpu4-5.log").write_text("12:00:00 [gpu4-5] LANE_DONE\n")
-    camp = logs / "campaigns" / "history" / "c1" / "20261020_1"
-    camp.mkdir(parents=True)
-    (camp / "status.json").write_text(json.dumps({"campaign": "c1", "run_id": "20261020_1", "status": "running",
-                                                  "blocks": {"a": {"status": "completed"}, "b": {"status": "running_suite"}}}))
-    out = sources.benchmarks_summary(tmp_path)  # no claims known: log age decides
-    lanes = {l["lane"]: l for l in out["lanes"]}
-    assert lanes["gpu 1-2"]["active"] and not lanes["gpu 4-5"]["active"] and lanes["gpu 1-2"]["queued"] == ["phi-4:14b"]
-    (c,) = out["campaigns"]
-    assert c["blocks"] == {"completed": 1, "running_suite": 1} and c["current"] == ["b (running_suite)"]
-    # With the rig's claims: a lane whose log is old still runs while it holds its claim; an older run of
-    # the same card group is never the running one.
-    old = os.path.getmtime(run / "lane_gpu1-2.log") - 7200
-    os.utime(run / "lane_gpu1-2.log", (old, old))
-    earlier = logs / "worker_lanes_20261019_120000"
-    earlier.mkdir()
-    (earlier / "lane_gpu1-2.log").write_text("11:00:00 [gpu1-2] Phase 2\n")
-    os.utime(earlier, (old - 60, old - 60))
-    out = sources.benchmarks_summary(tmp_path, claims={"lane-1-2"})
-    rows = [(l["run"], l["lane"], l["active"]) for l in out["lanes"] if l["lane"] == "gpu 1-2"]
-    assert ("worker_lanes_20261020_120000", "gpu 1-2", True) in rows
-    assert ("worker_lanes_20261019_120000", "gpu 1-2", False) in rows
-
-
-def test_benchmarks_summary_keeps_active_jobs_and_only_one_day_of_finished_history(tmp_path):
-    logs = tmp_path / "logs" / "benchmarks"
-    stale = time.time() - sources.RECENT_HISTORY_S - 60
-    for name, status in (("finished", "completed"), ("stale_running", "running"),
-                         ("long_running", "running")):
-        path = logs / "campaigns" / "history" / name / "run" / "status.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"campaign": name, "status": status, "blocks": {}}))
-        if name != "long_running":
-            os.utime(path, (stale, stale))
-    for group, done in (("1", True), ("2", False)):
-        run = logs / f"worker_lanes_{group}"
-        run.mkdir()
-        lane = run / f"lane_gpu{group}.log"
-        lane.write_text("LANE_DONE\n" if done else "still running\n")
-        os.utime(lane, (stale, stale))
-    out = sources.benchmarks_summary(tmp_path, claims={"lane-2"})
-    assert [c["campaign"] for c in out["campaigns"]] == ["long_running"]
-    assert [(l["lane"], l["active"]) for l in out["lanes"]] == [("gpu 2", True)]
+def test_benchmark_evidence_uses_imported_gateway_catalog(tmp_path, monkeypatch, menv):  # noqa: F811
+    path = tmp_path / "model_catalog.json"
+    path.write_text(json.dumps({"models": {}, "summary": {"models": [
+        {"model": "m:9b", "status": "active", "scores": {"code": {"score": 0.8}},
+         "runtime": {"decode_tps": 20}, "profiles": ["m"]}], "key_tests": ["code"]}}))
+    monkeypatch.setenv("MODEL_CATALOG", str(path))
+    out = menv["client"].get("/dashboard/api/benchmarks").json()
+    assert out["source"] == "gateway_model_catalog" and out["key_tests"] == ["code"]
+    assert out["models"][0]["scores"]["code"]["score"] == 0.8
 
 
 def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noqa: F811

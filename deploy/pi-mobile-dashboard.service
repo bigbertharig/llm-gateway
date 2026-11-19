@@ -1,0 +1,18 @@
+[Unit]
+Description=Private mobile dashboard route proxy (Tailscale Serve loopback target)
+After=network-online.target pi-gateway.service tailscaled.service
+Wants=network-online.target pi-gateway.service tailscaled.service
+
+[Service]
+Type=simple
+User=bryan
+Group=bryan
+WorkingDirectory=/home/bryan/llm-gateway
+Environment=PYTHONPATH=/home/bryan/llm-gateway/src
+EnvironmentFile=/etc/llm-gateway/mobile/environment
+ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m uvicorn llm_gateway.mobile_dashboard:app --host 127.0.0.1 --port 8844
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
