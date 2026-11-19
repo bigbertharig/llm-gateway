@@ -1,6 +1,6 @@
 # Work organization: status and pickup notes
 
-Updated 2026-11-15. This is the shared direction for llm-gateway, llm_orchestration,
+Updated 2026-11-18. This is the shared direction for llm-gateway, llm_orchestration,
 llm-harness, and benchmarking. It records a future work-organizing system; the
 legacy Markdown plans are not an active workflow or near-term migration target.
 It is the current pickup point for this work, based on the live repositories,
@@ -36,6 +36,11 @@ boundaries, not a claim that all existing code already follows them.
 - The research assistant's `execute_searches.py` calls its own DuckDuckGo
   helper in `scripts/lib/web_common.py`. The operational `rig_search` MCP lives
   in llm-harness. They overlap in purpose but are not integrated.
+- Harness now offers bounded public GitHub metadata, directory, filename, and
+  source-file reads at a pinned commit through the shared tool catalog. Chat can
+  prefetch an explicit repository URL before the model answers. Coding retains
+  separate local workspace Git inspection. This is a tool path, not a migrated
+  GitHub analyzer plan or a validated full repository assessment.
 - Benchmarking exports a model library and roles that the gateway imports.
   Its recent rig survey also writes `capability.json` with GPU UUIDs, VRAM, and
   measured RAM. These measurements help fit decisions; they are not fixed card
@@ -89,6 +94,14 @@ Ideas worth carrying forward:
 - Allow shoulders as capability providers with thin adapters, while also
   supporting chat, research, tool sessions, and direct work. A job need not
   be packaged as a shoulder.
+- Treat shoulders and arms as reusable tool suites with typed inputs, bounded
+  steps, and evidence. They can later supply steps to gateway-owned work plans;
+  they are not a second scheduler or a fixed model persona. For a GitHub
+  analyzer, CPU workers can resolve a URL, pin a commit, collect metadata and
+  selected source files, then pass those receipts to the cheapest model that
+  can make the remaining judgments. File fetches should not consume model
+  tokens merely to execute predictable requests. This does not reactivate the
+  legacy Markdown plan system.
 - Keep the near-term rig focus on generic model capability and performance
   across rigs. When work organization resumes, pick a small job with saved
   local-model baselines; domain-specific projects retain their own rules.

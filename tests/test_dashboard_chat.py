@@ -184,9 +184,15 @@ def test_nemo_shared_dashboard_claims_main_then_worker_and_rejects_reloaded_cont
     from llm_gateway.dashboard import tool_runtime
     from llm_gateway.manager import models as model_library
     monkeypatch.setattr(tool_runtime, "available", lambda route, servers: (
-        [], {"fetch_page": ([], {"properties": {"url": {}, "max_chars": {}}, "required": ["url"]})})
-        if "rig_search" in servers else ([], {}))
+        [], {**({"fetch_page": ([], {"properties": {"url": {}, "max_chars": {}}, "required": ["url"]})}
+                if "rig_search" in servers else {}),
+             **({"inspect_github_repo": ([], {"properties": {"repository": {}}, "required": ["repository"]})}
+                if "github_public" in servers else {})}))
     def page_call(dispatch, name, args):
+        if name == "inspect_github_repo":
+            return {"structuredContent": {"repository": "example/project", "revision": "a" * 40,
+                "root_entries": [{"path": "README.md", "type": "file"}],
+                "readme_preview": {"content": "A sample project"}}}
         url = args["url"]
         return {"structuredContent": {"url": url, "title": url.rsplit("/", 1)[-1],
             "text": "Content from " + url, "truncated": False,
@@ -297,6 +303,11 @@ def test_nemo_shared_dashboard_claims_main_then_worker_and_rejects_reloaded_cont
         assert page_reply.status_code == 200, page_reply.text
         assert "Content from https://www.daedalmap.com" in seen[-1][2]
         assert page_reply.json()["conversation"]["messages"][-1]["activity"][0]["name"] == "fetch_page"
+        github_reply = client.post(f"{base}/{first['id']}/turn", json={"model": "shared-nemo",
+            "message": "What do you think of https://github.com/example/project?"})
+        assert github_reply.status_code == 200, github_reply.text
+        assert 'A sample project' in seen[-1][2]
+        assert github_reply.json()["conversation"]["messages"][-1]["activity"][0]["name"] == "inspect_github_repo"
         navigation = client.post(f"{base}/{first['id']}/turn", json={"model": "shared-nemo",
             "message": "Can you follow the About and Projects links on that site?"})
         assert navigation.status_code == 200, navigation.text
@@ -334,7 +345,7 @@ def test_nemo_shared_dashboard_claims_main_then_worker_and_rejects_reloaded_cont
         manager.rig.fail_attach = False
         attached = client.get(f"{base}/{second['id']}").json()
         assert [(p["chat_id"], p["gpu_ids"]) for p in placements] == [("main", [0]), (attached["shared_chat_id"], [5])]
-        assert [item[:2] for item in seen] == [("shared-nemo-main", "load-1")] * 8
+        assert [item[:2] for item in seen] == [("shared-nemo-main", "load-1")] * 9
         assert [action for action, _ in manager.rig.calls] == ["start", "attach", "attach"]
         assert client.post(f"{base}/{first['id']}/park", json={
             "expected_instance_id": "load-1", "expected_chat_id": "main"}).status_code == 409
@@ -577,7 +588,7 @@ def test_local_model_uses_coding_workspace_and_coding_tools(tmp_path, monkeypatc
         assert (blocked_event["name"], blocked_event["path"], blocked_event["result"]) == (
             "read_workspace_file", str(sibling), "blocked by workspace scope")
         assert blocked_event["elapsed_ms"] >= 0
-    assert seen == [("gpu-rig/local-chat", frozenset({"rig_info", "local_agents", "workspace_read"}), workspace)] * 5
+    assert seen == [("gpu-rig/local-chat", frozenset({"rig_info", "local_agents", "workspace_read", "workspace_git"}), workspace)] * 5
 
 
 def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypatch):

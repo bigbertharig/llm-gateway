@@ -1326,7 +1326,7 @@ function pickerButton(menu, label, detail, checked, disabled, action) {
 function renderCodexControls() {
   const cloud = $("#chat-model").value === "Codex";
   $("#chat-codex-controls").hidden = !cloud;
-  $("#chat-local-controls").hidden = cloud || !chatId || chatBoundModel === "Codex";
+  $("#chat-local-controls").hidden = cloud || !chatId || chatBoundModel === "Codex" || chatBoundModel === "Claude";
   const localLabels = {workspace: "Workspace bound", local: "Local", full: "Full"};
   $("#chat-local-access-summary").textContent = localLabels[localAccessChoice] || "Local";
   $("#chat-local-access-menu").querySelectorAll("[data-local-access]").forEach((button) => {
@@ -1761,6 +1761,7 @@ function syncChatTabSelection() {
 }
 function chatProviderChanged() {
   const cloud = $("#chat-model").value === "Codex";
+  const claude = $("#chat-model").value === "Claude";
   if (cloud) chatImageWarning = "";
   $("#chat-workspace-label").hidden = tab !== "coding";
   $("#chat-account").hidden = !cloud;
@@ -1768,6 +1769,7 @@ function chatProviderChanged() {
   $("#chat-model-note").textContent = tab === "coding"
     ? "Local models can read the selected workspace and delegate. Images currently require Codex."
     : cloud ? "Research tools only. Codex cannot access Coding workspaces from Chat."
+    : claude ? "Claude API chat uses the same reviewed harness tools as local chat. No rig GPU load is needed."
     : "The manager controls model loading and GPU placement. Images currently require Codex.";
   $("#chat-attach-row").hidden = false;
   $("#chat-attach").hidden = !cloud;
@@ -1872,6 +1874,7 @@ async function loadChat() {
   const select = $("#chat-model"), old = select.value;
   select.innerHTML = (mode === "coding" ? '' : '<option value="">Choose a model...</option>') +
     '<option value="Codex">Codex</option>' +
+    (opts.claude_api_available ? '<option value="Claude">Claude (API)</option>' : '') +
     opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)}) ${m.ready ? "ready" : "cold"}</option>`).join("");
   const current = visible.find((c) => c.id === chatId);
   // A prepare or park can change the live binding without reopening the conversation.
@@ -1881,9 +1884,9 @@ async function loadChat() {
     currentChatSnapshot.shared_instance_id = current.shared_instance_id;
   }
   if (current && old && displayedChatId === chatId &&
-      (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
+      (old === "Codex" || old === "Claude" || opts.models.some((m) => m.id === old))) select.value = old;
   else if (current) selectSavedChatModel(current.model);
-  else if (old && (old === "Codex" || opts.models.some((m) => m.id === old))) select.value = old;
+  else if (old && (old === "Codex" || old === "Claude" || opts.models.some((m) => m.id === old))) select.value = old;
   else if (mode === "coding") select.value = "Codex";
   chatProviderChanged();
   updateChatSwitchUI();
@@ -1892,7 +1895,7 @@ async function loadChat() {
   const selectedFree = Number.isInteger(selectedLoaded?.available_chat_slots) ?
     selectedLoaded.available_chat_slots : selectedLoaded?.free_gpu_count;
   const attachFull = selectedLoaded?.kind === "shared" && selectedFree === 0;
-  busy.hidden = select.value === "Codex" || (opts.rig_available && !opts.rig_busy && !attachFull);
+  busy.hidden = select.value === "Codex" || select.value === "Claude" || (opts.rig_available && !opts.rig_busy && !attachFull);
   busy.classList.toggle("chat-reservation", !!opts.chat_reservation_only);
   const reservations = (opts.chat_reservations || []).map((claim) =>
     `${claim.model || claim.name} (GPU ${(claim.gpu_ids || []).join(", ")})`).join("; ");
@@ -2005,7 +2008,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   else busyChats.delete(id);
   chatBusy = busyChats.has(id);
   $("#chat-progress").hidden = !chatBusy;
-  $("#chat-send").disabled = (c.provider === "local" && chatBusy) ||
+  $("#chat-send").disabled = ((c.provider === "local" || c.provider === "claude") && chatBusy) ||
     (c.provider === "codex" && !codexConnected);
   $("#chat-send").title = c.provider === "codex" && chatBusy ? "Steer active turn" : "Send message";
   $("#chat-send").setAttribute("aria-label", $("#chat-send").title);
@@ -2256,7 +2259,7 @@ $("#chat-new").onclick = async () => {
     if (!$("#chat-model").value) { toast("Choose a chat model first.", "bad"); return; }
     const selected = $("#chat-model").value;
     const loaded = (chatOptions?.loaded_models || []).filter((m) => m.id !== selected);
-    if (loaded.length && !chatLoadInfo.get(selected)?.ready) {
+    if (selected !== "Claude" && loaded.length && !chatLoadInfo.get(selected)?.ready) {
       if (loaded.some((m) => !chatLoadInfo.has(m.id))) {
         toast("A non-chat rig model is loaded. Release it from Rig before loading another chat model.", "bad"); return;
       }

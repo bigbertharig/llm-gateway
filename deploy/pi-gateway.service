@@ -37,6 +37,8 @@ Environment=CODEX_SEARCH_MCP_ENV_FILE=/home/bryan/llm-harness/.env
 Environment=RIG_SEARCH_ALLOW_DIRECT_EGRESS=1
 # Optional mobile proxy token and mobile tool policy. Local behavior is unchanged when absent.
 EnvironmentFile=-/etc/llm-gateway/mobile/environment
+# Optional private connector settings. No OAuth token or API key is put in this unit.
+EnvironmentFile=-/etc/llm-gateway/cloud/environment
 ExecStart=/home/bryan/llm-gateway/.venv/bin/python -m llm_gateway
 Restart=on-failure
 RestartSec=5

@@ -10,8 +10,8 @@ from urllib.parse import urlsplit
 
 TOOL_CATALOG = Path(__file__).with_name("tool_catalog.json")
 MODE_SERVERS = {
-    "chat": frozenset({"local_agents", "rig_info", "rig_search"}),
-    "coding": frozenset({"local_agents", "rig_info", "workspace_read"}),
+    "chat": frozenset({"local_agents", "rig_info", "rig_search", "google_workspace", "github_public"}),
+    "coding": frozenset({"local_agents", "rig_info", "workspace_read", "workspace_git"}),
 }
 
 
@@ -85,6 +85,20 @@ def launch(server: str, parent_route: str | None = None, *, cloud: bool = False,
         if not script.is_file():
             raise ValueError("Rig information MCP script is unavailable")
         return [sys.executable, str(script)]
+    if server == "google_workspace":
+        if os.getenv("GOOGLE_WORKSPACE_ENABLED") != "1":
+            return None
+        script = Path(os.getenv("GOOGLE_WORKSPACE_MCP_SCRIPT") or
+                      "/home/bryan/llm-harness/tools/google_workspace_mcp.py").resolve()
+        if not script.is_file():
+            raise ValueError("Google Workspace MCP script is unavailable")
+        return [sys.executable, str(script)]
+    if server == "github_public":
+        script = Path(os.getenv("GITHUB_PUBLIC_MCP_SCRIPT") or
+                      "/home/bryan/llm-harness/tools/github_public_mcp.py").resolve()
+        if not script.is_file():
+            raise ValueError("Public GitHub MCP script is unavailable")
+        return [sys.executable, str(script)]
     if server in ("local_control", "private_control"):
         script = Path(os.getenv("CODEX_HOST_CONTROL_MCP_SCRIPT") or
                       "/home/bryan/llm-harness/tools/host_control_mcp.py").resolve()
@@ -104,6 +118,14 @@ def launch(server: str, parent_route: str | None = None, *, cloud: bool = False,
         script = Path(configured).resolve()
         if not script.is_file():
             raise ValueError("Workspace read MCP script is unavailable")
+        return [sys.executable, str(script), "--root", str(workspace)]
+    if server == "workspace_git":
+        if workspace is None:
+            return None
+        script = Path(os.getenv("CODEX_WORKSPACE_GIT_MCP_SCRIPT") or
+                      "/home/bryan/llm-harness/tools/workspace_git_mcp.py").resolve()
+        if not script.is_file():
+            raise ValueError("Workspace Git MCP script is unavailable")
         return [sys.executable, str(script), "--root", str(workspace)]
     if server == "gateway_reset":
         if not cloud or not conversation_id or not conversation_id.isalnum():

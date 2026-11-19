@@ -40,8 +40,13 @@ def test_existing_codex_thread_resumes_without_experimental_capability(tmp_path)
                                                 effort="high", reviewer="auto_review", access="workspace"))
 
     assert (thread_id, answer) == ("saved-thread", "Found it.")
-    assert calls[0] == ("thread/resume", {"threadId": "saved-thread",
-                                          "config": {"approvals_reviewer": "auto_review", "web_search": "disabled"}})
+    assert calls[0][0] == "thread/resume"
+    assert calls[0][1]["threadId"] == "saved-thread"
+    resume_config = calls[0][1]["config"]
+    assert resume_config["approvals_reviewer"] == "auto_review"
+    assert resume_config["web_search"] == "disabled"
+    assert resume_config["mcp_servers"]["workspace_git"]["enabled_tools"] == [
+        "get_workspace_git_status", "get_workspace_git_log", "get_workspace_git_diff"]
     assert calls[1][0] == "turn/start"
     assert calls[1][1]["model"] == "test-codex"
     assert calls[1][1]["effort"] == "high"
@@ -173,7 +178,11 @@ def test_new_codex_thread_uses_local_full_access_without_sandbox_prompts(tmp_pat
 
     bridge._call = call
     assert asyncio.run(bridge.turn(None, "Work", str(tmp_path), reviewer="auto_review")) == ("new-thread", "Done.")
-    assert calls[0][1]["config"] == {"approvals_reviewer": "auto_review", "web_search": "disabled"}
+    config = calls[0][1]["config"]
+    assert config["approvals_reviewer"] == "auto_review"
+    assert config["web_search"] == "disabled"
+    assert config["mcp_servers"]["workspace_git"]["enabled_tools"] == [
+        "get_workspace_git_status", "get_workspace_git_log", "get_workspace_git_diff"]
     assert calls[0][1]["permissions"] == ":danger-full-access"
     assert calls[1][1]["permissions"] == ":danger-full-access"
 

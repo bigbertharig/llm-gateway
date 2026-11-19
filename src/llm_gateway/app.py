@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .manager import Manager, ManagerError
 from .manager.routes import router as manager_router
 from .dashboard import router as dashboard_router
+from .dashboard.google_workspace import router as google_workspace_router
 from .dashboard.chat import router as chat_router
 from .dashboard.codex_bridge import CodexBridge
 from .profiles import ProfileError, Profiles
@@ -124,6 +125,7 @@ def create_app(
     if manager is not None:
         app.include_router(manager_router(manager, profiles.all, s.model_prefix))
         app.include_router(dashboard_router(manager))
+        app.include_router(google_workspace_router)
 
     @app.exception_handler(ManagerError)
     async def _manager_error(_req, exc: ManagerError):

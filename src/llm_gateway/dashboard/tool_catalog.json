@@ -1,9 +1,12 @@
 {
-  "imported_at": "2026-11-18T19:02:38+00:00",
+  "imported_at": "2026-11-19T05:48:20+00:00",
   "schema_version": 1,
   "servers": {
     "gateway_reset": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "Durably restart the dashboard gateway and resume the invoking saved Codex conversation",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -11,8 +14,59 @@
         }
       ]
     },
+    "github_public": {
+      "family": "github",
+      "origin": "external",
+      "purpose": "Read bounded public GitHub repository metadata, tree paths, and source files at a pinned commit",
+      "source_bundle": "github",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "inspect_github_repo"
+        },
+        {
+          "approval": "automatic",
+          "name": "list_github_directory"
+        },
+        {
+          "approval": "automatic",
+          "name": "find_github_files"
+        },
+        {
+          "approval": "automatic",
+          "name": "read_github_file"
+        }
+      ]
+    },
+    "google_workspace": {
+      "family": "google",
+      "origin": "external",
+      "purpose": "Read bounded mail and Drive text from the dedicated rig account through Gateway-owned OAuth",
+      "source_bundle": "google",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "search_mail"
+        },
+        {
+          "approval": "automatic",
+          "name": "read_mail"
+        },
+        {
+          "approval": "automatic",
+          "name": "search_drive"
+        },
+        {
+          "approval": "automatic",
+          "name": "read_drive_text"
+        }
+      ]
+    },
     "local_agents": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "Discover agent roles and delegate bounded tasks from cloud or local models",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -25,7 +79,10 @@
       ]
     },
     "local_control": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "Broad Pi, rig, and named CPU worker commands for trusted local models",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -34,7 +91,10 @@
       ]
     },
     "private_control": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "SSH commands to other trusted 10.0.0.0/24 hosts in Full mode",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -43,7 +103,10 @@
       ]
     },
     "rig_info": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "Read-only rig, model, benchmark, and orchestration status through gateway APIs",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -72,7 +135,10 @@
       ]
     },
     "rig_search": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "Search public sources and fetch selected public pages on Pi CPUs",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -84,8 +150,31 @@
         }
       ]
     },
+    "workspace_git": {
+      "family": "internal",
+      "origin": "internal",
+      "purpose": "Read bounded Git status, log, and per-file diff in the selected Coding workspace",
+      "source_bundle": "internal",
+      "tools": [
+        {
+          "approval": "automatic",
+          "name": "get_workspace_git_status"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_workspace_git_log"
+        },
+        {
+          "approval": "automatic",
+          "name": "get_workspace_git_diff"
+        }
+      ]
+    },
     "workspace_read": {
+      "family": "internal",
+      "origin": "internal",
       "purpose": "Bounded read-only access to the selected Coding workspace",
+      "source_bundle": "internal",
       "tools": [
         {
           "approval": "automatic",
@@ -106,5 +195,5 @@
       ]
     }
   },
-  "source_sha256": "93b867f52daa8da25114234531f86ee17441f31c97adf769823aca52880800ce"
+  "source_sha256": "49065b0a49e2775d8ddb3badfc4b7c1dc669d5eab43b19df1ea31d4c96f91a93"
 }
