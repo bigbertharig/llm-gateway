@@ -1,7 +1,9 @@
 """Ready-only shared 35B chat routes and manager-owned child lifecycle."""
+import asyncio
 import json
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
@@ -261,6 +263,44 @@ def test_manager_can_choose_a_separate_small_model_instead_of_loaded_shared_mode
         assert child["admission"] == {"mode": "separate_model",
                                       "served_context_tokens": 32768}
         assert rig.calls == []
+
+
+def test_manager_can_select_a_benchmark_named_separate_candidate(monkeypatch):
+    worker_model = "ministral-3:3b"
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "models": {worker_model: {"status": "active"}}, "roles": {},
+        "subagent_catalog": {"schema_version": 1, "candidates": {
+            "ministral3_3b_separate": {"provider": "gateway_profile",
+                "model": worker_model, "agent_types": ["coding", "research"],
+                "status": "candidate"}}}})
+    rig = SharedRig()
+
+    class Manager:
+        async def status(self):
+            return {"profiles": {"small": {"id": "small", "model": worker_model,
+                    "state": "ready", "gpus": [3], "ctx_size": 16384, "port": 11438}}}
+
+    manager = Manager()
+    manager.rig = rig
+    app = FastAPI()
+    app.include_router(manager_router(manager, lambda: {
+        "small": {"model": worker_model}}, "gpu-rig"))
+    async def check():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            capabilities = (await client.get("/v1/manager/local-agent-capabilities")).json()
+            candidate = capabilities["candidates"][0]
+            assert candidate["candidate_id"] == "ministral3_3b_separate"
+            assert candidate["loaded"] is True and candidate["ready_routes"] == ["gpu-rig/small"]
+            response = await client.post("/v1/manager/agent-routes/resolve", json={
+                "parent_route": "cloud/codex", "agent_type": "coding",
+                "worker_strategy": "separate_model", "candidate_id": "ministral3_3b_separate"})
+            assert response.status_code == 200, response.text
+            child = response.json()
+            assert child["candidate_id"] == "ministral3_3b_separate"
+            assert child["route"] == "gpu-rig/small" and child["gpu_ids"] == [3]
+
+    asyncio.run(check())
 
     def loading(self):
         return []

@@ -1,6 +1,6 @@
 {
   "_comment": "Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; the gateway reads models only from here. Re-run the importer to take in new lessons.",
-  "source_sha256": "92e9473e24a0673060a0b52cc23c109d9c0a6b07540ccd4d1095c0bf806e2f83",
+  "source_sha256": "1d24f1d4cf440d9927cc1d146b682bad3f09f99bff71e5bc5e6d12c81e9ee4b9",
   "registry_updated": "2026-11-06",
   "roles_updated": "2026-10-15",
   "image": "llama-runtime:b11669",
@@ -5968,6 +5968,26 @@
         "max_attached_chats": 4,
         "status": "experimental",
         "evidence": "results/runtime_experiments/nemotron_f16_context_sweep_20261118/README.md"
+      },
+      "ministral3_3b_separate": {
+        "provider": "gateway_profile",
+        "model": "ministral-3:3b",
+        "agent_types": [
+          "coding",
+          "research"
+        ],
+        "status": "candidate",
+        "evidence": "results/model_benchmark_records.jsonl: campaign_agent_contract-bounded-live-20261115a and campaign_ministral3_3b_agent_20260813_limit5_all"
+      },
+      "ministral3_8b_separate": {
+        "provider": "gateway_profile",
+        "model": "ministral-3:8b",
+        "agent_types": [
+          "coding",
+          "research"
+        ],
+        "status": "candidate",
+        "evidence": "results/model_benchmark_records.jsonl: campaign_ministral3_8b_agent_20260813_limit5_all"
       },
       "codex_terra": {
         "provider": "codex",

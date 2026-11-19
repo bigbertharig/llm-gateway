@@ -32,6 +32,22 @@ def _shared_candidates(catalog: dict) -> dict[str, dict]:
             and serving_approved(catalog, entry["model"])}
 
 
+def _profile_candidates(catalog: dict, published: dict[str, dict]) -> dict[str, dict]:
+    """Benchmark-reviewed separate children that Gateway can publish by model identity."""
+    entries = (catalog.get("subagent_catalog") or {}).get("candidates") or {}
+    models = catalog.get("models") or {}
+    published_models = {row.get("model") for row in published.values()}
+    return {cid: entry for cid, entry in entries.items()
+            if entry.get("provider") == "gateway_profile"
+            and entry.get("model") in published_models
+            and (models.get(entry.get("model")) or {}).get("status") == "active"
+            and not (models.get(entry.get("model")) or {}).get("in_testing")}
+
+
+def _candidate_profile_order(entry: dict, published: dict[str, dict]) -> list[str]:
+    return [pid for pid, profile in published.items() if profile.get("model") == entry.get("model")]
+
+
 def _candidate_loaded(service: dict, entry: dict) -> bool:
     required = entry.get("requires") or {}
     return (service.get("status") == "ready"
@@ -110,9 +126,10 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         """Imported model-library identities; readiness is checked by each provider at use time."""
         full_catalog = models.catalog()
         catalog = full_catalog.get("subagent_catalog", {"schema_version": 1, "candidates": {}})
-        allowed = _shared_candidates(full_catalog)
+        allowed = {**_shared_candidates(full_catalog),
+                   **_profile_candidates(full_catalog, profiles())}
         return {**catalog, "candidates": {cid: row for cid, row in (catalog.get("candidates") or {}).items()
-                if row.get("provider") != "rig_shared_chat" or cid in allowed}}
+                if row.get("provider") not in ("rig_shared_chat", "gateway_profile") or cid in allowed}}
 
     @r.get("/local-agent-capabilities")
     async def local_agent_capabilities():
@@ -122,6 +139,17 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             service = (await manager.rig.status()).get("shared_kv_service") or {}
         except RigUnavailable:
             service = {}
+        published = profiles()
+        separate_candidates = _profile_candidates(full_catalog, published)
+        loaded_profiles = {}
+        if separate_candidates:
+            try:
+                observed = await manager.status()
+                loaded_profiles = observed.get("profiles") or {}
+                if isinstance(loaded_profiles, list):
+                    loaded_profiles = {row.get("id"): row for row in loaded_profiles if isinstance(row, dict)}
+            except (ManagerError, RigUnavailable):
+                loaded_profiles = {}
         candidates = []
         for candidate_id, entry in _shared_candidates(full_catalog).items():
             loaded = _candidate_loaded(service, entry)
@@ -164,6 +192,21 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                                    if authoritative else None,
                                "capacity_context_tokens": worker_capacity.get("context_capacity")
                                    if authoritative else None})
+        for candidate_id, entry in separate_candidates.items():
+            profile_ids = _candidate_profile_order(entry, published)
+            ready = [loaded_profiles[pid] for pid in profile_ids
+                     if pid in loaded_profiles and loaded_profiles[pid].get("state") == "ready"
+                     and loaded_profiles[pid].get("model") == entry["model"]]
+            candidates.append({"candidate_id": candidate_id,
+                               "provider": "gateway_profile",
+                               "agent_types": entry.get("agent_types", []),
+                               "model": entry["model"],
+                               "status": entry.get("status", "candidate"),
+                               "profile_ids": profile_ids,
+                               "loaded": bool(ready),
+                               "ready_routes": [model_prefix + "/" + row["id"] for row in ready],
+                               "gpu_ids": sorted({gpu for row in ready for gpu in (row.get("gpus") or [])}),
+                               "context_length": max((row.get("ctx_size") or 0 for row in ready), default=None)})
         return {"object": "local_agent_capabilities", "version": 1,
                 "roles": [{"agent_type": role, "description": (
                     "Analyze sources, extract evidence, and identify limits" if role == "research" else
@@ -240,8 +283,6 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             raise ManagerError(400, f"agent_type must be one of {sorted(AGENT_ROLE_ORDER)} and parent_route is required")
         if worker_strategy not in ("auto", "shared_model", "separate_model"):
             raise ManagerError(400, "worker_strategy must be auto, shared_model, or separate_model")
-        if worker_strategy == "separate_model" and candidate_id is not None:
-            raise ManagerError(400, "candidate_id cannot be combined with separate_model")
         prefix = model_prefix + "/"
         cloud_parent = parent_id == "cloud/codex"
         if not cloud_parent and not parent_id.startswith(prefix):
@@ -257,11 +298,21 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             raise ManagerError(400, "context_tokens cannot be smaller than min_context")
         catalog = models.catalog()
         shared = _shared_candidates(catalog)
+        published = profiles()
+        separate = _profile_candidates(catalog, published)
+        profile_candidate = separate.get(candidate_id) if candidate_id is not None else None
+        if candidate_id is not None:
+            if worker_strategy == "separate_model" and candidate_id in shared:
+                raise ManagerError(400, "shared-model candidate cannot use separate_model")
+            if worker_strategy == "shared_model" and candidate_id in separate:
+                raise ManagerError(400, "separate-model candidate cannot use shared_model")
+            if candidate_id not in shared and candidate_id not in separate:
+                raise ManagerError(400, "unknown or unavailable local candidate")
         service = (await manager.rig.status()).get("shared_kv_service") or {}
         selected = None
         inferred_shared = False
         if worker_strategy != "separate_model" and cloud_parent:
-            if candidate_id is not None:
+            if candidate_id is not None and profile_candidate is None:
                 selected = candidate_id if candidate_id in shared else None
             elif service.get("status") == "ready":
                 selected = next((cid for cid, row in shared.items()
@@ -351,7 +402,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                                       "reservation": reservation}}
         if worker_strategy == "shared_model" and selected is None:
             raise ManagerError(409, "no requested shared-model worker is currently available")
-        if candidate_id is not None:
+        if candidate_id is not None and profile_candidate is None:
             raise ManagerError(400, "candidate is not available for this parent route")
         observed = await manager.status()
         if observed.get("from_copy"):
@@ -363,8 +414,11 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         if not cloud_parent and (not parent or parent.get("state") != "ready" or not parent.get("gpus")):
             raise ManagerError(409, "parent route is not ready with known GPU placement")
         parent_gpus = set() if cloud_parent else set(parent["gpus"])
-        published = profiles()
-        for pid in _agent_profile_order(agent_type, published):
+        if profile_candidate is not None and agent_type not in profile_candidate.get("agent_types", []):
+            raise ManagerError(409, "separate-model candidate does not support this role")
+        profile_order = (_candidate_profile_order(profile_candidate, published)
+                         if profile_candidate is not None else _agent_profile_order(agent_type, published))
+        for pid in profile_order:
             row, spec = loaded.get(pid), published.get(pid)
             if not row or not spec or row.get("state") != "ready" or row.get("model") != spec.get("model"):
                 continue
@@ -372,14 +426,18 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
             if (not gpus or not parent_gpus.isdisjoint(gpus) or
                     type(context) is not int or context < min_context or not row.get("port")):
                 continue
-            return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
+            return {"agent_type": agent_type,
+                    **({"candidate_id": candidate_id} if profile_candidate is not None else {}),
+                    "route": prefix + pid, "model": row["model"],
                     "gpu_ids": sorted(gpus), "context_length": context, "state": "ready",
                     "admission": {"mode": "separate_model", "served_context_tokens": context}}
         # No ready offer: let the manager fit, lease, and load a published profile.
         # Existing ready routes on the parent's cards are never moved by this request.
         async def prepare_cold():
             failures = []
-            for pid in _agent_profile_order(agent_type, published, cold=True):
+            cold_order = (_candidate_profile_order(profile_candidate, published)
+                          if profile_candidate is not None else _agent_profile_order(agent_type, published, cold=True))
+            for pid in cold_order:
                 spec = published.get(pid)
                 if not spec or pid in loaded:
                     continue
@@ -402,7 +460,9 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                         and row.get("model") == spec.get("model") and row.get("gpus")
                         and (cloud_parent or set(parent_now.get("gpus") or []).isdisjoint(row["gpus"]))
                         and type(row.get("ctx_size")) is int and row["ctx_size"] >= min_context):
-                    return {"agent_type": agent_type, "route": prefix + pid, "model": row["model"],
+                    return {"agent_type": agent_type,
+                            **({"candidate_id": candidate_id} if profile_candidate is not None else {}),
+                            "route": prefix + pid, "model": row["model"],
                             "gpu_ids": sorted(row["gpus"]), "context_length": row["ctx_size"], "state": "ready",
                             "admission": {"mode": "separate_model",
                                           "served_context_tokens": row["ctx_size"]}}

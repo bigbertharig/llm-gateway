@@ -69,6 +69,8 @@ OFFER: list[dict[str, Any]] = [
      "ctx_size": 65536, "description": "Two GTX 1060 parent route for harness comparison."},
     {"id": "harness-ministral-8b", "model": "ministral-3:8b", "profile": "default", "default": False,
      "description": "Alternate small-model parent route for harness tool comparisons."},
+    {"id": "harness-ministral-3b", "model": "ministral-3:3b", "profile": "default", "default": False,
+     "description": "Compact single-GPU route for harness tool comparisons."},
     {"id": "harness-ornith-9b", "model": "ornith-1.5:9b", "profile": "default", "default": False,
      "description": "Alternate small-model parent route for harness tool comparisons."},
     {"id": "harness-phi-14b", "model": "phi-4:14b", "profile": "default", "default": False,
@@ -235,7 +237,7 @@ def load_subagent_catalog(root: Path, registry: dict[str, Any]) -> dict[str, Any
     for name, row in doc["candidates"].items():
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or not isinstance(row, dict):
             raise ValueError(f"subagent_catalog.json: invalid candidate {name!r}")
-        if row.get("provider") not in ("rig_shared_chat", "codex") or not isinstance(row.get("model"), str):
+        if row.get("provider") not in ("rig_shared_chat", "gateway_profile", "codex") or not isinstance(row.get("model"), str):
             raise ValueError(f"subagent_catalog.json: invalid provider or model for {name}")
         if not isinstance(row.get("agent_types"), list) or not row["agent_types"] or any(
                 role not in ("coding", "research") for role in row["agent_types"]):
@@ -261,6 +263,9 @@ def load_subagent_catalog(root: Path, registry: dict[str, Any]) -> dict[str, Any
                 raise ValueError(f"subagent_catalog.json: invalid dynamic context range for {name}")
             if type(row.get("max_attached_chats")) is not int or row["max_attached_chats"] <= 0:
                 raise ValueError(f"subagent_catalog.json: invalid attached chat limit for {name}")
+        elif row["provider"] == "gateway_profile":
+            if row["model"] not in registry["models"]:
+                raise ValueError(f"subagent_catalog.json: unknown gateway profile model for {name}")
         elif not row["model"].startswith("gpt-") or row.get("availability") != "check_codex_model_list":
             raise ValueError(f"subagent_catalog.json: invalid Codex candidate {name}")
     return doc

@@ -118,6 +118,14 @@ def test_use_is_carried_and_checked():
     assert any("use must be one of" in p for p in problems), problems
 
 
+def test_subagent_catalog_accepts_a_known_gateway_profile_model(tmp_path, monkeypatch):
+    catalog = {"schema_version": 1, "candidates": {
+        "small_worker": {"provider": "gateway_profile", "model": "small:7b",
+                         "agent_types": ["coding"]}}}
+    monkeypatch.setattr(gen, "load_export", lambda root: {"subagent_catalog": catalog})
+    assert gen.load_subagent_catalog(tmp_path, REGISTRY) == catalog
+
+
 def test_the_catalog_copies_every_model_with_resolved_profiles_and_the_roles():
     reg = {**REGISTRY, "models": {"small:7b": {"status": "active", "gguf": "small/small.gguf", "aliases": ["s7"],
                                                "model_size_bytes": 100, "ngram_size_bytes": 25,

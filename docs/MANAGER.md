@@ -528,8 +528,11 @@ Agent route requests may set `worker_strategy` to `auto`, `shared_model`, or
 shared model and falls back to a reviewed small-model profile when that shared
 capacity is unavailable. `shared_model` requires that path and returns a typed
 capacity error instead of silently changing models. `separate_model` skips the
-shared service and asks for an independently loaded reviewed worker. None of
-these modes accepts a GPU identifier.
+shared service and asks for an independently loaded reviewed worker. A
+Benchmarking candidate whose provider is `gateway_profile` may be named together
+with `separate_model`; Gateway resolves its model identity to a published profile
+and the manager still chooses placement. None of these modes accepts a GPU
+identifier.
 
 The benchmark [subagent catalog](https://github.com/bigbertharig/benchmarking/blob/master/subagent_catalog.json) is imported into `model_catalog.json`. `GET /v1/manager/subagent-candidates` lists the stable candidate IDs. `POST /v1/manager/agent-routes/resolve` accepts an optional `candidate_id`; for `qwen35_shared_1060` with a shared 35B parent, the manager attaches a fresh 1060 chat to the resident GPU0 weights and returns a ready route and `ephemeral: true`. `POST /v1/manager/agent-routes/release` detaches that child after the harness finishes. The local harness checks the ready roster after attachment and releases in a cleanup path. The parent route and model remain loaded.
 
