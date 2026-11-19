@@ -17,6 +17,8 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/drive",
           "https://www.googleapis.com/auth/documents",
           "https://www.googleapis.com/auth/spreadsheets"]
+CALLBACK_HOST = "127.0.0.1"
+CALLBACK_PORT = 8765
 
 
 def main():
@@ -30,7 +32,7 @@ def main():
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     flow = InstalledAppFlow.from_client_secrets_file(str(secret), SCOPES)
-    creds = flow.run_local_server(host="localhost", port=8765, open_browser=False,
+    creds = flow.run_local_server(host=CALLBACK_HOST, port=CALLBACK_PORT, open_browser=False,
                                   authorization_prompt_message="Open this URL on your laptop:\n{url}\n")
     gmail = build("gmail", "v1", credentials=creds, cache_discovery=False)
     actual = gmail.users().getProfile(userId="me").execute().get("emailAddress", "").lower()
