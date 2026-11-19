@@ -25,10 +25,12 @@ continuation and revocation still need operator verification.
   disconnects, the gateway continues the saved turn; the phone can reopen the
   same conversation to see progress and the final reply. Codex turns already
   run as saved background work.
-- Mobile Codex turns force workspace permission and human approval. Mobile local
-  model turns use `MOBILE_TOOL_SERVERS` rather than a conversation's local-control
-  grant. The default excludes host-control MCP servers and gateway reset. These
-  are independent of the local dashboard settings.
+- Mobile Codex turns preserve the conversation's saved access and reviewer
+  settings, so continuing the same conversation does not introduce phone-only
+  approval prompts. Mobile local model turns use `MOBILE_TOOL_SERVERS` rather
+  than a conversation's local-control grant. The default excludes host-control
+  MCP servers and gateway reset. These are independent of the local dashboard
+  settings.
 - Mobile HTTP permissions are separate from tool permissions. Defaults permit
   observation, conversation creation and continuation, interrupt, approval, and
   workspace reads. Rig and orchestration controls, browser file writes, and
@@ -99,9 +101,10 @@ previous tailnet policy, and keep the LAN front door operational.
 
 The mobile API already names rig and orchestration actions independently so
 each can be granted or denied without changing the LAN dashboard. Their mobile
-UI and fresh approval for high-impact actions remain to be built. Codex's
-workspace-only mobile turn policy prevents a locally configured full-access
-conversation from silently inheriting broad Pi command authority when resumed
-from a phone. Full remote tool parity requires action-specific, server-enforced
-capability checks at each MCP process and a fresh operator approval path; a
-broader HTML page or route allowlist alone cannot provide that boundary.
+UI and fresh approval for high-impact actions remain to be built. Codex
+conversations keep their explicitly saved access and reviewer policy when
+resumed from the phone. The mobile front door still enforces its tailnet
+identity, exact HTTP operations, and reduced MCP-server surface. Full remote
+tool parity requires action-specific, server-enforced capability checks at each
+MCP process; a broader HTML page or route allowlist alone cannot provide that
+boundary.

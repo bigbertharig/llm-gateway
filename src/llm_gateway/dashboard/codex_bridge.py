@@ -435,9 +435,6 @@ class CodexBridge:
             raise CodexBridgeError("Invalid Codex access level")
         if surface not in ("local", "mobile"):
             raise CodexBridgeError("Invalid dashboard surface")
-        if surface == "mobile":
-            access = "workspace"
-            reviewer = "user"
         permission = ":danger-full-access" if access == "local" else ":workspace"
         try:
             tool_kwargs = {"workspace": workspace if mode == "coding" else None,

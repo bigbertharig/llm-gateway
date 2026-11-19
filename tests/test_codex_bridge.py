@@ -112,7 +112,7 @@ def test_chat_codex_defaults_to_local_full_access_and_research_tools(tmp_path, m
     assert calls[1][1]["approvalPolicy"] == "never"
 
 
-def test_mobile_resume_restricts_a_locally_full_access_codex_thread(tmp_path, monkeypatch):
+def test_mobile_resume_preserves_saved_codex_access_and_reviewer(tmp_path, monkeypatch):
     from llm_gateway.dashboard import dashboard_mcp_servers
 
     bridge = CodexBridge()
@@ -137,9 +137,9 @@ def test_mobile_resume_restricts_a_locally_full_access_codex_thread(tmp_path, mo
         mode="coding", access="local", reviewer="auto_review", surface="mobile"))
     assert (thread, answer) == ("existing-thread", "Done.")
     assert seen[0]["surface"] == "mobile"
-    assert calls[0][1]["config"]["approvals_reviewer"] == "user"
-    assert calls[1][1]["permissions"] == ":workspace"
-    assert calls[1][1]["approvalPolicy"] == "on-request"
+    assert calls[0][1]["config"]["approvals_reviewer"] == "auto_review"
+    assert calls[1][1]["permissions"] == ":danger-full-access"
+    assert calls[1][1]["approvalPolicy"] == "never"
 
 
 def test_account_state_is_cached_after_first_read():
