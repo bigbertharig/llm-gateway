@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
@@ -20,6 +21,12 @@ from llm_gateway.dashboard.chat import (ChatStore, _collect_stream, _compact_too
 from llm_gateway.lan_dashboard import _allowed
 from llm_gateway.rig import RigUnavailable
 from llm_gateway.manager.errors import ManagerError
+
+
+def test_dashboard_hides_internal_workspace_routing_from_chat_sidebars():
+    page = (Path(__file__).parents[1] / "src/llm_gateway/dashboard/static/index.html").read_text()
+    assert "Agent workspace" not in page
+    assert 'id="chat-workspace" aria-hidden="true" tabindex="-1" hidden' in page
 
 
 def test_shared_model_whitespace_loop_is_malformed():

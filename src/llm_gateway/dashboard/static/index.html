@@ -432,7 +432,7 @@ a { color: var(--cool); }
     <div class="chat-layout" id="chat-shell">
       <aside class="chat-sidebar">
         <label>Model <select id="chat-model" aria-label="Chat model"></select></label>
-        <label id="chat-workspace-label" hidden>Agent workspace <select id="chat-workspace"></select></label>
+        <select id="chat-workspace" aria-hidden="true" tabindex="-1" hidden></select>
         <div id="chat-account" class="chat-account" hidden>
           <div id="chat-account-state"></div>
           <button class="act" id="chat-connect" type="button">Connect ChatGPT account</button>
@@ -1017,12 +1017,11 @@ function chatContextStatus(c, liveContext = null, contextPending = false) {
     const used = liveContext?.used_tokens ?? c.last_total_tokens;
     const limit = liveContext?.context_window ?? c.context_length;
     const display = setChatContextMeter(used, limit, contextPending);
-    const workspace = " Agent workspace: " + c.cwd;
-    if (!display) return count + " Codex context usage unavailable." + workspace;
+    if (!display) return count + " Codex context usage unavailable.";
     const pending = contextPending ? " Tool result queued for the next context update." : "";
     return count + " Codex context: " + used.toLocaleString() + " / " +
       limit.toLocaleString() + " tokens (" + display.percent.toFixed(1) + "%)." +
-      pending + display.warning + workspace;
+      pending + display.warning;
   }
   setChatContextMeter(null, null);
   if (c.model?.startsWith("shared-") && !chatPlacement(c))
@@ -1766,11 +1765,10 @@ function chatProviderChanged() {
   const cloud = $("#chat-model").value === "Codex";
   const claude = $("#chat-model").value === "Claude";
   if (cloud) chatImageWarning = "";
-  $("#chat-workspace-label").hidden = tab !== "coding";
   $("#chat-account").hidden = !cloud;
   $("#chat-model-note").hidden = cloud && tab === "coding";
   $("#chat-model-note").textContent = tab === "coding"
-    ? "Local models can read the selected workspace and delegate. Images currently require Codex."
+    ? "Local models can use coding tools and delegate. Images currently require Codex."
     : cloud ? "Research tools only. Codex cannot access Coding workspaces from Chat."
     : claude ? "Claude API chat uses the same reviewed harness tools as local chat. No rig GPU load is needed."
     : "The manager controls model loading and GPU placement. Images currently require Codex.";
@@ -2265,7 +2263,7 @@ $("#chat-new").onclick = async () => {
     if ($("#chat-model").value === "Codex") {
       if (!codexConnected) { toast("Connect a ChatGPT account first.", "bad"); return; }
       const cwd = $("#chat-workspace").value;
-      if (tab === "coding" && !cwd) { toast("Choose an agent workspace first.", "bad"); return; }
+      if (tab === "coding" && !cwd) { toast("No coding repository is available.", "bad"); return; }
       const c = await api("chat/conversations", {model: "Codex",
         cwd: tab === "coding" ? cwd : undefined, mode: tab === "coding" ? "coding" : "chat"});
       await saveCodexSettings(c.id);
@@ -2286,7 +2284,7 @@ $("#chat-new").onclick = async () => {
     }
     const mode = tab === "coding" ? "coding" : "chat";
     const cwd = mode === "coding" ? $("#chat-workspace").value : undefined;
-    if (mode === "coding" && !cwd) { toast("Choose an agent workspace first.", "bad"); return; }
+    if (mode === "coding" && !cwd) { toast("No coding repository is available.", "bad"); return; }
     const c = await api("chat/conversations", {model: selected, mode, cwd});
     await openChat(c.id);
     $("#chat-input").focus();
