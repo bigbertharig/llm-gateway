@@ -1,28 +1,30 @@
 # llm-gateway
 
-The operator-facing entry point for a local LLM rig. The Pi-hosted Gateway serves an OpenAI-compatible model API and durable dashboard conversations. A separate home-LAN dashboard uses browser client certificates; a smaller mobile dashboard uses private Tailscale Serve. The GPU rig and workers remain behind the Pi, outside the tailnet.
+Gateway serves Big Bertha's OpenAI-compatible model API, dashboard conversations, and model/tool policy. It runs on the Pi. The LAN dashboard uses browser client certificates; the mobile dashboard uses private Tailscale Serve. The GPU rig and workers stay behind the Pi.
 
-Gateway owns presentation, tool and model policy, and work coordination. Its older Manager routes still handle parts of placement and loading while hardware authority moves toward `llm_orchestration`. See [work organization and current boundaries](docs/WORK_ORGANIZATION_DIRECTION.md) for that migration.
+Gateway coordinates model requests and dashboard work. Its Manager selects model offers and handles part of fit, placement, and loading; Orchestration enforces rig hardware admission. [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md) records the remaining ownership migration.
 
 ## Project map
 
-This project runs local model and agent workloads across a Pi control host, an isolated GPU rig, and optional CPU workers. The four repositories have different jobs:
+Big Bertha runs across a Pi control host, an isolated GPU rig, and optional CPU workers. Four repositories divide the system's work:
 
 | Repository | Responsibility |
 |---|---|
-| [llm-gateway](https://github.com/bigbertharig/llm-gateway) | Operator-facing dashboard, conversations, model API, tool policy, and work coordination. Its existing Manager code still bridges some hardware operations. |
-| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | Hardware-facing admission, placement, reservations, model lifecycle, telemetry, and the existing parallel batch engine. |
-| [benchmarking](https://github.com/bigbertharig/benchmarking) | Measured model and runtime evidence, model registry and roles, load recipes, evaluation suites, and results. |
-| [llm-harness](https://github.com/bigbertharig/llm-harness) | Experimental agent loop, context and session contracts, tool adapters, and harness comparisons. No candidate harness has been promoted as the gateway's work engine. |
+| [llm-gateway](https://github.com/bigbertharig/llm-gateway) | Serves the dashboard, conversations, model API, tool policy, and work coordination. Its Manager also coordinates some model placement and loading. |
+| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | Observes and controls rig hardware, enforces admission and reservations, manages runtimes, and runs the legacy brain/worker batch engine. |
+| [benchmarking](https://github.com/bigbertharig/benchmarking) | Measures models and runtimes; publishes the model library, roles, load recipes, evaluation suites, and results. |
+| [llm-harness](https://github.com/bigbertharig/llm-harness) | Builds and tests shared tools, agent loops, context, sessions, delegation, and recovery. Harness selection for dashboard work remains open. |
 
-Benchmarking publishes reviewed evidence; Gateway imports it and presents work to the operator; the rig-side Orchestration layer enforces hardware rules. Harness experiments consume prepared Gateway model routes. Gateway's current Manager still handles some admission and placement. Complete hardware reservations and placement are moving to Orchestration, so the target ownership and current code differ during the migration.
+Benchmarking publishes a validated model library. Gateway imports it, serves model routes, and manages dashboard work. Harness supplies reviewed tool schemas and tests model interactions through Gateway routes. Orchestration enforces rig hardware rules and runs admitted model services. [The work-organization guide](https://github.com/bigbertharig/llm-gateway/blob/main/docs/WORK_ORGANIZATION_DIRECTION.md) tracks the remaining Manager-to-Orchestration migration.
 
-Examples use role placeholders for hostnames, addresses, and mount paths. Replace them from a private site inventory before running commands.
+Private site configuration supplies host addresses, credentials, model files, and mounts. The published examples use role placeholders. For another card mix, run a hardware survey and validate fit, context, concurrency, and speed before offering a load recipe. [Porting guide](https://github.com/bigbertharig/llm-gateway/blob/main/docs/PORTABILITY.md).
 
 ## Read this repo
 
 - [Dashboard](docs/DASHBOARD.md): operator UI, saved conversations, and its local controls.
 - [Remote access security](docs/REMOTE_ACCESS_SECURITY.md): why the phone route is separate from the LAN dashboard.
+- [Cloud connectors](docs/CLOUD_CONNECTORS.md): Google and Claude setup, tool grants, and credential boundaries.
+- [Porting to another rig](docs/PORTABILITY.md): what is reusable, what must be supplied, and what must be remeasured.
 - [Manager](docs/MANAGER.md): current model admission and rig-control interface.
 - [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md): current ownership and the planned hardware-boundary migration.
 

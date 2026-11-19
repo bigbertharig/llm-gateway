@@ -2,7 +2,7 @@
 
 Benchmarking owns model experiments, receipts, `model_registry.json`,
 `model_roles.json`, and `load_recipes.json`. The unified entry point is
-[`MODEL_LOADING_AND_CHAT_PLACEMENT.md`](https://github.com/bigbertharig/benchmarking/blob/main/MODEL_LOADING_AND_CHAT_PLACEMENT.md).
+[`MODEL_LOADING_AND_CHAT_PLACEMENT.md`](https://github.com/bigbertharig/benchmarking/blob/master/MODEL_LOADING_AND_CHAT_PLACEMENT.md).
 It validates its model library with:
 
 ```bash
