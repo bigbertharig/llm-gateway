@@ -1692,13 +1692,16 @@ async function addChatImages(files) {
   renderPendingChatImages();
 }
 function saveChatTabs() { try { localStorage.setItem("dash-chat-tabs", JSON.stringify(openChatTabs)); } catch (e) {} }
-function clearChatView() {
+function clearChatView({preserveComposer = false} = {}) {
   chatId = ""; displayedChatId = ""; chatBoundModel = ""; activeChatWorkspace = null;
   currentChatSnapshot = null;
-  chatImages = []; chatFiles = []; chatImageWarning = ""; chatBusy = false;
+  if (!preserveComposer) {
+    chatImages = []; chatFiles = []; chatImageWarning = "";
+    $("#chat-input").value = "";
+  }
+  chatBusy = false;
   $("#chat-title").textContent = "New conversation";
   $("#chat-placement").hidden = true;
-  $("#chat-input").value = "";
   const live = $("#chat-live"); $("#chat-messages").replaceChildren(live);
   $("#chat-agent-events").replaceChildren(); $("#chat-agent-events").hidden = true;
   $("#chat-progress").hidden = true; $("#chat-approvals").hidden = true;
@@ -1921,7 +1924,10 @@ async function loadChat() {
     $("#chat-placement").hidden = !placement;
   }
   else if (!current && openingAtStart === chatOpening) {
-    clearChatView();
+    // Polling an already-empty/new chat updates capacity and navigation only.
+    // It must not clear a draft or attachments while the user is composing.
+    const preserveComposer = !displayedChatId && !currentChatSnapshot;
+    clearChatView({preserveComposer});
     updateChatSwitchUI();
   }
 }
@@ -1977,10 +1983,17 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       !confirm("Discard unsaved edits in the open workspace files?")) return;
   const opening = ++chatOpening;
   const sameChat = chatId === id;
+  // A live transcript refresh must never write to the composer. The request can
+  // be in flight while the user continues typing, including during IME input.
+  const refreshingDisplayedChat = sameChat && displayedChatId === id;
   const transcript = $("#chat-messages");
   const distanceFromBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
   if (chatId !== id) showChatCommandOutput("");
-  if (chatId) { chatDrafts.set(chatId, $("#chat-input").value); chatImageDrafts.set(chatId, chatImages); chatFileDrafts.set(chatId, chatFiles); }
+  if (!refreshingDisplayedChat && chatId) {
+    chatDrafts.set(chatId, $("#chat-input").value);
+    chatImageDrafts.set(chatId, chatImages);
+    chatFileDrafts.set(chatId, chatFiles);
+  }
   const pendingModel = preserveSelection && sameChat ? $("#chat-model").value : "";
   const c = await api("chat/conversations/" + encodeURIComponent(id));
   if (opening !== chatOpening) return;
@@ -1988,10 +2001,12 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   chatNoSelection = false;
   chatId = c.id;
   syncChatTabSelection();
-  chatImages = chatImageDrafts.get(id) || [];
-  chatFiles = chatFileDrafts.get(id) || [];
-  $("#chat-input").value = chatDrafts.get(id) ??
-    (c.provider === "local" && ["failed", "interrupted"].includes(c.last_turn?.state) ? c.last_turn.prompt : "");
+  if (!refreshingDisplayedChat) {
+    chatImages = chatImageDrafts.get(id) || [];
+    chatFiles = chatFileDrafts.get(id) || [];
+    $("#chat-input").value = chatDrafts.get(id) ??
+      (c.provider === "local" && ["failed", "interrupted"].includes(c.last_turn?.state) ? c.last_turn.prompt : "");
+  }
   if (!openChatTabs.includes(id)) { openChatTabs.push(id); saveChatTabs(); }
   chatBoundModel = c.model;
   activeChatWorkspace = c.mode === "coding" ? c.cwd || null : null;
