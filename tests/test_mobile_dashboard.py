@@ -80,3 +80,4 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "if(error.status!==409)throw error" in page
     assert 'id="composerStatus"' in page
     assert "catch(error){composerError(error.message)}" in page
+    assert "event.item?.type==='agentMessage'?'message assistant':'tool-message'" in page

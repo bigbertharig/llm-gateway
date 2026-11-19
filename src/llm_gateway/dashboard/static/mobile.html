@@ -113,7 +113,7 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
   const activity=events=>{const seen=new Set();for(const [index,event] of (events||[]).entries()){
     const key=event.item?.id?`${event.item.id}:${event.method||''}:${event.item.status||''}`:`${event.method||event.type}:${event.received_at||''}:${index}`;
     if(seen.has(key))continue;seen.add(key);const value=activityText(event);
-    if(value)add(value.slice(0,1200),'tool-message');
+    if(value)add(value.slice(0,1200),event.item?.type==='agentMessage'?'message assistant':'tool-message');
   }};
   for(const item of current.messages||[]){add(item.content||'',`message ${item.role==='user'?'user':'assistant'}`);attachments(item.attachments);activity(item.activity)}
   const turn=current.last_turn;
