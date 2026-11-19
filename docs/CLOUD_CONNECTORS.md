@@ -2,7 +2,7 @@
 
 ## Google Workspace
 
-The dedicated account is `bigbertharig@gmail.com`. Gateway owns OAuth. Harness provides a read-only MCP surface to all Chat models through the shared tool catalog. No Google credential is sent to a model or stored in Harness receipts. The old rig helper's token is expired and is not used by this connector.
+The dedicated account is `bigbertharig@gmail.com`. Gateway owns OAuth. Harness provides one model-independent MCP surface to all Chat models and eligible delegated children through the shared tool catalog. Qwen, Nemotron, small local models, Codex, and configured API providers receive the same schemas; model routing never owns Google access. No Google credential is sent to a model or stored in Harness receipts. The old rig helper's token is expired and is not used by this connector.
 
 The dedicated Pi account completed OAuth on 2026-11-18. Gateway's private service environment enables the connector. Gmail and Drive account checks succeeded without reading message or file content, and Gateway health passed after restart. The private token and service environment are deliberately outside Git.
 
@@ -17,9 +17,11 @@ ssh -L 8765:127.0.0.1:8765 bryan@pi-wifi
 
 Open the printed localhost consent URL in the laptop browser. Choose only the dedicated account. The script verifies the Gmail profile address before saving the token. Keep the consent URL and token out of chat logs.
 
-After authorization, configure the Gateway service with `GOOGLE_WORKSPACE_ENABLED=1`, `GOOGLE_WORKSPACE_ACCOUNT=bigbertharig@gmail.com`, and `GOOGLE_WORKSPACE_TOKEN_FILE=/home/bryan/.config/llm-gateway/google/token.json`, then restart Gateway. The connector fails closed on a missing token, broad file permissions, or an account mismatch. Its four endpoints are read-only and bound by the existing Gateway authentication middleware.
+The OAuth grant includes `gmail.readonly`, `gmail.send`, `drive`, `documents`, and `spreadsheets`. Expanding an existing read-only token requires running the setup script again and accepting the new grant. After authorization, configure the Gateway service with `GOOGLE_WORKSPACE_ENABLED=1`, `GOOGLE_WORKSPACE_ACCOUNT=bigbertharig@gmail.com`, `GOOGLE_WORKSPACE_TOKEN_FILE=/home/bryan/.config/llm-gateway/google/token.json`, and optionally `GOOGLE_WORKSPACE_RECEIPT_DIR`. Then restart Gateway. The connector fails closed on a missing token, broad file permissions, an account mismatch, or missing scopes.
 
-Current limitation: Gateway and Harness still run as the same Unix user. The model-facing tool interface does not expose the token, but a true OS credential boundary requires moving the Google connector to a separate service identity with a narrow local IPC channel. Do that before expanding Coding mode or adding write operations.
+The surface supports bounded Gmail search/read/send; Drive search/read-text/create-folder/upload-text; Docs create/append; and Sheets create/read/update/append. It intentionally has no delete, trash, sharing, permission, arbitrary binary upload, or mailbox-modification operation. Every mutation requires `confirmed=true` and a caller-generated `request_id`. Gateway writes a private `pending` receipt before the external call and a `completed` receipt afterward. Reusing a completed request ID returns the original receipt without repeating the change; a pending receipt after interruption is treated as an uncertain outcome and must be inspected instead of retried under a new ID.
+
+Current limitation: Gateway and Harness still run as the same Unix user. The model-facing tool interface does not expose the token, delegated Google children receive no shell or filesystem tools, and Coding mode does not receive the Google surface. A separate service identity with narrow local IPC remains the stronger production boundary. The dedicated account contains only rig data, which bounds the current personal deployment's account-level blast radius.
 
 ## Claude
 
