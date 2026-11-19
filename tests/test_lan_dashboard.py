@@ -19,17 +19,21 @@ def test_only_dashboard_routes_are_forwarded(monkeypatch):
         headers = {"host": "raspberrypi.local"}
         assert client.get("/gpurig", headers=headers).status_code == 200
         assert client.get("/v1/manager/status", headers=headers).status_code == 404
+        assert client.get("/v1/manager/local-agent-capabilities", headers=headers).status_code == 200
         assert client.get("/health", headers=headers).status_code == 404
         assert client.get("/dashboard/%2e%2e/v1/manager/status", headers=headers).status_code == 404
         post_headers = {**headers, "origin": "https://raspberrypi.local",
                         "content-type": "application/json", "sec-fetch-site": "same-origin"}
         assert client.post("/dashboard/api/rig/kill", headers=post_headers, json={"gpu_ids": []}).status_code == 200
+        assert client.post("/v1/manager/agent-routes/release", headers=post_headers, json={}).status_code == 200
         assert client.post("/dashboard/api/rig/kill", headers={**post_headers, "origin": "https://evil.test"}, json={}).status_code == 403
         assert client.post("/dashboard/api/rig/kill", headers={**post_headers, "sec-fetch-site": "cross-site"}, json={}).status_code == 403
         assert client.post("/dashboard/api/rig/rm_rf", headers=post_headers, json={}).status_code == 404
         assert client.post("/dashboard/api/rig/kill", headers=post_headers,
                            content=b"x" * (MAX_BODY + 1)).status_code == 413
-        assert calls == [("GET", "/dashboard/"), ("POST", "/dashboard/api/rig/kill")]
+        assert calls == [("GET", "/dashboard/"), ("GET", "/v1/manager/local-agent-capabilities"),
+                         ("POST", "/dashboard/api/rig/kill"),
+                         ("POST", "/v1/manager/agent-routes/release")]
 
 
 def test_chat_stream_passes_through_lan_front_door(monkeypatch):

@@ -23,6 +23,7 @@ GET_PATHS = frozenset({
     "/dashboard/api/chat/options", "/dashboard/api/chat/conversations",
     "/dashboard/api/chat/codex/account",
     "/dashboard/api/chat/codex/models",
+    "/v1/manager/local-agent-capabilities",
 })
 RIG_ACTIONS = frozenset({"kill", "unload", "unclaim", "cancel", "load"})
 RUN_ACTIONS = frozenset({"recover", "dismiss", "stop"})
@@ -61,6 +62,8 @@ def _allowed(method: str, path: str) -> bool:
     if path == "/dashboard/api/chat/conversations":
         return True
     if path == "/dashboard/api/chat/loaded-model/reset":
+        return True
+    if path == "/v1/manager/agent-routes/release":
         return True
     if path in ("/dashboard/api/chat/codex/login", "/dashboard/api/chat/codex/logout"):
         return True

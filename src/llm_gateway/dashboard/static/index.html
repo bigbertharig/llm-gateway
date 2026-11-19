@@ -158,7 +158,7 @@ textarea { width: 100%; min-height: 80px; }
 #coding-chat-host .chat-tab-wrap[aria-current="true"] { background: var(--code-surface); border-top: 1px solid var(--code-accent); }
 #coding-chat-host .chat-heading { min-height: 42px; padding: 0 12px; border-bottom: 1px solid var(--code-line); }
 #coding-chat-host .chat-heading h2 { margin: 0; color: #cccccc; font-size: 12px; letter-spacing: 0; text-transform: none; }
-#coding-chat-host .chat-placement, #coding-chat-host #chat-rig-busy { margin: 6px 10px; }
+#coding-chat-host .chat-placement { margin: 6px 10px; }
 #coding-chat-host .chat-messages { padding: 10px 12px; }
 #coding-chat-host #chat-form { margin: 0 10px 8px; background: var(--code-bg); border-color: #34739b; border-radius: 6px; }
 #coding-chat-host .chat-messages { max-height: none; min-height: 80px; }
@@ -188,6 +188,9 @@ textarea { width: 100%; min-height: 80px; }
 .chat-loaded-item { padding: 6px 0; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
 .chat-loaded-item:first-child { border-top: 0; }
 .chat-loaded-item small { display: block; color: var(--muted); margin-top: 3px; }
+.chat-runtime-details { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
+.chat-runtime-details summary { color: var(--cool); cursor: pointer; font-size: 12px; }
+.chat-runtime-details[open] summary { margin-bottom: 6px; }
 .chat-slot { padding: 7px 0; border-top: 1px solid var(--line); font-size: 12px; }
 .chat-slot small { display: block; color: var(--muted); margin: 3px 0; }
 .chat-slot .act { margin: 3px 0 0; }
@@ -301,10 +304,6 @@ textarea { width: 100%; min-height: 80px; }
 .chat-picker-menu small { display: block; color: var(--muted); font: 11px var(--mono); }
 .chat-controls-spacer { flex: 1; }
 #chat-send { border-radius: 50%; width: 32px; height: 32px; padding: 0; font-size: 18px; }
-#chat-rig-busy { padding: 9px 11px; margin: 8px 0; border: 1px solid var(--warm);
-  border-radius: 6px; color: var(--warm); background: var(--panel2); font: 12px var(--mono); }
-#chat-rig-busy.chat-reservation { border-color: var(--cool); color: var(--text); }
-#chat-rig-busy[hidden] { display: none; }
 #chat-progress { margin-top: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--panel2); color: var(--cool); font: 12px var(--mono); }
 #chat-progress[hidden] { display: none; }
@@ -440,16 +439,15 @@ a { color: var(--cool); }
           <div id="chat-device-code" hidden></div>
         </div>
         <div class="line" id="chat-model-note">Loading models...</div>
-        <section class="chat-loaded" aria-label="Currently loaded models">
-          <h2>Currently loaded</h2><div id="chat-loaded">Checking the rig...</div>
-          <div id="chat-hot-slots"></div>
+        <section class="chat-loaded" aria-label="Model availability">
+          <h2>Availability</h2><div id="chat-rig-summary">Checking the rig...</div>
+          <details class="chat-runtime-details"><summary id="chat-runtime-summary">Rig details</summary>
+            <div id="chat-loaded"></div><div id="chat-hot-slots"></div>
+            <div id="chat-agent-capacity"></div>
+          </details>
         </section>
-        <section class="chat-loaded" aria-label="Local agent reservations">
-          <h2>Local agent capacity</h2><div id="chat-agent-capacity">Checking the rig...</div>
-        </section>
-        <div id="chat-rig-busy" role="status" aria-live="polite" hidden></div>
-        <button class="act" id="chat-new" type="button">New chat</button>
-        <button class="act" id="chat-restore" type="button" hidden>Activate saved chat</button>
+        <button class="act" id="chat-new" type="button">Start new chat</button>
+        <button class="act" id="chat-restore" type="button" hidden>Activate this saved chat</button>
         <div id="chat-switch-warning" class="chat-switch-warning" role="status" hidden></div>
         <button class="act" id="chat-switch" type="button" hidden>Continue this conversation with selected model</button>
         <h2>Saved conversations</h2>
@@ -1138,15 +1136,17 @@ function renderLoadedChatModels() {
     const saved = chatSavedConversations.filter((c) => c.model === m.id).length;
     const cards = m.gpu_ids?.length ? m.gpu_ids : [...new Set(places.flatMap((p) => p.gpu_ids || []))];
     const live = m.live_chats || places.length;
-    return `<div class="chat-loaded-item"><b>${esc(m.model)}</b><small>${esc(m.id)} · loaded` +
-      (live ? ` · ${live} live ${live === 1 ? "chat" : "chats"}` : "") +
-      (cards.length ? ` · GPU ${esc(cards.join(", "))}` : "") +
-      (m.reserved_context_tokens ? ` · ${esc(m.reserved_context_tokens)} context tokens reserved` : "") +
-      (m.occupied_context_tokens ? ` · ${esc(m.occupied_context_tokens)} occupied` : "") +
-      ` · ${saved} saved ${saved === 1 ? "conversation" : "conversations"}` +
-      (m.kind === "shared" && (Number.isInteger(m.available_chat_slots) ?
-        m.available_chat_slots : m.free_gpu_count) === 0 ? " · no safe placement for another attached chat" : "") +
-      `</small></div>`;
+    const details = [];
+    if (m.id !== m.model) details.push(m.id);
+    if (live) details.push(`${live} live ${live === 1 ? "chat" : "chats"}`);
+    if (cards.length) details.push(`GPU ${cards.join(", ")}`);
+    if (m.reserved_context_tokens) details.push(`${m.reserved_context_tokens} context tokens reserved`);
+    if (m.occupied_context_tokens) details.push(`${m.occupied_context_tokens} occupied`);
+    if (saved) details.push(`${saved} saved ${saved === 1 ? "conversation" : "conversations"}`);
+    if (m.kind === "shared" && (Number.isInteger(m.available_chat_slots) ?
+        m.available_chat_slots : m.free_gpu_count) === 0) details.push("no safe placement for another attached chat");
+    if (!details.length) details.push("Loaded; no active chat");
+    return `<div class="chat-loaded-item"><b>${esc(m.model)}</b><small>${esc(details.join(" · "))}</small></div>`;
   }).join("");
   const hot = chatOptions.hot_chats || [];
   slots.innerHTML = loaded.filter((m) => m.kind === "shared").map((m) => {
@@ -1189,21 +1189,20 @@ function renderLoadedChatModels() {
 function renderAgentCapacity(data) {
   const box = $("#chat-agent-capacity");
   const candidates = data?.candidates || [];
-  if (!candidates.length) { box.textContent = "No published shared-model agent candidates."; return; }
-  box.innerHTML = candidates.map((c) => {
-    const capacity = Number.isInteger(c.available_worker_slots)
-      ? `${c.available_worker_slots} available at ${c.capacity_context_tokens?.toLocaleString()} tokens`
-      : "available capacity unknown";
-    const reservations = (c.active_reservations || []).map((r) =>
+  const reservations = candidates.flatMap((c) => (c.active_reservations || []).map((r) => ({candidate: c, ...r})));
+  const active = candidates.reduce((total, c) => total + (Number(c.active_children) || 0), 0);
+  const slots = candidates.filter((c) => c.loaded && Number.isInteger(c.available_worker_slots))
+    .reduce((total, c) => total + c.available_worker_slots, 0);
+  const observed = candidates.some((c) => c.loaded && Number.isInteger(c.available_worker_slots));
+  const summary = active ? `${active} active local ${active === 1 ? "agent" : "agents"}` : "No local agents active";
+  box.innerHTML = `<div class="chat-loaded-item"><b>Local agents</b><small>${summary}` +
+    (observed ? ` · ${slots} worker ${slots === 1 ? "slot" : "slots"} available` : "") + `</small></div>` +
+    reservations.map((r) =>
       `<div class="chat-slot"><b>${esc(r.chat_id)}</b><small>GPU ${esc((r.placement?.gpus || []).join(", "))}` +
       ` · ${esc(r.context_capacity)} tokens reserved · ${esc(r.occupied_tokens || 0)} occupied` +
       ` · ${esc(r.reserved_mib || "?")} MiB</small>` +
       `<button class="act" type="button" data-release-agent="${esc(r.route)}"` +
       ` data-instance="${esc(r.service_instance_id)}" data-reservation="${esc(r.reservation_id)}">Release agent</button></div>`).join("");
-    return `<div class="chat-slot-group"><h3>${esc(c.model)}</h3>` +
-      `<small>${c.loaded ? "loaded" : "cold"} · ${esc(c.active_children)} active agent contexts` +
-      ` · ${esc(capacity)}</small>${reservations}</div>`;
-  }).join("");
   box.querySelectorAll("[data-release-agent]").forEach((button) => button.onclick = async () => {
     if (!confirm("Release this agent context? Any task using it will stop.")) return;
     button.disabled = true;
@@ -1215,6 +1214,35 @@ function renderAgentCapacity(data) {
       await loadChat();
     } catch (error) { toast("Could not release agent: " + error.message, "bad"); button.disabled = false; }
   });
+}
+function renderModelAvailability() {
+  const selected = $("#chat-model").value;
+  const loaded = chatOptions?.loaded_models || [];
+  const selectedLoaded = loaded.find((m) => m.id === selected);
+  const info = chatLoadInfo.get(selected);
+  const name = selectedLoaded?.model || info?.model || selected || "No model selected";
+  const free = Number.isInteger(selectedLoaded?.available_chat_slots)
+    ? selectedLoaded.available_chat_slots : selectedLoaded?.free_gpu_count;
+  const full = selectedLoaded?.kind === "shared" && free === 0;
+  let message;
+  if (!selected) message = "Choose a model to see whether it is ready.";
+  else if (selected === "Codex") message = "Codex is ready through the connected cloud account.";
+  else if (selected === "Claude") message = "Claude is ready through its API connection.";
+  else if (full) message = `${name} is loaded, but all attached-chat slots are occupied. A new chat will be saved cold.`;
+  else if (selectedLoaded || info?.ready) message = `${name} is loaded and ready.`;
+  else if (!chatOptions?.rig_available) message = `${name} is cold. The rig is currently unavailable.`;
+  else if (chatOptions?.rig_busy) {
+    const names = loaded.map((m) => m.model || m.id).join(", ");
+    const foreign = loaded.some((m) => !chatLoadInfo.has(m.id));
+    message = foreign
+      ? `${name} is cold. ${names || "Other work"} currently uses the rig and must be released from the Rig tab first.`
+      : `${name} is cold. ${names || "Other work"} currently uses the rig; starting it will ask before replacing that load.`;
+  } else message = `${name} is cold. The rig is available to load it.`;
+  $("#chat-rig-summary").textContent = message;
+  const live = loaded.reduce((total, m) => total + (Number(m.live_chats) || 0), 0);
+  $("#chat-runtime-summary").textContent = loaded.length
+    ? `${loaded.length} loaded ${loaded.length === 1 ? "model" : "models"} · ${live ? `${live} live ${live === 1 ? "chat" : "chats"}` : "no live chats"}`
+    : "Rig details · no chat models loaded";
 }
 function updateChatSwitchUI() {
   const selected = $("#chat-model").value;
@@ -1230,15 +1258,13 @@ function updateChatSwitchUI() {
     (!chatLoadInfo.get(chatBoundModel)?.ready ||
      (chatBoundModel.startsWith("shared-") && !chatPlacement(currentChatSnapshot)));
   $("#chat-restore").hidden = !needsRestore;
-  warning.hidden = !changing && !(selected && selected !== "Codex" && loaded.length);
+  warning.hidden = !changing;
   $("#chat-switch").disabled = foreign;
   if (changing) warning.textContent = `${saved} saved ${saved === 1 ? "conversation uses" : "conversations use"} ` +
     `${chatBoundModel}. ${foreign ? "A non-chat rig model is loaded; release it from Rig before switching. " :
       loaded.length ? `${active || "Some"} live chat ${active === 1 ? "context" : "contexts"} ` +
       `will reset when ${selected} loads. ` : ""}` +
     "Saved messages stay here; the new model receives their text on the next turn, up to its context limit.";
-  else if (!warning.hidden) warning.textContent = `${loaded.map((m) => m.id).join(", ")} currently loaded. ` +
-    `Starting a new chat with ${selected} will ask before resetting its live chat contexts. Saved messages remain.`;
 }
 function loadDuration(seconds) {
   const rounded = Math.max(0, Math.round(seconds));
@@ -1768,10 +1794,10 @@ function chatProviderChanged() {
   $("#chat-account").hidden = !cloud;
   $("#chat-model-note").hidden = cloud && tab === "coding";
   $("#chat-model-note").textContent = tab === "coding"
-    ? "Local models can use coding tools and delegate. Images currently require Codex."
-    : cloud ? "Research tools only. Codex cannot access Coding workspaces from Chat."
+    ? "Text and files supported. Images require Codex."
+    : cloud ? "Cloud research chat."
     : claude ? "Claude API chat uses the same reviewed harness tools as local chat. No rig GPU load is needed."
-    : "The manager controls model loading and GPU placement. Images currently require Codex.";
+    : "Text and files supported. Images require Codex.";
   $("#chat-attach-row").hidden = false;
   $("#chat-attach").hidden = !cloud;
   renderCodexControls();
@@ -1860,8 +1886,8 @@ async function loadChat() {
   chatOptions = opts; chatSavedConversations = saved.conversations;
   renderLoadedChatModels();
   managerApi("local-agent-capabilities").then(renderAgentCapacity)
-    .catch((error) => { $("#chat-agent-capacity").textContent =
-      "Agent capacity unavailable: " + error.message; });
+    .catch(() => { $("#chat-agent-capacity").innerHTML =
+      '<div class="chat-loaded-item"><b>Local agents</b><small>Status unavailable</small></div>'; });
   const mode = tab === "coding" ? "coding" : "chat";
   const visible = saved.conversations.filter((c) => (c.mode || "chat") === mode);
   if (!visible.some((c) => c.id === chatId)) {
@@ -1876,7 +1902,7 @@ async function loadChat() {
   select.innerHTML = (mode === "coding" ? '' : '<option value="">Choose a model...</option>') +
     '<option value="Codex">Codex</option>' +
     (opts.claude_api_available ? '<option value="Claude">Claude (API)</option>' : '') +
-    opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)}) ${m.ready ? "ready" : "cold"}</option>`).join("");
+    opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)})</option>`).join("");
   const current = visible.find((c) => c.id === chatId);
   // A prepare or park can change the live binding without reopening the conversation.
   // Keep the open chat's placement in sync with the saved list used by the slot sidebar.
@@ -1891,20 +1917,7 @@ async function loadChat() {
   else if (mode === "coding") select.value = "Codex";
   chatProviderChanged();
   updateChatSwitchUI();
-  const busy = $("#chat-rig-busy");
-  const selectedLoaded = (opts.loaded_models || []).find((m) => m.id === select.value);
-  const selectedFree = Number.isInteger(selectedLoaded?.available_chat_slots) ?
-    selectedLoaded.available_chat_slots : selectedLoaded?.free_gpu_count;
-  const attachFull = selectedLoaded?.kind === "shared" && selectedFree === 0;
-  busy.hidden = select.value === "Codex" || select.value === "Claude" || (opts.rig_available && !opts.rig_busy && !attachFull);
-  busy.classList.toggle("chat-reservation", !!opts.chat_reservation_only);
-  const reservations = (opts.chat_reservations || []).map((claim) =>
-    `${claim.model || claim.name} (GPU ${(claim.gpu_ids || []).join(", ")})`).join("; ");
-  busy.textContent = attachFull ? `${selectedLoaded.live_chats} ${selectedLoaded.model} hot chat(s) occupy the available slots. ` +
-    "You can save another chat cold. Park an idle attached chat below to free a slot; working chats cannot be parked." :
-    !opts.rig_available ? "Rig unavailable. Saved conversations are still readable." :
-    opts.chat_reservation_only ? `Chat GPU reserved for ${reservations}. New dashboard model loads are paused; an existing ready chat may continue.` :
-    `Rig capacity in use: ${opts.busy_reason}. New chat loads are paused; an existing ready chat may continue.`;
+  renderModelAvailability();
   const list = $("#chat-conversations");
   list.innerHTML = visible.map((c) => `<button type="button" class="chat-conversation" data-chat-id="${esc(c.id)}" aria-current="${c.id === chatId}">${esc(c.title)}<small>${esc(c.model)}${chatPlacement(c) ? " · hot · GPU " + esc(chatPlacement(c).gpu_ids.join(", ")) : c.model.startsWith("shared-") ? " · cold" : ""} · ${esc(c.updated_at)}${c.last_turn_state && c.last_turn_state !== "completed" ? " · " + esc(c.last_turn_state) : ""}</small></button>`).join("") || '<div class="line">No conversations yet.</div>';
   list.querySelectorAll("[data-chat-id]").forEach((b) => b.onclick = () => openSavedChat(b.dataset.chatId));
@@ -2200,7 +2213,7 @@ $("#chat-restore").onclick = async () => {
   if (!chatId || busyChats.has(chatId) || !chatBoundModel || chatBoundModel === "Codex") return;
   const target = chatBoundModel;
   if (sharedSlotsFull(target)) {
-    toast("Hot chat slots are full. Park an idle attached chat in Currently loaded, then activate this saved chat.", "bad");
+    toast("Hot chat slots are full. Open Rig details, park an idle attached chat, then activate this saved chat.", "bad");
     return;
   }
   const loaded = (chatOptions?.loaded_models || []).filter((m) => m.id !== target);

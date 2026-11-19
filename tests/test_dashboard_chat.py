@@ -27,6 +27,10 @@ def test_dashboard_hides_internal_workspace_routing_from_chat_sidebars():
     page = (Path(__file__).parents[1] / "src/llm_gateway/dashboard/static/index.html").read_text()
     assert "Agent workspace" not in page
     assert 'id="chat-workspace" aria-hidden="true" tabindex="-1" hidden' in page
+    assert '<h2>Availability</h2><div id="chat-rig-summary">' in page
+    assert "Currently loaded" not in page
+    assert "Local agent capacity" not in page
+    assert "The manager controls model loading and GPU placement" not in page
 
 
 def test_shared_model_whitespace_loop_is_malformed():
@@ -901,6 +905,8 @@ def test_lan_chat_routes_are_explicit():
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/park")
     assert _allowed("DELETE", f"/dashboard/api/chat/conversations/{cid}")
     assert _allowed("GET", "/dashboard/api/chat/codex/account")
+    assert _allowed("GET", "/v1/manager/local-agent-capabilities")
+    assert _allowed("POST", "/v1/manager/agent-routes/release")
     assert _allowed("POST", "/dashboard/api/chat/codex/login")
     assert _allowed("POST", "/dashboard/api/chat/codex/logout")
     assert _allowed("GET", f"/dashboard/api/chat/conversations/{cid}/agent")
