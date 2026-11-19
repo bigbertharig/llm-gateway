@@ -78,3 +78,5 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert 'accept="image/png,image/jpeg,image/webp"' in page
     assert "state.active===true&&state.turn?.state==='running'" in page
     assert "if(error.status!==409)throw error" in page
+    assert 'id="composerStatus"' in page
+    assert "catch(error){composerError(error.message)}" in page

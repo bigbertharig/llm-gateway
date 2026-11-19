@@ -41,7 +41,7 @@
   <section id="chatPanel" class="panel hide"><div class="chat-heading"><button id="backToList" type="button" aria-label="Back to conversations">← Back</button><h2 id="conversationTitle">Conversation</h2></div><div class="row between"><span id="turnState" class="muted"></span></div>
     <div id="conversationMeta" class="muted"></div><div id="messages" class="messages"></div>
     <div id="approvals" class="stack"></div>
-    <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000"></textarea><div class="attachment-actions"><button id="attachImage" type="button">Attach picture</button><button id="attachFile" type="button">Attach file</button><span class="attachment-help">Up to 3 attachments · pictures require Codex</span><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden></div><div id="pendingAttachments" class="attachments"></div><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
+    <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000"></textarea><div class="attachment-actions"><button id="attachImage" type="button">Attach picture</button><button id="attachFile" type="button">Attach file</button><span class="attachment-help">Up to 3 attachments · pictures require Codex</span><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden></div><div id="pendingAttachments" class="attachments"></div><div id="composerStatus" class="notice error hide" role="alert"></div><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
   </section>
 </main>
 <script>
@@ -128,6 +128,7 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
   requestAnimationFrame(()=>{if(selected===id&&!$('chatPanel').classList.contains('hide'))messages.scrollTop=atBottom?messages.scrollHeight:priorScroll});
 }
 function syncComposer(running){agentActive=!!running;const localBusy=conversation?.provider!=='codex'&&conversation?.last_turn?.state==='running';$('sendForm').classList.toggle('hide',!permissions.has('continue')||localBusy);text($('sendForm').querySelector('button[type=submit]'),agentActive?'Steer current turn':'Send');$('interrupt').classList.toggle('hide',!agentActive||!permissions.has('interrupt'));$('attachImage').disabled=agentActive;$('attachFile').disabled=agentActive}
+function composerError(value=''){text($('composerStatus'),value);$('composerStatus').classList.toggle('hide',!value)}
 async function openConversation(id,navigate=false){
   if(selected!==id)clearAttachments();selected=id;agentActive=false;
   if(navigate){showChat();text($('conversationTitle'),'Opening conversation…')}
@@ -149,10 +150,11 @@ async function sendTurn(target,value){
   await post(`/mobile/api/conversations/${target}/turn`,{model:conversation.model,message:value,images,files});$('message').value='';clearAttachments();await openConversation(target);
 }
 $('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conversation)return;const value=$('message').value.trim();if(!value&&!pendingImages.length&&!pendingFiles.length)return;const button=$('sendForm').querySelector('button[type=submit]');button.disabled=true;const target=selected;try{
+  composerError();
   if(agentActive){if(pendingImages.length||pendingFiles.length){alert('Wait for the active turn to finish before sending attachments.');return}try{await post(`/mobile/api/conversations/${target}/agent/steer`,{message:value});$('message').value='';await openConversation(target);return}catch(error){if(error.status!==409)throw error;await openConversation(target);if(agentActive)throw error}}
   await sendTurn(target,value);
-}catch(error){alert(error.message)}finally{button.disabled=false}};
-$('interrupt').onclick=async()=>{if(!selected||!confirm('Stop the current turn?'))return;try{await post(`/mobile/api/conversations/${selected}/agent/interrupt`,{});await openConversation(selected)}catch(error){alert(error.message)}};
+}catch(error){composerError(error.message)}finally{button.disabled=false}};
+$('interrupt').onclick=async()=>{if(!selected||!confirm('Stop the current turn?'))return;try{composerError();await post(`/mobile/api/conversations/${selected}/agent/interrupt`,{});await openConversation(selected)}catch(error){composerError(error.message)}};
 async function start(){try{const caps=await json('/mobile/api/capabilities');permissions=new Set(caps.permissions||[])}catch(error){text($('statusMessage'),error.message)}loadStatus();setInterval(()=>{if(!$('chatPanel').classList.contains('hide')&&!$('workView').classList.contains('hide')&&selected)openConversation(selected)},5000);setInterval(()=>{if(!$('listPanel').classList.contains('hide')&&!$('workView').classList.contains('hide'))loadWork()},15000);setInterval(()=>{if(!$('statusView').classList.contains('hide'))loadStatus()},20000)}start();
 </script>
 </html>

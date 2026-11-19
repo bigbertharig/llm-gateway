@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,19 @@ class CodexBridgeError(RuntimeError):
 
 class CodexTurnInterrupted(CodexBridgeError):
     pass
+
+
+_ACTIVE_TURN_MISMATCH = re.compile(
+    r"expected active turn id\s+[`'\"]?([0-9a-f-]+)[`'\"]?\s+"
+    r"but found\s+[`'\"]?([0-9a-f-]+)[`'\"]?",
+    re.IGNORECASE,
+)
+
+
+def _reported_active_turn(error: Exception) -> str | None:
+    """Extract app-server's authoritative active turn from a mismatch error."""
+    match = _ACTIVE_TURN_MISMATCH.search(str(error))
+    return match.group(2) if match else None
 
 
 def _delegate_receipt(value: object) -> dict | None:
@@ -400,9 +414,20 @@ class CodexBridge:
         turn_id = self.active_turns.get(thread_id)
         if not turn_id:
             raise CodexBridgeError("Codex no longer has an active turn to steer")
-        await self._call("turn/steer", {"threadId": thread_id,
-                                        "expectedTurnId": turn_id,
-                                        "input": [{"type": "text", "text": prompt}]})
+        params = {"threadId": thread_id, "expectedTurnId": turn_id,
+                  "input": [{"type": "text", "text": prompt}]}
+        try:
+            await self._call("turn/steer", params)
+        except CodexBridgeError as exc:
+            actual_turn_id = _reported_active_turn(exc)
+            if not actual_turn_id or actual_turn_id == turn_id:
+                raise
+            # app-server is the source of truth. This can happen when a steer
+            # advances/replaces a turn before the dashboard receives its event.
+            self.active_turns[thread_id] = actual_turn_id
+            turn_id = actual_turn_id
+            params["expectedTurnId"] = turn_id
+            await self._call("turn/steer", params)
         return turn_id
 
     async def interrupt(self, thread_id: str) -> str:
@@ -492,13 +517,17 @@ class CodexBridge:
                 method, params = event.get("method"), event.get("params") or {}
                 if method == "bridge/exited":
                     raise CodexBridgeError("Codex app-server exited during the turn")
-                if params.get("turnId") not in (None, turn_id):
+                # A concurrent steer may discover that app-server has already
+                # advanced this thread to another turn. Follow the corrected
+                # ID so its final answer is not silently discarded.
+                current_turn_id = self.active_turns.get(thread_id, turn_id)
+                if params.get("turnId") not in (None, current_turn_id):
                     continue
                 if method == "item/completed" and (params.get("item") or {}).get("type") == "agentMessage":
                     text = params["item"].get("text")
                     if isinstance(text, str):
                         answer.append((params["item"].get("phase"), text))
-                if method == "turn/completed" and (params.get("turn") or {}).get("id") == turn_id:
+                if method == "turn/completed" and (params.get("turn") or {}).get("id") == current_turn_id:
                     turn = params["turn"]
                     if turn.get("status") != "completed":
                         message = str(turn.get("error") or "Codex turn did not complete")
@@ -511,6 +540,5 @@ class CodexBridge:
                         raise CodexBridgeError("Codex returned no message")
                     return thread_id, content
         finally:
-            if self.active_turns.get(thread_id) == locals().get("turn_id"):
-                self.active_turns.pop(thread_id, None)
+            self.active_turns.pop(thread_id, None)
             self.events.pop(thread_id, None)

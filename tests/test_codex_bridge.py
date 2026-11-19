@@ -80,6 +80,54 @@ def test_active_turn_can_be_steered_and_interrupted():
         asyncio.run(bridge.interrupt("thread-1"))
 
 
+def test_steer_reconciles_app_server_active_turn_id():
+    bridge = CodexBridge()
+    bridge.active_turns["thread-1"] = "01a1f546-5914-7a01-9147-8c724052aecb"
+    calls = []
+
+    async def call(method, params):
+        calls.append((method, dict(params)))
+        if len(calls) == 1:
+            raise CodexBridgeError(
+                "expected active turn id `01a1f546-5914-7a01-9147-8c724052aecb` "
+                "but found `01a1f4c8-8c39-7371-9e61-74691994faca`")
+        return {}
+
+    bridge._call = call
+    actual = "01a1f4c8-8c39-7371-9e61-74691994faca"
+    assert asyncio.run(bridge.steer("thread-1", "Keep going")) == actual
+    assert bridge.active_turns["thread-1"] == actual
+    assert [params["expectedTurnId"] for _, params in calls] == [
+        "01a1f546-5914-7a01-9147-8c724052aecb", actual]
+
+
+def test_running_turn_follows_reconciled_active_turn_for_final_answer(tmp_path):
+    bridge = CodexBridge()
+    bridge.workspaces = [tmp_path]
+
+    async def call(method, params):
+        if method == "thread/resume":
+            return {"thread": {"id": "saved-thread"}}
+        loop = asyncio.get_running_loop()
+        actual = "01a1f4c8-8c39-7371-9e61-74691994faca"
+
+        def reconcile_and_finish():
+            bridge.active_turns["saved-thread"] = actual
+            bridge.events["saved-thread"].put_nowait({"method": "item/completed", "params": {
+                "turnId": actual, "item": {"type": "agentMessage", "phase": "final_answer",
+                                           "text": "Visible final answer."}}})
+            bridge.events["saved-thread"].put_nowait({"method": "turn/completed", "params": {
+                "turnId": actual, "turn": {"id": actual, "status": "completed"}}})
+
+        loop.call_soon(reconcile_and_finish)
+        return {"turn": {"id": "01a1f546-5914-7a01-9147-8c724052aecb"}}
+
+    bridge._call = call
+    assert asyncio.run(bridge.turn("saved-thread", "Continue", str(tmp_path))) == (
+        "saved-thread", "Visible final answer.")
+    assert "saved-thread" not in bridge.active_turns
+
+
 def test_chat_codex_defaults_to_local_full_access_and_research_tools(tmp_path, monkeypatch):
     from llm_gateway.dashboard import dashboard_mcp_servers
 
