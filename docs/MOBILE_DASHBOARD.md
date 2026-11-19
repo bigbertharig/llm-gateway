@@ -21,6 +21,9 @@ continuation and revocation still need operator verification.
 - Both views refer to the same saved gateway conversations. A turn started locally
   can be opened and continued from the phone. The mobile front door forwards a
   private server-to-server token, and the gateway marks the turn as `mobile`.
+- The mobile composer accepts the same bounded Codex picture inputs and converted
+  document types as the main dashboard. It previews pending attachments locally;
+  pictures remain Codex-only and attachments cannot be added to an active steer.
 - Mobile local-model turns use the gateway's streamed turn path. If the phone
   disconnects, the gateway continues the saved turn; the phone can reopen the
   same conversation to see progress and the final reply. Codex turns already
@@ -31,6 +34,9 @@ continuation and revocation still need operator verification.
   than a conversation's local-control grant. The default excludes host-control
   MCP servers and gateway reset. These are independent of the local dashboard
   settings.
+- The mobile UI treats the live agent status as authoritative. If a saved turn
+  still says `running` after its Gateway runner disappeared, the status endpoint
+  records it as interrupted and the composer returns to a normal Send action.
 - Mobile HTTP permissions are separate from tool permissions. Defaults permit
   observation, conversation creation and continuation, interrupt, approval, and
   workspace reads. Rig and orchestration controls, browser file writes, and

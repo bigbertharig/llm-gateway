@@ -76,6 +76,42 @@ def test_chat_image_validation_accepts_supported_data_urls():
         raise AssertionError("non-image data URL was accepted")
 
 
+def test_agent_status_reconciles_a_saved_turn_without_a_live_runner(tmp_path, monkeypatch):
+    root = tmp_path / "history"
+    monkeypatch.setenv("CHAT_DATA_ROOT", str(root))
+    store = ChatStore(root)
+    conversation = store.create("Codex", provider="codex", cwd=str(tmp_path), mode="coding")
+    store.set_thread(conversation["id"], "thread-stale")
+    store.begin_turn(conversation["id"], 0, "Codex", "unfinished")
+
+    class Codex:
+        def status(self, thread_id):
+            assert thread_id == "thread-stale"
+            return {"events": [], "approvals": [], "active": False}
+
+    class Profiles:
+        def all(self):
+            return {}
+
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda request, exc: JSONResponse({"error": str(exc)}, status_code=exc.status))
+    app.include_router(router(object(), Profiles(), None, Codex()))
+
+    async def check():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                f"/dashboard/api/chat/conversations/{conversation['id']}/agent")
+            assert response.status_code == 200
+            assert response.json()["turn"]["state"] == "interrupted"
+            opened = await client.get(
+                f"/dashboard/api/chat/conversations/{conversation['id']}")
+            assert "runner is no longer active" in opened.json()["last_turn"]["error"]
+
+    asyncio.run(check())
+
+
 def test_failed_local_turn_keeps_attachment_retry_requirement(tmp_path):
     store = ChatStore(tmp_path / "chat")
     cid = store.create("shared-nemo")["id"]

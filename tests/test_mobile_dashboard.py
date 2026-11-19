@@ -4,7 +4,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from llm_gateway.dashboard import dashboard_mcp_servers
-from llm_gateway.mobile_dashboard import create_app
+from llm_gateway.mobile_dashboard import STATIC, create_app
 
 
 def test_mobile_identity_and_permissions_are_checked_before_forwarding(monkeypatch):
@@ -68,3 +68,12 @@ def test_mobile_streamed_turn_reaches_gateway_as_stream(monkeypatch):
     assert seen[0][0] == f"/dashboard/api/chat/conversations/{cid}/turn"
     assert seen[0][1] == "a" * 48
     assert b'"stream":true' in seen[0][2]
+
+
+def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
+    page = STATIC.read_text(encoding="utf-8")
+    assert ".tool-message" in page and "'tool-message'" in page
+    assert 'id="attachImage"' in page and 'id="attachFile"' in page
+    assert 'accept="image/png,image/jpeg,image/webp"' in page
+    assert "state.active===true&&state.turn?.state==='running'" in page
+    assert "if(error.status!==409)throw error" in page

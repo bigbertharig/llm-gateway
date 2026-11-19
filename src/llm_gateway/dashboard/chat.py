@@ -1897,7 +1897,15 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(400, "Not a Codex conversation")
         thread_id = conversation["thread_id"]
         state = codex.status(thread_id) if thread_id else {"events": [], "approvals": [], "active": False}
-        return {**state, "turn": conversation["last_turn"]}
+        live = cid in active_codex or bool(state.get("active"))
+        saved_turn = conversation.get("last_turn") or {}
+        if saved_turn.get("state") == "running" and not live:
+            await asyncio.to_thread(
+                get_store(cid).set_turn_state, saved_turn["id"], "interrupted",
+                "The turn runner is no longer active. Send the message again to continue.",
+                state.get("events") or [])
+            conversation = await asyncio.to_thread(get_store(cid).agent_state, cid)
+        return {**state, "active": live, "turn": conversation["last_turn"]}
 
     @r.get("/conversations/{cid}/agent/events")
     async def agent_events(cid: str):

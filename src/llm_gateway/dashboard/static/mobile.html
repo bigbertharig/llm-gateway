@@ -18,6 +18,8 @@
   .conversation{width:100%;min-width:0;text-align:left;padding:12px;overflow-wrap:anywhere}.conversation small{display:block}.messages{min-width:0;max-width:100%;display:grid;grid-template-columns:minmax(0,1fr);gap:10px;max-height:50vh;overflow-y:auto;overflow-x:hidden;margin:12px 0}
   .conversation time{display:block;color:#9bdbc9;font-size:12px;margin-top:5px}
   .message{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:11px 13px;border-radius:12px;background:#223440}.message.user{background:#244a47;margin-left:12%}
+  .tool-message{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:7px 10px;border:1px solid #2e404a;border-radius:9px;background:#18252d;color:#9eabb2;font:12.5px/1.45 ui-monospace,monospace}
+  .attachments,.attachment-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.attachments:empty{display:none}.attachment{position:relative;max-width:150px;padding:6px;border:1px solid #3a505b;border-radius:9px;background:#14212a;color:#a9bac4;font-size:12px;overflow-wrap:anywhere}.attachment img{display:block;width:100%;max-height:120px;object-fit:contain;border-radius:6px;margin-bottom:4px}.attachment button{position:absolute;top:3px;right:3px;padding:1px 7px;border-radius:99px;background:#111c24dd}.attachment-help{font-size:12px;color:#91a5af}
   textarea,input,select{width:100%;font:inherit;color:#edf4f6;background:#111c24;border:1px solid #46606e;border-radius:10px;padding:10px}textarea{min-height:92px;resize:vertical}
   .notice{min-width:0;max-width:100%;overflow-wrap:anywhere;padding:10px 12px;border-radius:10px;background:#503b27;color:#ffe6bb}.error{background:#5a302f;color:#ffd9d6}
   .hide{display:none!important}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}
@@ -39,17 +41,17 @@
   <section id="chatPanel" class="panel hide"><div class="chat-heading"><button id="backToList" type="button" aria-label="Back to conversations">← Back</button><h2 id="conversationTitle">Conversation</h2></div><div class="row between"><span id="turnState" class="muted"></span></div>
     <div id="conversationMeta" class="muted"></div><div id="messages" class="messages"></div>
     <div id="approvals" class="stack"></div>
-    <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000" required></textarea><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
+    <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000"></textarea><div class="attachment-actions"><button id="attachImage" type="button">Attach picture</button><button id="attachFile" type="button">Attach file</button><span class="attachment-help">Up to 3 attachments · pictures require Codex</span><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden></div><div id="pendingAttachments" class="attachments"></div><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
   </section>
 </main>
 <script>
-const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set();
-const json=async(path,options={})=>{const response=await fetch(path,{credentials:'same-origin',cache:'no-store',...options});const data=await response.json();if(!response.ok)throw Error(data.error?.message||data.error||`HTTP ${response.status}`);return data};
+const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[];
+const json=async(path,options={})=>{const response=await fetch(path,{credentials:'same-origin',cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}return data};
 const post=(path,data)=>json(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 const text=(node,value)=>{node.textContent=value==null?'':String(value)};
 function show(name){$('statusView').classList.toggle('hide',name!=='status');$('workView').classList.toggle('hide',name!=='work');$('statusTab').classList.toggle('active',name==='status');$('workTab').classList.toggle('active',name==='work');if(name==='work')loadWork()}
 $('statusTab').onclick=()=>show('status');$('workTab').onclick=()=>show('work');$('refreshStatus').onclick=loadStatus;$('refreshWork').onclick=loadWork;
-function showList(){selected=null;conversation=null;$('workTitle').classList.remove('hide');$('listPanel').classList.remove('hide');$('chatPanel').classList.add('hide');window.scrollTo(0,0);loadWork()}
+function showList(){selected=null;conversation=null;agentActive=false;clearAttachments();$('workTitle').classList.remove('hide');$('listPanel').classList.remove('hide');$('chatPanel').classList.add('hide');window.scrollTo(0,0);loadWork()}
 function showChat(){ $('workTitle').classList.add('hide');$('listPanel').classList.add('hide');$('chatPanel').classList.remove('hide');window.scrollTo(0,0) }
 $('backToList').onclick=showList;
 const percent=value=>Math.max(0,Math.min(100,Number(value)||0));
@@ -71,21 +73,53 @@ function activityText(event){
   const detail=item.command||item.text||(Array.isArray(item.changes)?item.changes.map(change=>change.path).join(', '):'')||item.type;
   return detail?`${event.method==='item/started'?'Working':'Done'} · ${String(detail).slice(0,800)}`:'';
 }
+function clearAttachments(){pendingImages=[];pendingFiles=[];renderPendingAttachments()}
+function attachmentBytes(){return [...pendingImages,...pendingFiles].reduce((sum,item)=>sum+(item.size||0),0)}
+const readDataUrl=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error);reader.readAsDataURL(file)});
+function attachmentNode(item,removable=false,index=0,kind='image'){
+  const box=document.createElement('div');box.className='attachment';
+  if(item.data_url?.startsWith('data:image/')){const preview=document.createElement('img');preview.src=item.data_url;preview.alt=item.name||'Attached image';box.append(preview)}
+  const label=document.createElement('span');text(label,item.name||'attachment');box.append(label);
+  if(removable){const remove=document.createElement('button');remove.type='button';remove.setAttribute('aria-label',`Remove ${item.name||'attachment'}`);text(remove,'×');remove.onclick=()=>{(kind==='image'?pendingImages:pendingFiles).splice(index,1);renderPendingAttachments()};box.append(remove)}
+  return box;
+}
+function renderPendingAttachments(){const box=$('pendingAttachments');if(!box)return;box.replaceChildren();pendingImages.forEach((item,index)=>box.append(attachmentNode(item,true,index,'image')));pendingFiles.forEach((item,index)=>box.append(attachmentNode(item,true,index,'file')))}
+async function addAttachments(files,kind){
+  const images=kind==='image',supportedImages=new Set(['image/png','image/jpeg','image/webp']),supportedFiles=/\.(pdf|txt|md|csv|json|html|xml|py|js|ts|css|log)$/i;
+  for(const file of files){
+    if(pendingImages.length+pendingFiles.length>=3){alert('Attach at most 3 items.');break}
+    if(images&&conversation?.provider!=='codex'){alert('Pictures require a Codex conversation.');break}
+    if(images&&!supportedImages.has(file.type)){alert(`${file.name} is not a supported picture.`);continue}
+    if(!images&&!supportedFiles.test(file.name)){alert(`${file.name} is not a supported file.`);continue}
+    const limit=images?5*1024*1024:8*1024*1024;
+    if(!file.size||file.size>limit){alert(`${file.name} must be under ${images?5:8} MiB.`);continue}
+    if(attachmentBytes()+file.size>10*1024*1024){alert('Mobile attachments may total at most 10 MiB.');break}
+    let data_url=await readDataUrl(file);
+    if(!images&&data_url.startsWith('data:;base64,'))data_url=data_url.replace('data:;base64,',file.name.toLowerCase().endsWith('.pdf')?'data:application/pdf;base64,':'data:application/octet-stream;base64,');
+    (images?pendingImages:pendingFiles).push({name:file.name||'attachment',type:file.type,data_url,size:file.size});
+  }
+  renderPendingAttachments();
+}
+$('attachImage').onclick=()=>$('imageInput').click();$('attachFile').onclick=()=>$('fileInput').click();
+$('imageInput').onchange=async event=>{await addAttachments([...event.target.files],'image');event.target.value=''};
+$('fileInput').onchange=async event=>{await addAttachments([...event.target.files],'file');event.target.value=''};
 function renderMessages(current,liveEvents=[],forceBottom=false){
   const id=current.id,messages=$('messages');
   const atBottom=forceBottom||messages.scrollHeight-messages.scrollTop-messages.clientHeight<80;
   const priorScroll=messages.scrollTop;
   messages.replaceChildren();
   const add=(value,kind)=>{const block=document.createElement('div');block.className=kind; text(block,value);messages.append(block)};
+  const attachments=items=>{for(const item of items||[])messages.append(attachmentNode(item))};
   const activity=events=>{const seen=new Set();for(const [index,event] of (events||[]).entries()){
     const key=event.item?.id?`${event.item.id}:${event.method||''}:${event.item.status||''}`:`${event.method||event.type}:${event.received_at||''}:${index}`;
     if(seen.has(key))continue;seen.add(key);const value=activityText(event);
-    if(value)add(value.slice(0,1200),'work-card');
+    if(value)add(value.slice(0,1200),'tool-message');
   }};
-  for(const item of current.messages||[]){add(item.content||'',`message ${item.role==='user'?'user':'assistant'}`);activity(item.activity)}
+  for(const item of current.messages||[]){add(item.content||'',`message ${item.role==='user'?'user':'assistant'}`);attachments(item.attachments);activity(item.activity)}
   const turn=current.last_turn;
   if(turn&&turn.state!=='completed'){
     add(turn.prompt||'(request in progress)','message user');
+    attachments(turn.attachments);
     for(const steer of turn.steers||[])add(steer.content||'','message user');
     activity([...(turn.activity||[]),...liveEvents]);
     if(turn.state==='running'&&!liveEvents.length&&!(turn.activity||[]).length)add('Working…','muted');
@@ -93,9 +127,31 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
   }
   requestAnimationFrame(()=>{if(selected===id&&!$('chatPanel').classList.contains('hide'))messages.scrollTop=atBottom?messages.scrollHeight:priorScroll});
 }
-async function openConversation(id,navigate=false){selected=id;if(navigate){showChat();text($('conversationTitle'),'Opening conversation…')}try{const current=await json(`/mobile/api/conversations/${id}`);if(selected!==id)return;conversation=current;text($('conversationTitle'),conversation.title||'Conversation');text($('conversationMeta'),conversationLabel(conversation));text($('turnState'),conversation.last_turn?.state||'idle');renderMessages(current,[],navigate);const running=conversation.last_turn?.state==='running';$('sendForm').classList.toggle('hide',!permissions.has('continue')||(running&&conversation.provider!=='codex'));text($('sendForm').querySelector('button[type=submit]'),running?'Steer current turn':'Send');$('interrupt').classList.toggle('hide',!running||!permissions.has('interrupt'));if(conversation.provider==='codex')await loadAgent(id,navigate);else $('approvals').replaceChildren()}catch(error){text($('conversationTitle'),error.message)}}
-async function loadAgent(id,navigate=false){try{const state=await json(`/mobile/api/conversations/${id}/agent`);if(selected!==id)return;if(conversation?.last_turn?.state==='running')renderMessages(conversation,state.events||[],navigate);const box=$('approvals');box.replaceChildren();for(const item of state.approvals||[]){const card=document.createElement('div');card.className='notice';const description=document.createElement('pre');text(description,JSON.stringify(item.preview||item.params||{},null,2));card.append(description);if(permissions.has('approve'))for(const decision of ['accept','decline']){const button=document.createElement('button');text(button,decision==='accept'?'Approve':'Decline');button.onclick=async()=>{if(decision==='accept'&&!confirm('Approve this exact action?'))return;try{await post(`/mobile/api/conversations/${id}/agent/approval`,{request_id:item.id,decision});await openConversation(id)}catch(error){alert(error.message)}};card.append(button)}box.append(card)}}catch(error){text($('approvals'),error.message)}}
-$('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conversation)return;const value=$('message').value.trim();if(!value)return;const button=$('sendForm').querySelector('button[type=submit]');button.disabled=true;try{const target=selected;if(conversation.provider==='local'){const response=await fetch(`/mobile/api/conversations/${target}/turn`,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:conversation.model,message:value,stream:true})});if(!response.ok){const data=await response.json();throw Error(data.error?.message||data.error||`HTTP ${response.status}`)}$('message').value='';await openConversation(target);const reader=response.body.getReader();while(true){const result=await reader.read();if(result.done)break}await openConversation(target)}else{const running=conversation.last_turn?.state==='running';await post(`/mobile/api/conversations/${target}/${running?'agent/steer':'turn'}`,running?{message:value}:{model:conversation.model,message:value});$('message').value='';await openConversation(target)}}catch(error){alert(error.message)}finally{button.disabled=false}};
+function syncComposer(running){agentActive=!!running;const localBusy=conversation?.provider!=='codex'&&conversation?.last_turn?.state==='running';$('sendForm').classList.toggle('hide',!permissions.has('continue')||localBusy);text($('sendForm').querySelector('button[type=submit]'),agentActive?'Steer current turn':'Send');$('interrupt').classList.toggle('hide',!agentActive||!permissions.has('interrupt'));$('attachImage').disabled=agentActive;$('attachFile').disabled=agentActive}
+async function openConversation(id,navigate=false){
+  if(selected!==id)clearAttachments();selected=id;agentActive=false;
+  if(navigate){showChat();text($('conversationTitle'),'Opening conversation…')}
+  try{const current=await json(`/mobile/api/conversations/${id}`);if(selected!==id)return;conversation=current;text($('conversationTitle'),conversation.title||'Conversation');text($('conversationMeta'),conversationLabel(conversation));text($('turnState'),conversation.last_turn?.state||'idle');renderMessages(current,[],navigate);syncComposer(false);if(conversation.provider==='codex')await loadAgent(id,navigate);else $('approvals').replaceChildren()}catch(error){text($('conversationTitle'),error.message)}
+}
+async function loadAgent(id,navigate=false){try{
+  const state=await json(`/mobile/api/conversations/${id}/agent`);if(selected!==id)return;
+  if(state.turn&&conversation?.last_turn&&(state.turn.id!==conversation.last_turn.id||state.turn.state!==conversation.last_turn.state)){conversation=await json(`/mobile/api/conversations/${id}`);if(selected!==id)return;text($('turnState'),conversation.last_turn?.state||'idle')}
+  const running=state.active===true&&state.turn?.state==='running';syncComposer(running);renderMessages(conversation,running?(state.events||[]):[],navigate);
+  const box=$('approvals');box.replaceChildren();for(const item of state.approvals||[]){const card=document.createElement('div');card.className='notice';const description=document.createElement('pre');text(description,JSON.stringify(item.preview||item.params||{},null,2));card.append(description);if(permissions.has('approve'))for(const decision of ['accept','decline']){const button=document.createElement('button');text(button,decision==='accept'?'Approve':'Decline');button.onclick=async()=>{if(decision==='accept'&&!confirm('Approve this exact action?'))return;try{await post(`/mobile/api/conversations/${id}/agent/approval`,{request_id:item.id,decision});await openConversation(id)}catch(error){alert(error.message)}};card.append(button)}box.append(card)}
+}catch(error){text($('approvals'),error.message)}}
+async function sendTurn(target,value){
+  const images=pendingImages.map(({name,type,data_url})=>({name,type,data_url})),files=pendingFiles.map(({name,type,data_url})=>({name,type,data_url}));
+  if(conversation.provider==='local'){
+    const response=await fetch(`/mobile/api/conversations/${target}/turn`,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:conversation.model,message:value,images,files,stream:true})});
+    if(!response.ok){const data=await response.json();const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}
+    $('message').value='';clearAttachments();await openConversation(target);const reader=response.body.getReader();while(true){const result=await reader.read();if(result.done)break}await openConversation(target);return;
+  }
+  await post(`/mobile/api/conversations/${target}/turn`,{model:conversation.model,message:value,images,files});$('message').value='';clearAttachments();await openConversation(target);
+}
+$('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conversation)return;const value=$('message').value.trim();if(!value&&!pendingImages.length&&!pendingFiles.length)return;const button=$('sendForm').querySelector('button[type=submit]');button.disabled=true;const target=selected;try{
+  if(agentActive){if(pendingImages.length||pendingFiles.length){alert('Wait for the active turn to finish before sending attachments.');return}try{await post(`/mobile/api/conversations/${target}/agent/steer`,{message:value});$('message').value='';await openConversation(target);return}catch(error){if(error.status!==409)throw error;await openConversation(target);if(agentActive)throw error}}
+  await sendTurn(target,value);
+}catch(error){alert(error.message)}finally{button.disabled=false}};
 $('interrupt').onclick=async()=>{if(!selected||!confirm('Stop the current turn?'))return;try{await post(`/mobile/api/conversations/${selected}/agent/interrupt`,{});await openConversation(selected)}catch(error){alert(error.message)}};
 async function start(){try{const caps=await json('/mobile/api/capabilities');permissions=new Set(caps.permissions||[])}catch(error){text($('statusMessage'),error.message)}loadStatus();setInterval(()=>{if(!$('chatPanel').classList.contains('hide')&&!$('workView').classList.contains('hide')&&selected)openConversation(selected)},5000);setInterval(()=>{if(!$('listPanel').classList.contains('hide')&&!$('workView').classList.contains('hide'))loadWork()},15000);setInterval(()=>{if(!$('statusView').classList.contains('hide'))loadStatus()},20000)}start();
 </script>
