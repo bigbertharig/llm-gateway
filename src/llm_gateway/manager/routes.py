@@ -194,7 +194,19 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         service = status.get("shared_kv_service") or {}
         chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
         parent_chat = "main" if parent == "cloud/codex" else parent[len(prefix):]
-        if service.get("status") != "ready" or parent_chat not in chats:
+        if service.get("status") != "ready":
+            raise ManagerError(409, "shared parent is not ready")
+        if parent_chat in chats:
+            parent_gpu = chats[parent_chat].get("gpu")
+        elif parent == "cloud/codex":
+            # A headless shared service reserves its parent weights without a
+            # main chat. Its zero-context service reservation is the parent.
+            main = (service.get("reservations") or {}).get("main") or {}
+            parent_gpus = (main.get("placement") or {}).get("gpus") or []
+            if main.get("context_capacity") != 0 or not parent_gpus or type(parent_gpus[0]) is not int:
+                raise ManagerError(409, "shared parent is not ready")
+            parent_gpu = parent_gpus[0]
+        else:
             raise ManagerError(409, "shared parent is not ready")
         if expected_instance is not None and service.get("instance_id") != expected_instance:
             raise ManagerError(409, "shared service instance changed before release")
@@ -203,7 +215,7 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 raise ManagerError(409, "shared child is not ready")
             return {"released": route, "already_released": True,
                     "service_instance_id": service.get("instance_id")}
-        if chats[child_id].get("gpu") == chats[parent_chat].get("gpu"):
+        if chats[child_id].get("gpu") == parent_gpu:
             raise ManagerError(409, "child is not isolated from parent")
         if service.get("model") != shared[prefix]:
             raise ManagerError(409, "shared child model changed")

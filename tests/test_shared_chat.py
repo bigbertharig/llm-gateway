@@ -431,6 +431,20 @@ def test_headless_pool_is_mode_matched_and_can_serve_cloud_parent(monkeypatch):
         assert got.status_code == 200, got.text
         assert got.json()["candidate_id"] == "qwen35_headless_worker_pool"
         assert got.json()["reservation"]["placement"]["runtime_gpu"] == 1
+        child = got.json()
+        released = client.post("/v1/manager/agent-routes/release", json={
+            "parent_route": "cloud/codex", "route": child["route"],
+            "service_instance_id": child["service_instance_id"],
+            "reservation_id": child["reservation"]["reservation_id"]})
+        assert released.status_code == 200, released.text
+        assert released.json()["released"] == child["route"]
+        assert rig.chats == []
+        repeated = client.post("/v1/manager/agent-routes/release", json={
+            "parent_route": "cloud/codex", "route": child["route"],
+            "service_instance_id": child["service_instance_id"],
+            "reservation_id": child["reservation"]["reservation_id"]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["already_released"] is True
 
 
 def test_cloud_parent_starts_shared_service_and_releases_worker(monkeypatch):

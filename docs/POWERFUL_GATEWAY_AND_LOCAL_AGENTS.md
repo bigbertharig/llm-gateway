@@ -1,6 +1,6 @@
 # Powerful gateway host and local child agents
 
-Status: single-rig cloud-to-local path live, 2026-11-14. The Pi remains the live controller. Multi-rig placement remains a design target.
+Status: single-rig cloud-to-local path live and verified with the Qwen headless worker pool, 2026-11-18. The Pi remains the live controller. Multi-rig placement remains a design target.
 
 ## Target placement
 
@@ -9,6 +9,10 @@ A powerful GPU machine can be the main entrance to the system. It can run the ga
 The current gateway manages one rig. Reaching this target requires a rig list, per-rig observation and model-port connections, placement across rigs, and the rig hardware interface on the powerful host. The Pi may remain a storage and network host even after controller duties move.
 
 ## Coding-session entry point
+
+The *main* chat is the controlling conversation, not a required GPU placement or model size. A cloud Codex main chat has no local KV context; its local chats are child agents. A local model can also be the main chat and delegate to other local chats. The current Qwen headless recipe reserves GPU0 for shared weights and service state, but does not place a controlling chat there. That placement is a property of the tested recipe, not a general rule for all rigs.
+
+On 2026-11-18, a hidden dashboard Codex conversation delegated to `qwen35_headless_worker_pool` at 16K context through `local_agents.delegate_task`. The local Qwen child answered, its MCP step completed, and the gateway released the child reservation; zero chats remained attached. The durable child receipt is `cf742253199e4df08233030d14416a44`. The first live attempt exposed a release bug: the gateway required a `main` KV chat even for a cloud parent. The release route now accepts the headless service's zero-context parent reservation and still verifies the service instance and child GPU. Gateway tests: 229 passed. Orchestration tests: 342 passed. The rig and gateway both now report 16 available default-context worker slots, matching the benchmarked headless limit; the separate main-chat recipe is capped at six. The controller also keeps the existing per-GPU memory checks, so these counts are upper bounds, not promises of fit at every context size. The active Qwen service instance `311a3b0e9c6343b6aaaa428555435471` survived the gateway restart and has no attached chats.
 
 The dashboard should let the operator choose a cloud Codex parent or a local parent and open a durable coding session tied to a workspace. The harness owns tools, context, child sessions, task limits, and receipts. The gateway owns model offers, readiness, leases, and GPU placement. A parent asks for a `coding` or `research` local child by capability and task; it does not choose a GPU.
 
