@@ -80,7 +80,7 @@ gigabit" as a lesson, but that was never measured.
    possible.
 5. **Lock it down.** `rpc-server` has no authentication and llama.cpp warns never to expose it. Bind it to
    the desktop's Ethernet address and add a Windows firewall rule like the RigNet ones: inbound TCP on its
-   port, remote address 10.0.0.3 only, interface Ethernet. Remove the rule and stop the server after the
+   port, remote address <rig-ip> only, interface Ethernet. Remove the rule and stop the server after the
    test (`teardown_desktop_rig_ssh.ps1 -Level pause` for ssh).
 6. **Cards:** hold rig cards with `rigctl claim` for the test's duration so lanes and campaigns cannot
    take them. Loads go outside the harness (it does not know RPC devices), as in the 2026-10-19 tests.

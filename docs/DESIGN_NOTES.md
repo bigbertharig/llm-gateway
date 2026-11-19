@@ -84,12 +84,12 @@ built to run side by side later. The defaults should make the single-use case si
 
 ### First two-rig test (2026-10-19)
 
-A Windows desktop (GTX 1070 8GB, 10.0.0.4) ran as a second rig next to the GPU rig, both driven from
+A Windows desktop (GTX 1070 8GB, <second-rig-ip>) ran as a second rig next to the GPU rig, both driven from
 the Pi. The gateway is still single-rig, so the desktop side was hand-started: a container plus a
 Pi tunnel, not `rig.py`.
 
 - Access: Windows OpenSSH server with its default shell set to WSL `bash.exe`, so `ssh desktop-rig`
-  lands in Ubuntu like `ssh rig`. Key-only, firewall open to 10.0.0.0/24 on the Ethernet adapter
+  lands in Ubuntu like `ssh rig`. Key-only, firewall open to <rig-subnet> on the Ethernet adapter
   only. Windows 10 has no WSL mirrored networking, so sshd inside WSL is not reachable.
 - Worker mode is a manual switch (`worker_mode.ps1 on|off|status`, llm_orchestration
   `shared/scripts/desktop_worker/`). WSL stops the Ubuntu instance when no Windows process holds

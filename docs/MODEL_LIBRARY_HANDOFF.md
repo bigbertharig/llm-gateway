@@ -6,7 +6,7 @@ Benchmarking owns model experiments, receipts, `model_registry.json`,
 It validates its model library with:
 
 ```bash
-cd /media/bryan/shared/plans/shoulders/benchmarking
+cd <pi-shared-root>/plans/shoulders/benchmarking
 python3 scripts/active/model_library.py export
 python3 scripts/active/model_library.py check
 ```
@@ -14,7 +14,7 @@ python3 scripts/active/model_library.py check
 On the Pi, Manager asks what changed and imports it with:
 
 ```bash
-cd /home/bryan/llm-gateway
+cd <gateway-checkout>
 .venv/bin/python tools/sync_model_library.py --dry-run  # report only
 .venv/bin/python tools/sync_model_library.py            # validate and import
 .venv/bin/python tools/sync_model_library.py --check    # 0 current, 1 pending, 2 invalid
