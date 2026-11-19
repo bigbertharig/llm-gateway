@@ -72,7 +72,8 @@ def test_mobile_streamed_turn_reaches_gateway_as_stream(monkeypatch):
 
 def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     page = STATIC.read_text(encoding="utf-8")
-    assert ".tool-message" in page and "'tool-message'" in page
+    assert ".message.assistant{color:#fff}" in page
+    assert ".tool-message" in page and "color:#9eabb2" in page and "'tool-message'" in page
     assert 'id="attachImage"' in page and 'id="attachFile"' in page
     assert 'accept="image/png,image/jpeg,image/webp"' in page
     assert "state.active===true&&state.turn?.state==='running'" in page
