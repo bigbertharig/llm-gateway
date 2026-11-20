@@ -12,7 +12,7 @@ into files the gateway owns, so the gateway runs with no benchmarking checkout:
 
 The Gateway service runs it at startup when the Benchmarking export is available.
 
-Usage (on the Pi, where the benchmarking repo is on the shared drive):
+Usage (with Benchmarking in a sibling checkout or BENCHMARKING_ROOT set):
   tools/generate_profiles.py            rewrite both files
   tools/generate_profiles.py --check    exit 1 if the offer is invalid or either file is stale
   tools/generate_profiles.py --sync-if-available  service startup; use the last valid snapshot if source is unavailable
@@ -33,11 +33,7 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = REPO / "remote_profiles.json"
 CATALOG_PATH = REPO / "model_catalog.json"
-BENCHMARKING_ROOTS = (
-    REPO.parent / "benchmarking",  # sibling checkout on the controller
-    Path("/media/bryan/shared/plans/shoulders/benchmarking"),          # Pi
-    Path.home() / "llm_orchestration/shared/plans/shoulders/benchmarking",  # rig
-)
+BENCHMARKING_ROOTS = (REPO.parent / "benchmarking",)
 # Routine runtime offers are limited to reviewed models. Candidates remain in the
 # catalog for explicit benchmark loads, including orchestration test procedures.
 OFFERABLE_STATUSES = {"active"}
