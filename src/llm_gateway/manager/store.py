@@ -37,6 +37,10 @@ class RigRecord:
 
     # ---------------------------------------------------------------- leases and claims
 
+    async def preview(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """Read the rig's current admission decision without creating a lease."""
+        return await self._call("lease", "preview", "--spec", json.dumps(spec))
+
     async def acquire(self, spec: dict[str, Any]) -> dict[str, Any]:
         return (await self._call("lease", "acquire", "--spec", json.dumps(spec), *self._as_me()))["lease"]
 

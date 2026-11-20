@@ -176,8 +176,9 @@ FAKE_RIG = textwrap.dedent("""\
         match = [i for i in st["plan_items"] if i["id"] == a[2]]
         if not match: fail("not_found", f"no plan item {a[2]}")
         match[0]["state"] = "cancelled"; save(); print(json.dumps({"item": match[0]})); sys.exit(0)
-    if a[:2] == ["lease", "acquire"]:
-        spec = json.loads(a[3]); require(opts(a[4:]))
+    if a[:2] in (["lease", "acquire"], ["lease", "preview"]):
+        spec = json.loads(a[3])
+        if a[1] == "acquire": require(opts(a[4:]))
         if "gpus_needed" in spec:
             pool = sorted(st["gpus"], key=lambda g: (g["total_mb"], g["index"]))
             occupied = {g for l in st["leases"] for g in l["gpu_ids"]}
@@ -213,6 +214,9 @@ FAKE_RIG = textwrap.dedent("""\
         for c in st["claims"]:
             if set(gpus) & set(c["gpu_ids"]) and (spec.get("metadata") or {}).get("claim") != c["name"]:
                 fail("conflict", f"GPU {gpus} claimed by {c['name']}")
+        if a[1] == "preview":
+            print(json.dumps({"admitted": True, "gpu_ids": gpus, "ports": spec["ports"],
+                              "port": port})); sys.exit(0)
         now = time.time()
         lease = {"lease_id": f"{spec['controller']}-{len(st['leases'])}-{int(now*1000)}", "controller": spec["controller"],
                  "owner": spec["owner"], "run_id": spec["run_id"], "gpu_ids": gpus, "ports": spec["ports"],
@@ -528,6 +532,20 @@ def test_explicit_gpus_conflict_names_the_holder(menv):
     lid = first.json()["lease"]["lease_id"]
     assert c.post(f"/v1/manager/leases/{lid}/release", json={"owner": "someone"}).status_code == 403
     assert c.post(f"/v1/manager/leases/{lid}/release", json={"owner": "lanes"}).status_code == 200
+
+
+def test_lease_preview_uses_rig_admission_without_reserving_cards(menv):
+    c = menv["client"]
+    request = {"gpus_needed": [{"min_vram_mb": 5000, "max_vram_mb": 8192}]}
+    response = c.post("/v1/manager/leases/preview", json=request)
+    assert response.status_code == 200
+    assert response.json() == {"admitted": True, "gpu_ids": [1], "ports": [11435], "port": 11435}
+    assert menv["leases"]() == []
+    refused = c.post("/v1/manager/leases/preview", json={
+        "gpus_needed": [{"min_vram_mb": 30000}]})
+    assert refused.status_code == 503
+    assert "no capacity" in refused.json()["error"]["message"]
+    assert menv["leases"]() == []
 
 
 def test_force_load_rejects_unknown_model_before_stopping_occupant(menv):

@@ -318,6 +318,16 @@ class Manager:
 
     # ------------------------------------------------------------------ leases
 
+    async def preview_lease(self, *, gpus_needed: list[dict] | None = None,
+                            gpu_ids: list[int] | None = None, claim: str | None = None) -> dict:
+        """Ask rig admission for a current, nonbinding card and port proposal."""
+        if bool(gpus_needed) == bool(gpu_ids):
+            raise ManagerError(400, "give exactly one of gpus_needed or gpu_ids")
+        return await self.record.preview({
+            **({"gpu_ids": gpu_ids} if gpu_ids is not None else {"gpus_needed": gpus_needed}),
+            "metadata": {"claim": claim} if claim else {},
+        })
+
     async def acquire(self, *, controller: str, owner: str, run_id: str, gpus_needed: list[dict] | None = None,
                       gpu_ids: list[int] | None = None, claim: str | None = None, ttl_s: int = 120,
                       model: str = "", purpose: str = "", lane: str | None = None,

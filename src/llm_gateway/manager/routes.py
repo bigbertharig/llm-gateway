@@ -477,6 +477,13 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
     async def leases():
         return {"leases": await manager.leases(), "claims": await manager.claims()}
 
+    @r.post("/leases/preview")
+    async def preview_lease(request: Request):
+        """Nonbinding rig admission check; acquire rechecks under the rig lock."""
+        b = await _body(request)
+        return await manager.preview_lease(gpus_needed=b.get("gpus_needed"), gpu_ids=b.get("gpu_ids"),
+                                           claim=b.get("claim"))
+
     @r.post("/leases", status_code=201)
     async def acquire(request: Request):
         b = await _body(request)

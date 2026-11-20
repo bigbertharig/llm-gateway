@@ -15,15 +15,15 @@ than one rig): [DESIGN_NOTES.md](DESIGN_NOTES.md).
 
 ## Two layers
 
-| | Pi: controller management (this repo) | Rig: hardware management (`llm_orchestration/shared/scripts/rig/`) |
+| | Gateway host: controller management (this repo) | Rig: hardware management (`llm_orchestration/shared/scripts/rig/`) |
 |---|---|---|
-| Decides | who holds which GPUs (leases, claims), placement, ports; later the job queue | nothing about allocation |
-| Keeps | nothing persistent (reads the rig) | the lease and claim record, its own mode state, job state |
-| Does | sends the rig one command per action, observes, reconciles, reports | runs what it was given on the GPUs it was told; reports `rig observe` |
-| Enforces | allocation rules | physical rules, whoever asks: one model load at a time, GPU health, port in use; next: power and thermal guards, VRAM fit |
+| Decides | model offer, context estimate, load policy and work owner | live card admission, lease GPUs and ports |
+| Keeps | a recovery mirror of the rig report, not the authoritative lease record | the lease and claim record, its own mode state, job state |
+| Does | sends requirements or an operator pin, observes, reconciles, reports | selects cards, starts admitted runtimes, reports `rig observe` |
+| Enforces | model and user policy | atomic lease/claim admission, GPU health, port use and runtime rules |
 | Disconnected | reports the rig unreachable | keeps going: finishes running and queued work; new loads wait for new leases |
 
-The Pi never micromanages: it does not sequence loads, poll temperatures or retry around the rig's
+Gateway never micromanages: it does not sequence loads, poll temperatures or retry around the rig's
 rules. Monitoring and safety live on the rig, next to the hardware. The rig is meant to run fully
 offline: its state is rig-local, observations and heartbeats exist for the Pi's benefit, and (to
 build) results fall back to local storage when the shared drive is gone and sync on reconnect.
@@ -73,9 +73,11 @@ build) results fall back to local storage when the shared drive is gone and sync
    integration lanes, runtime smoke), so that is where Phase D enforces it.
 3. **The port comes from the lease:** 11434 + the lowest GPU index. A lease reserves 11434 + each of
    its GPUs, so two leases never share a port (the worker and benchmark-lane convention already).
-4. **Placement is the manager's.** A request gives `gpus_needed` (per card `min_vram_mb`, optional
-   `max_vram_mb`) or explicit `gpu_ids`. A card is available only if no lease holds it, nothing runs on
-   it, and it is unclaimed (or claimed by the claim the request names). Smallest fit first.
+4. **The rig admits physical placement.** Gateway sends `gpus_needed` (per card `min_vram_mb`, optional
+   `max_vram_mb`) or an explicit operator `gpu_ids` pin. The rig selects the smallest complete fit
+   under its admission lock. A card is available only if no lease holds it, nothing runs on it, and
+   it is unclaimed (or claimed by the claim the request names). Gateway still estimates model/context
+   fit; those remaining physical capacity calculations are part of the migration.
 5. **Everything is in the pool by default. A claim takes cards out** (`rigctl claim bench --gpus 0`):
    only requests naming the claim get them. The rig refuses a lease on a claimed card that does not
    name the claim.
@@ -85,6 +87,10 @@ build) results fall back to local storage when the shared drive is gone and sync
    or runtime behind them; other controllers' expired leases are reported, not touched.
 
 ## The client process
+
+For a nonbinding current answer, `POST /v1/manager/leases/preview` accepts
+`{gpus_needed | gpu_ids, claim?}` and returns the rig's proposed `gpu_ids` and ports or its
+specific refusal. It creates no lease. A later acquisition rechecks live state atomically.
 
 ```text
 1. ask      POST /v1/manager/leases  {controller, owner, run_id, gpus_needed | gpu_ids, claim?, ttl_s, model, purpose}

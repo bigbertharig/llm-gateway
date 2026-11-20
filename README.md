@@ -98,7 +98,7 @@ What the manager learns from loads goes to `lessons/` (see `lessons/README.md`).
 | `POST /tokenize`, `POST /detokenize` | llama-server tokenizer, routed by `model`. Exact counts for compaction |
 | `GET /v1/rig/status` | rig status plus `gateway_loading`: loads in progress with `since` and `elapsed_s` |
 | `GET /health` | liveness |
-| `/v1/manager/...` | the rig manager: `status`, `leases`, `claims`, `models/fit`, `models/load`, `profiles/<id>/load\|unload`, `runs` (start, `recover`, `stop`, `dismiss`), `owners/<who>/cancel`, `kill`, `plan`, `controller`, `reconcile`. Rules: [docs/MANAGER.md](docs/MANAGER.md) |
+| `/v1/manager/...` | the rig manager: `status`, `leases/preview` (read-only rig admission), `leases`, `claims`, `models/fit`, `models/load`, `profiles/<id>/load\|unload`, `runs` (start, `recover`, `stop`, `dismiss`), `owners/<who>/cancel`, `kill`, `plan`, `controller`, `reconcile`. Rules: [docs/MANAGER.md](docs/MANAGER.md) |
 | `/dashboard/` | the dashboard and its `api/` routes |
 
 Harnesses should read `GET /v1/rig/ready-roster` before inference. Its `data` contains only
