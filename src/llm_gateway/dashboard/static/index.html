@@ -314,7 +314,7 @@ textarea { width: 100%; min-height: 80px; }
 @media (prefers-reduced-motion: reduce) { #chat-progress::before { animation: none; } }
 @media (max-width: 760px) { .chat-layout { grid-template-columns: 1fr; } .chat-messages { max-height: 50vh; } }
 
-/* Rig overview uses manager status and orchestration diagnostics through gateway APIs. */
+/* Rig overview uses manager and rig status through gateway APIs. */
 .rig-overview { display: grid; grid-template-columns: minmax(240px, 1.5fr) repeat(4, minmax(130px, 1fr)); gap: 10px; }
 .rig-hero, .rig-metric, .rig-panel, .rig-details { background: #0b263ce8; border: 1px solid var(--line); border-radius: 3px; padding: 16px;
   box-shadow: inset 0 1px #72d3ff0a; }
@@ -379,7 +379,6 @@ a { color: var(--cool); }
   <button role="tab" data-tab="rig" aria-selected="true">Rig</button>
   <button role="tab" data-tab="models" aria-selected="false">Models</button>
   <button role="tab" data-tab="benchmarks" aria-selected="false">Benchmarks</button>
-  <button role="tab" data-tab="orchestration" aria-selected="false">Orchestration</button>
   <button role="tab" data-tab="chat" aria-selected="false">Chat</button>
   <button role="tab" data-tab="coding" aria-selected="false">Coding</button>
 </nav>
@@ -565,22 +564,6 @@ a { color: var(--cool); }
     </div>
   </section>
 
-  <section id="tab-orchestration" hidden>
-    <div id="orch-summary"></div>
-    <h2>Alerts</h2><div id="orch-alerts"></div>
-    <h2>Workers</h2><div class="scroll" id="orch-workers"></div>
-    <h2>Batches</h2><div class="scroll" id="orch-batches"></div>
-    <h2>Finished in the last 24 hours</h2><div class="scroll" id="orch-recent"></div>
-    <h2>Job activity</h2><div class="scroll" id="orch-activity">Choose a batch to read its events.</div>
-    <details class="rig-details"><summary>Housekeeping</summary>
-    <form class="inline" id="house-form">
-      <button class="act" type="button" data-orch="cleanup_stale">Clean up stale task files</button>
-      <label>Worker <input name="worker" placeholder="gpu-3" size="8"></label>
-      <button class="act" type="button" data-orch="requeue_worker">Requeue its tasks</button>
-      <button class="act danger" type="button" data-orch="kill_all_active">Kill all active plans</button>
-    </form>
-    </details>
-  </section>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -722,9 +705,8 @@ function renderRig(s, health = {}) {
   const used = gpus.reduce((n, x) => n + (x.observed?.used_mb || 0), 0);
   const total = gpus.reduce((n, x) => n + (x.vram_mb || 0), 0);
   const scan = s.gpu_scan || {};
-  const orch = health.orchestration || {}, diag = health.diagnostics || {};
   const offline = s.from_copy || s.rig?.reachable === false;
-  const unhealthy = offline || g.level === "stop" || g.level === "bad" || scan.ok === false || orch.hardware?.ok === false || diag.ok === false;
+  const unhealthy = offline || g.level === "stop" || g.level === "bad" || scan.ok === false;
   const warning = !unhealthy && (g.level !== "ok" || g.loads_admitted === false);
   $("#rig-summary").innerHTML =
     `<div class="rig-hero ${unhealthy ? "bad" : warning ? "warn" : ""}"><span class="rig-kicker">Rig status</span>` +
@@ -737,20 +719,17 @@ function renderRig(s, health = {}) {
   const checks = [
     ["Manager guard", g.level === "ok" && g.loads_admitted !== false, g.level || "unknown"],
     ["GPU scan", scan.ok === true, scan.ok === false ? "failed" : scan.ok === true ? "ready" : "unknown"],
-    ["Orchestration", orch.hardware?.ok === true, orch.hardware?.ok === false ? "failed" : orch.hardware ? "ready" : "unavailable"],
-    ["Diagnostics", diag.ok === true, diag.ok === false ? "failed" : diag.generated_at ? "ready" : "unavailable"],
   ];
   $("#rig-health").innerHTML = checks.map(([name, ok, detail]) =>
     `<span class="rig-health-pill ${ok ? "good" : detail === "unknown" || detail === "unavailable" ? "warn" : "bad"}">${esc(name)} · ${esc(detail)}</span>`).join("") +
     `<button class="act" id="rig-refresh-health" type="button">Refresh health</button>`;
-  $("#rig-refresh-health").onclick = () => { rigHealthAt = 0; refresh(true); };
+  $("#rig-refresh-health").onclick = () => refresh(true);
   const alerts = [];
   if (offline) alerts.push(`Rig unreachable${s.rig?.down_since ? " since " + s.rig.down_since : ""}; showing last status`);
   if (s.state_error) alerts.push(s.state_error);
   if (s.last_error) alerts.push(s.last_error);
   if (g.level !== "ok" && g.why) alerts.push(`Manager guard: ${g.why}`);
   for (const error of scan.errors || []) alerts.push(`GPU scan: ${error}`);
-  for (const check of diag.checks || []) if (check.ok === false) alerts.push(`${check.name}: ${check.reason || "failed"}`);
   $("#rig-alerts").innerHTML = alerts.slice(0, 5).map((a) => `<div>${esc(a)}</div>`).join("");
   $("#rig-gpu-count").textContent = `${gpus.length} detected · ${free} free`;
   const board = $("#board");
@@ -794,13 +773,10 @@ function renderRig(s, health = {}) {
   const activeItems = ((s.plan || {}).items || []).filter((i) => ["queued", "running"].includes(i.state));
   const activeRuns = ((s.plan || {}).runs || []).filter((r) => r.state === "running");
   const claims = s.claims || [];
-  const batchCount = orch.active_batch_count || 0;
-  const activeBatches = Object.entries(orch.active_batches || {});
-  $("#rig-active").innerHTML = `<div class="line"><b>${activeItems.length}</b> manager jobs · <b>${activeRuns.length}</b> runs · <b>${batchCount}</b> orchestration batches</div>` +
-    (!activeItems.length && !activeRuns.length && !batchCount ? '<div class="line">No tracked job is running.</div>' : "") +
+  $("#rig-active").innerHTML = `<div class="line"><b>${activeItems.length}</b> manager jobs · <b>${activeRuns.length}</b> runs</div>` +
+    (!activeItems.length && !activeRuns.length ? '<div class="line">No tracked job is running.</div>' : "") +
     activeItems.slice(0, 5).map((i) => `<div class="rig-profile"><div><strong>${esc(i.args?.note || i.args?.run || i.args?.profile || i.id)}</strong><small>${esc(i.state)} · ${esc(i.kind)} · ${esc(i.id)}</small></div></div>`).join("") +
     activeRuns.slice(0, 5).map((r) => `<div class="rig-profile"><div><strong>${esc(r.run)}</strong><small>Running · ${esc(r.owner || "manager run")}</small></div></div>`).join("") +
-    activeBatches.slice(0, 5).map(([id, batch]) => `<div class="rig-profile"><div><strong>${esc(batch.display_name || batch.plan || id)}</strong><small>Orchestration batch · ${esc(id)}</small></div></div>`).join("") +
     `<div class="line"><b>${claims.length}</b> GPU reservations. A reservation does not confirm a model is loaded.</div>` +
     claims.slice(0, 8).map((claim) => {
       const cards = (claim.gpu_ids || []).map((id) => gpus.find((gpu) => gpu.gpu === id)).filter(Boolean);
@@ -929,60 +905,6 @@ function renderBenchmarks(d) {
     `<div class="line">${esc(d.error || "No published model evidence yet.")}</div>`;
 }
 
-// ---------------------------------------------------------------- orchestration
-function renderOrch(d) {
-  const hw = d.hardware || {};
-  const guard = hw.guard_level || "unavailable";
-  const gpuCount = (hw.gpu_ids || []).length;
-  $("#orch-summary").className = "rig-overview";
-  $("#orch-summary").innerHTML =
-    `<div class="rig-metric"><label>Active batches</label><strong>${d.active_batch_count ?? 0}</strong><small>${esc(d.task_mode || "idle")}</small></div>` +
-    `<div class="rig-metric"><label>Hardware guard</label><strong>${esc(guard)}</strong><small>${esc(hw.guard_reason || "")}</small></div>` +
-    `<div class="rig-metric"><label>GPUs visible</label><strong>${gpuCount}</strong><small>${hw.gpu_scan_ok ? "scan healthy" : "scan needs attention"}</small></div>` +
-    `<div class="rig-metric"><label>Task workers</label><strong>${(d.workers || []).length}</strong><small>reported ${esc(d.generated_at || "?")}</small></div>`;
-  const alerts = [d.brain, ...(d.workers || [])].filter((w) => w && w.heartbeat_status !== "ok")
-    .map((w) => ({severity: "bad", worker: w.name, message: `heartbeat ${w.heartbeat_status}`}));
-  if (!hw.ok) alerts.unshift({severity: "bad", worker: "hardware", message: hw.error || hw.guard_reason || "health check failed"});
-  $("#orch-alerts").innerHTML = alerts.length ? alerts.slice(0, 20).map((a) => `<div class="line ${a.severity === "bad" ? "bad" : "warn"}">${esc(a.worker || "")} &middot; ${esc(a.message)}</div>`).join("") : '<div class="line">No alerts.</div>';
-  const workers = [d.brain, ...(d.workers || [])].filter(Boolean);
-  $("#orch-workers").innerHTML = `<table><tr><th>Worker</th><th>State</th><th>Model</th><th>Busy</th><th class="num">Heartbeat</th><th class="num">Temp</th></tr>` +
-    workers.map((w) => `<tr><td>${esc(w.name)}</td><td>${esc(w.state)}</td><td class="mono">${esc(w.loaded_model || w.model || "-")}</td>
-      <td>${esc(w.busy ? (w.busy_lane || "busy") + (w.busy_owner ? " / " + w.busy_owner : "") : "")}</td>
-      <td class="num">${age(w.age_s)}</td><td class="num">${fmt(w.gpu_temp_c)}</td></tr>`).join("") + "</table>" +
-    (workers.length ? "" : '<div class="line">No task workers active.</div>');
-  const batches = Object.entries(d.active_batches || {});
-  $("#orch-batches").innerHTML = batches.length ? `<table><tr><th>Batch</th><th>Plan</th><th>Started</th><th></th></tr>` +
-    batches.map(([id, b]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(b.display_name || b.plan || "")}</td>
-      <td class="mono">${esc(String(b.started_at || "").slice(0, 16))}</td>
-      <td><button class="act" data-activity="${esc(id)}">Activity</button>
-          <button class="act" data-batch="batch_outputs" data-id="${esc(id)}">Outputs</button>
-          <button class="act danger" data-batch="kill_plan" data-id="${esc(id)}">Kill</button></td></tr>`).join("") + "</table>" : '<div class="line">No active batches.</div>';
-  $("#orch-batches").querySelectorAll("[data-batch]").forEach((b) => b.onclick = () => {
-    const a = b.dataset.batch, id = b.dataset.id;
-    if (a === "batch_outputs") return api("orchestration/batch_outputs", {batch_id: id}).then((o) => toast(JSON.stringify(o, null, 1).slice(0, 1500))).catch((e) => toast(e.message, "bad"));
-    act(`${a.replace("_plan", "")} ${id}`, "orchestration/" + a, {batch_id: id}, a === "kill_plan" ? `Kill batch ${id}?` : "");
-  });
-  const recent = d.recent_batches || [];
-  $("#orch-recent").innerHTML = recent.length ? recent.map((b) =>
-    `<div class="line"><button class="act" data-activity="${esc(b.batch_id)}">Activity</button> ${esc(b.plan || b.batch_id)} · ${esc(b.status)} · ${esc(b.completed_at)}</div>`).join("")
-    : '<div class="line">No recently finished batches.</div>';
-  document.querySelectorAll("#orch-batches [data-activity], #orch-recent [data-activity]").forEach((button) =>
-    button.onclick = () => loadOrchActivity(button.dataset.activity));
-}
-async function loadOrchActivity(batchId, after = 0) {
-  const target = $("#orch-activity");
-  if (!after) target.innerHTML = `<div class="line">${esc(batchId)}</div>`;
-  try {
-    const page = await api("orchestration/activity?batch_id=" + encodeURIComponent(batchId) + "&after=" + after);
-    target.querySelector("[data-more]")?.remove();
-    target.insertAdjacentHTML("beforeend", page.events.map((e) =>
-      `<div class="line">${esc(e.recorded_at || "")} · ${esc(e.event || "")} · ${esc(e.task_name || e.task_id || "")}</div>`).join(""));
-    if (page.has_more) {
-      target.insertAdjacentHTML("beforeend", '<button class="act" data-more>Load more</button>');
-      target.querySelector("[data-more]").onclick = () => loadOrchActivity(batchId, page.next_after);
-    }
-  } catch (e) { target.insertAdjacentHTML("beforeend", `<div class="line bad">${esc(e.message)}</div>`); }
-}
 // ---------------------------------------------------------------- chat
 function setChatContextMeter(used, limit, recounting = false) {
   const meter = $("#chat-context-meter");
@@ -3021,36 +2943,18 @@ $("#load-form").onsubmit = (e) => {
                 args: f.get("args"), force: f.get("force") === "on"};
   act(`Load ${body.model}`, "rig/load", body, body.force ? `Kill whatever runs on cards ${body.gpu_ids} and load ${body.model}?` : "");
 };
-document.querySelectorAll("[data-orch]").forEach((b) => b.onclick = () => {
-  const a = b.dataset.orch, worker = $("#house-form").worker.value.trim();
-  act(b.textContent, "orchestration/" + a, a === "requeue_worker" ? {worker} : {}, a === "kill_all_active" ? "Kill every active plan?" : "");
-});
-const every = {rig: 5000, models: 60000, benchmarks: 15000, orchestration: 10000, chat: 10000};
+const every = {rig: 5000, models: 60000, benchmarks: 15000, chat: 10000};
 let last = {};
-let rigHealth = {orchestration: null, diagnostics: null};
-let rigHealthAt = 0;
 async function refresh(now) {
   const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
   try {
     if (tab === "rig" && due("rig")) {
-      const checkHealth = !rigHealthAt || Date.now() - rigHealthAt > 30000;
-      const [status, orch, diag] = await Promise.allSettled([
-        api("rig"), checkHealth ? api("orchestration") : Promise.resolve(rigHealth.orchestration),
-        checkHealth ? api("orchestration/diagnostics") : Promise.resolve(rigHealth.diagnostics),
-      ]);
-      if (orch.status === "fulfilled") rigHealth.orchestration = orch.value;
-      else rigHealth.orchestration = null;
-      if (diag.status === "fulfilled") rigHealth.diagnostics = diag.value;
-      else rigHealth.diagnostics = null;
-      if (checkHealth) rigHealthAt = Date.now();
-      if (status.status === "rejected") throw status.reason;
-      renderRig(status.value, rigHealth);
+      renderRig(await api("rig"));
       last.rig = Date.now();
       if (!modelsData) renderModels(await api("models"));
     }
     if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
     if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
-    if (tab === "orchestration" && due("orchestration")) { renderOrch(await api("orchestration")); last.orchestration = Date.now(); }
     if ((tab === "chat" || tab === "coding") && due("chat") && !chatBusy) {
       await loadChat(); last.chat = Date.now();
       if (tab === "coding") { await loadCodingWorkspace(); last.coding = Date.now(); }

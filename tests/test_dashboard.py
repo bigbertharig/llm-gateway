@@ -1,4 +1,4 @@
-"""The dashboard (docs/DASHBOARD.md): page, rig API and overrides, model/benchmark summaries, orchestration."""
+"""The dashboard (docs/DASHBOARD.md): page, rig API and overrides, model/benchmark summaries."""
 
 from __future__ import annotations
 
@@ -64,34 +64,11 @@ def test_benchmark_evidence_uses_imported_gateway_catalog(tmp_path, monkeypatch,
     assert out["models"][0]["scores"]["code"]["score"] == 0.8
 
 
-def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noqa: F811
-    def fake_request(method, path, body=None):
-        if path.endswith("/status"):
-            return {"active_batch_count": 1, "workers": [], "brain": {"heartbeat_status": "ok"}}
-        if path.endswith("/diagnostics"):
-            return {"ok": True, "checks": []}
-        if "/activity?" in path:
-            return {"batch_id": "b1", "events": [{"event": "task_started"}], "has_more": False}
-        if path.endswith("/kill_plan"):
-            return {"ok": True, "message": f"Killed batch {body['batch_id']}"}
-        if path.endswith("/requeue_worker"):
-            return {"ok": True, "message": f"requeued {body['worker']}"}
-        raise AssertionError((method, path, body))
-
-    monkeypatch.setattr(sources, "orchestration_request", fake_request)
-    c = menv["client"]
-    assert c.get("/dashboard/api/orchestration").json()["active_batch_count"] == 1
-    assert c.get("/dashboard/api/orchestration/diagnostics").json()["ok"] is True
-    assert c.get("/dashboard/api/orchestration/activity?batch_id=b1").json()["events"][0]["event"] == "task_started"
-    assert c.get("/dashboard/api/orchestration/options").status_code == 405
-    assert c.post("/dashboard/api/orchestration/kill_plan", json={"batch_id": "b1"}).json()["message"] == "Killed batch b1"
-    assert c.post("/dashboard/api/orchestration/requeue_worker", json={"worker": "gpu-3"}).json()["ok"]
-    assert c.post("/dashboard/api/orchestration/rm_rf", json={}).status_code == 404
-    assert c.post("/dashboard/api/orchestration/start_plan", json={}).status_code == 404
-
-
-def test_a_missing_orchestration_socket_is_reported_not_raised(menv, tmp_path, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("ORCHESTRATION_API_SOCKET", str(tmp_path / "missing.sock"))
-    r = menv["client"].get("/dashboard/api/orchestration")
-    assert r.status_code == 503 and any(
-        name in r.json()["error"]["message"] for name in ("FileNotFoundError", "AttributeError"))
+def test_retired_queue_routes_are_absent(menv):  # noqa: F811
+    client = menv["client"]
+    page = client.get("/dashboard/").text
+    assert 'data-tab="orchestration"' not in page
+    assert 'api("orchestration' not in page
+    assert client.get("/dashboard/api/rig").status_code == 200
+    assert client.get("/dashboard/api/orchestration").status_code == 404
+    assert client.post("/dashboard/api/orchestration/kill_plan", json={}).status_code == 404

@@ -1,4 +1,4 @@
-"""Gateway dashboard routes: manager status/actions, imported evidence, and private orchestration API."""
+"""Gateway dashboard routes: manager status/actions and imported evidence."""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from ..manager.errors import ManagerError
 from . import sources
 
 STATIC = Path(__file__).parent / "static"
-ORCHESTRATION_ACTIONS = ("kill_plan", "kill_all_active", "batch_outputs",
-                         "cleanup_stale", "requeue_worker")
 
 
 async def _body(request: Request) -> dict[str, Any]:
@@ -138,42 +136,6 @@ def router(manager: Manager) -> APIRouter:
         try:
             return await asyncio.to_thread(sources.benchmark_evidence_summary)
         except (OSError, ValueError) as exc:
-            return _unavailable(exc)
-
-    # ---------------------------------------------------------------- orchestration (its own package)
-
-    @r.get("/api/orchestration")
-    async def orchestration():
-        try:
-            return await asyncio.to_thread(sources.orchestration_summary)
-        except Exception as exc:  # the other repo's code: report, never take the gateway down
-            return _unavailable(exc)
-
-    @r.get("/api/orchestration/diagnostics")
-    async def orchestration_diagnostics():
-        try:
-            return await asyncio.to_thread(sources.orchestration_diagnostics)
-        except Exception as exc:
-            return _unavailable(exc)
-
-    @r.get("/api/orchestration/activity")
-    async def orchestration_activity(batch_id: str, after: int = 0):
-        if not batch_id or len(batch_id) > 160 or after < 0:
-            raise ManagerError(400, "invalid activity request")
-        try:
-            return await asyncio.to_thread(sources.orchestration_activity, batch_id, after)
-        except Exception as exc:
-            return _unavailable(exc)
-
-    @r.post("/api/orchestration/{action}")
-    async def orchestration_action(action: str, request: Request):
-        if action not in ORCHESTRATION_ACTIONS:
-            raise ManagerError(404, f"unknown orchestration action {action}; known: {', '.join(ORCHESTRATION_ACTIONS)}")
-        b = await _body(request)
-
-        try:
-            return await asyncio.to_thread(sources.orchestration_action, action, b)
-        except Exception as exc:
             return _unavailable(exc)
 
     return r

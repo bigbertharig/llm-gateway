@@ -205,8 +205,7 @@ The library records `context_bounds.min` and `context_bounds.max` for current mo
 is the GGUF trained limit, not a guarantee of quality or a tested fit. `min` is a deliberate
 lower-context request, and `max` is an opt-in capacity search. The manager still checks
 measured OOM ceilings, card memory, and real allocation at load. An explicit `ctx` remains exact.
-The imported `schedule.placement` labels feed a legacy
-orchestration/dashboard path; manager fit does not use them. For example
+The imported `schedule.placement` labels remain in imported model metadata; manager fit does not use them. For example
 `ministral-3:8b` is labeled `single_gpu` there. Its default 16K fit on one
 1060 was refused, while `context_mode=min` now plans 8K on that card; `max` can project
 the largest fit on a chosen two-card split.

@@ -1,6 +1,6 @@
 # Work organization: status and pickup notes
 
-Updated 2026-11-18. This is the shared direction for llm-gateway, llm_orchestration,
+Updated 2026-11-19. This is the shared direction for llm-gateway, llm_orchestration,
 llm-harness, and benchmarking. It records a future work-organizing system; the
 legacy Markdown plans are not an active workflow or near-term migration target.
 It is the current pickup point for this work, based on the live repositories,
@@ -10,8 +10,8 @@ recent tests, and the repo-boundary decisions in this conversation.
 
 | Repo | Intended ownership | Current qualification |
 | --- | --- | --- |
-| **llm-gateway** | User-facing gateway and dashboard; work requests, steps, dependencies, model and recipe assignment, progress, retries, and run records. Its manager makes policy decisions using published benchmark evidence and live rig capacity. | The manager already handles fit, leases, loads, and requests. The dashboard still offers legacy Markdown plan submission. A new gateway job model has not been built. |
-| **llm_orchestration** | Hardware-facing execution: rig inventory, capacity, placement, admission, model lifecycle, reservations, telemetry, and low-level execution of concrete instructions. | It now selects cards for fit-based lease requests and admits them against live rig state. Gateway still computes some context fit and load policy. The old plan-reading brain, worker queue, CPU workers, and private plan API are legacy compatibility surfaces, not the intended owner of new work planning. |
+| **llm-gateway** | User-facing gateway and dashboard; work requests, steps, dependencies, model and recipe assignment, progress, retries, and run records. Its manager makes policy decisions using published benchmark evidence and live rig capacity. | The manager already handles fit, leases, loads, and requests. The old dashboard plan submission is removed. A new Gateway job model has not been built. |
+| **llm_orchestration** | Hardware-facing execution: rig inventory, capacity, placement, admission, model lifecycle, reservations, telemetry, and low-level execution of concrete instructions. | It now selects cards for fit-based lease requests and admits them against live rig state. Gateway still computes some context fit and load policy. The old plan-reading brain, worker queue, CPU workers, and private batch API have been removed. |
 | **llm-harness** | The project-owned model-use layer: agent loops, tools (including `rig_search`), context and sessions, prompt/tool contracts, guardrails, retries within a model interaction, and harness comparison. It consumes a selected model route and tool permissions; it does not decide GPU placement. | Shared MCP tools and comparison runners operate today. Six external harnesses are tested as references; their useful behavior is adapted into the project-owned Harness rather than selected as a wholesale dashboard engine. |
 | **benchmarking** | Evidence: model and runtime evaluations, model roles, measured fit/speed/context/concurrency, hardware scans, and recipe validation. It publishes reviewed data that gateway imports. | The model library and roles are used now. `load_recipes.json` is evidence-linked but passive; executable recipe promotion and consumption are future work. |
 
@@ -23,28 +23,11 @@ boundaries, not a claim that all existing code already follows them.
 
 ## Present state
 
-- Legacy plans are Markdown task graphs under `plans/`; the orchestration brain
-  parses them, creates worker tasks, and coordinates them over shared storage.
-  The GitHub analyzer and research assistant have historical runs, but the user
-  has not used plans for months and does not plan to use them soon.
-- The gateway now has an optional role-based assignment path for tagged legacy
-  worker tasks. It resolves benchmark roles with a live manager fit check and
-  sends task model metadata to orchestration. No live plan was migrated or run
-  through this path. Legacy shell commands can still select a different model;
-  metadata alone does not rewrite their arguments. Treat the path as a tested
-  bridge, not a complete end-to-end workflow system.
-- The research assistant's `execute_searches.py` calls its own DuckDuckGo
-  helper in `scripts/lib/web_common.py`. The operational `rig_search` MCP lives
-  in llm-harness. They overlap in purpose but are not integrated.
-- Harness now offers bounded public GitHub metadata, directory, filename, and
-  source-file reads at a pinned commit through the shared tool catalog. Chat can
-  prefetch an explicit repository URL before the model answers. Coding retains
-  separate local workspace Git inspection. This is a tool path, not a migrated
-  GitHub analyzer plan or a validated full repository assessment.
-- Benchmarking exports a model library and roles that the gateway imports.
-  Its recent rig survey also writes `capability.json` with GPU UUIDs, VRAM, and
-  measured RAM. These measurements help fit decisions; they are not fixed card
-  requirements. Existing load recipes are not executable manager offers.
+- Gateway dashboard Chat and Coding hold user and agent conversations. The old Markdown plan form and batch controls are removed. Gateway's manager still has some fit and loading calculations that should move behind rig admission.
+- Orchestration now contains the hardware and model-runtime layer. Its rig-local action queue handles loads, unloads, and recovery; it is not a user-work planner. The brain/worker source, shared task queue commands, CPU-worker packaging, and private batch API have been removed.
+- Benchmarking exports the canonical model library and validation evidence; the other repositories import local projections. Deterministic benchmark campaigns are separate from creative model onboarding and load experiments.
+- Harness provides shared MCP tools and model-use behavior. Six external harnesses are references for selected features, not candidate replacements for the owned Harness.
+- The GitHub analyzer and research assistant had historical plan runs. Their useful components can become reusable tool suites when Gateway work organization resumes. The `rig_search` MCP already provides a live search tool path.
 
 ## Fabro research to retain
 
@@ -89,8 +72,7 @@ Ideas worth carrying forward:
   project/run state outside model sessions; consume the owning project's
   validation receipts instead of inventing a second source of truth.
 - Put new work graphs and model assignment in the gateway. The orchestration
-  repo is the hardware-facing executor; its plan brain/queue remain legacy
-  compatibility. Do not migrate old plans now.
+  repo is the hardware-facing executor; its old plan brain and worker queue are removed. New plans belong in Gateway.
 - Allow shoulders as capability providers with thin adapters, while also
   supporting chat, research, tool sessions, and direct work. A job need not
   be packaged as a shoulder.
@@ -144,7 +126,7 @@ execution constraints. Bus bandwidth and storage latency affect performance.
    capacity returns.
 
 Related local docs: gateway `docs/WORKLOAD_COORDINATION.md` and
-`docs/MANAGER.md`; orchestration `shared/workspace/PLAN_FORMAT.md` (legacy);
+`docs/MANAGER.md`; orchestration `shared/workspace/CONTEXT.md`;
 harness `docs/HARNESS_SUITE_CATALOG.md` and
 `mcp_servers/rig_search/README.md`; benchmarking `CROSS_REPO_CONTRACT.md`,
 `MODEL_LOADING_AND_CHAT_PLACEMENT.md`, and `RIG_LIMIT_TEST.md`.

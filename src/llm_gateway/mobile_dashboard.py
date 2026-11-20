@@ -42,7 +42,6 @@ def operation(method: str, path: str) -> tuple[str, str] | None:
         static = {
             "/mobile/api/rig": ("observe", "/dashboard/api/rig"),
             "/mobile/api/models": ("observe", "/dashboard/api/models"),
-            "/mobile/api/orchestration": ("observe", "/dashboard/api/orchestration"),
             "/mobile/api/conversations": ("observe", "/dashboard/api/chat/conversations"),
             "/mobile/api/options": ("observe", "/dashboard/api/chat/options"),
         }
@@ -75,10 +74,6 @@ def operation(method: str, path: str) -> tuple[str, str] | None:
         controls.update({f"/mobile/api/rig/run/{name}":
                          ("rig-control", f"/dashboard/api/rig/run/{name}")
                          for name in ("recover", "dismiss", "stop")})
-        controls.update({f"/mobile/api/orchestration/{name}":
-                         ("orchestration-control", f"/dashboard/api/orchestration/{name}")
-                         for name in ("kill_plan", "kill_all_active",
-                                      "batch_outputs", "cleanup_stale", "requeue_worker")})
         return controls.get(path)
     return None
 
