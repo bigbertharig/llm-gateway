@@ -29,7 +29,8 @@ class RigRecord:
             raise RigUnavailable(502, f"rig {' '.join(args[:2])} returned no JSON: {out[-300:]}") from exc
         if code != 0:
             raise ManagerError(KIND_STATUS.get(payload.get("kind"), 502), payload.get("error", out[-300:]),
-                               rig_kind=payload.get("kind"))
+                               rig_kind=payload.get("kind"),
+                               **{key: value for key, value in payload.items() if key not in ("error", "kind")})
         return payload
 
     def _as_me(self) -> list[str]:
@@ -40,6 +41,14 @@ class RigRecord:
     async def preview(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Read the rig's current admission decision without creating a lease."""
         return await self._call("lease", "preview", "--spec", json.dumps(spec))
+
+    async def model_fit(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Ask the rig for its detailed, read-only model placement proposal."""
+        return await self._call("model-fit", "--request", json.dumps(request))
+
+    async def fit_observation(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Send completed load evidence to the rig's calibration ledger."""
+        return await self._call("fit-observation", "--row", json.dumps(row))
 
     async def acquire(self, spec: dict[str, Any]) -> dict[str, Any]:
         return (await self._call("lease", "acquire", "--spec", json.dumps(spec), *self._as_me()))["lease"]

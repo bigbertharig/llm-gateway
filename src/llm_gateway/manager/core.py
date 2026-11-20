@@ -463,30 +463,6 @@ class Manager:
                 need.setdefault(int(n.get("card_mb", 0)), []).append(f"run {r['run']}")
         return need
 
-    def _keep_for_demand(self, model: str, shape, kw: dict, obs: dict, free: list[dict], result: dict,
-                         requester: str, placement_policy: str) -> dict:
-        """A load that names no cards takes the smallest cards that hold it. When the smaller cards are busy that
-        can mean a bigger card (the 3090 for a 1060 model). Take it only if no other work is waiting for that
-        size; otherwise use other free cards, or refuse (409) saying what was kept free and for whom."""
-        size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}
-        chooser = fit.choose_chat if placement_policy == "fastest_fit" else fit.choose_smallest
-        idle = chooser(shape, [{**g, "used_mb": 0} for g in obs.get("gpus", [])], **kw)
-        natural = {size[g] for g in (idle or {}).get("gpus", [])}
-        extra = {size[g] for g in result.get("gpus", [])} - natural
-        demand = self._demand(obs, requester)
-        kept = {mb: demand[mb] for mb in extra if mb in demand}
-        if not kept:
-            return result
-        others = [g for g in free if int(g["total_mb"]) not in kept]
-        alt = chooser(shape, others, **kw)
-        why = "; ".join(f"{mb} MiB cards for {', '.join(sorted(set(who)))}" for mb, who in kept.items())
-        if alt:
-            alt["chosen_by"] = f"harness: fewest free cards that fit, keeping {why}"
-            return alt
-        busy = [g for g, mb in size.items() if mb in kept and g in {f["index"] for f in free}]
-        raise ManagerError(409, f"{model}: the free cards that hold it now are GPU {busy}, kept free for waiting "
-                                f"work ({why}); load it later or name the cards", kept_for=kept)
-
     # ------------------------------------------------------------------ runs and cancel by owner
 
     async def runs(self) -> list[dict]:
@@ -771,16 +747,8 @@ class Manager:
         fit_kw = {"profile": profile.get("registry_profile"), "ctx": None, "gpu_ids": gpu_ids,
                   "ctx_min": int(profile.get("ctx_size") or fit.CTX_MIN_DEFAULT),
                   "context_mode": "max" if use == "chat" else "working"}
-        try:
-            plan_ = await self.fit_model(profile["model"], claim=claim, use=use, requester=profile_id, **fit_kw)
-        except ManagerError as exc:
-            # Busy cards are "not now" (503, the client retries), not "won't fit": it fits on an idle rig.
-            r, shape, kw = await self._shape(profile["model"], use, fit_kw["profile"], None, fit_kw["ctx_min"],
-                                             fit.MARGIN_MB_DEFAULT)
-            idle = [{**g, "used_mb": 0} for g in (self._obs or {}).get("gpus", [])]
-            if gpu_ids is None and exc.status == 422 and fit.choose(shape, idle, **kw) is not None:
-                raise ManagerError(503, f"no capacity for {profile_id} now: {exc}") from exc
-            raise
+        plan_ = await self.fit_model(profile["model"], claim=claim, use=use,
+                                     requester=profile_id, **fit_kw)
         await self._load_planned(profile["model"], plan_, extra_args=None, claim=claim, use=use,
                                  owner=profile_id, profile_id=profile_id, **fit_kw)
 
@@ -811,92 +779,22 @@ class Manager:
 
     # ------------------------------------------------------------------ model loads (any model, any cards)
 
-    async def _shape(self, model: str, use: str, profile: str | None, ctx: int | None, ctx_min: int,
-                     margin_mb: int, batch_size: int | None = None,
-                     context_mode: str = "working") -> tuple[dict, Any, dict]:
-        """(registry entry, GGUF shape, plan options) for a model: what every fit is planned from."""
-        if use not in memory.USES:
-            raise ManagerError(400, f"use must be one of {memory.USES}")
+    async def _rig_model_fit(self, model: str, use: str, *, assume_idle: bool = False,
+                             **options) -> dict:
+        """Gateway checks the offered model; the rig owns detailed fit and placement."""
         try:
-            r = models.resolve(model, use, profile)
+            selected = models.resolve(model, use, options.get("profile"))
         except (KeyError, FileNotFoundError) as exc:
             raise ManagerError(404, str(exc.args[0] if exc.args else exc)) from exc
-        try:
-            shape = await asyncio.to_thread(fit.shape_for, models.local_path(r["gguf_path"]), r["model"])
-        except fit.FitError as exc:
-            raise ManagerError(404, str(exc)) from exc
-        rt = r.get("runtime", {})
-        bounds = r.get("context_bounds") or {}
-        lower = int(bounds.get("min") or fit.CTX_MIN_DEFAULT)
-        upper = min(int(bounds.get("max") or shape.n_ctx_train or 131072), shape.n_ctx_train or 1 << 30)
-        tested_limit = int((r.get("loading_stage") or {}).get("context_limit") or 0)
-        if tested_limit:
-            upper = min(upper, tested_limit)
-        if context_mode not in ("working", "min", "max"):
-            raise ManagerError(400, "context_mode must be working, min, or max")
-        if lower > upper:
-            raise ManagerError(400, f"{model}: profile context bounds {lower}..{upper} are invalid")
-        if ctx is not None:
-            if context_mode != "working":
-                raise ManagerError(400, "ctx is exact; use context_mode only when ctx is omitted")
-            if ctx > upper:
-                raise ManagerError(400, f"{model}: ctx {ctx} exceeds profile/trained maximum {upper}")
-        else:
-            lower = max(lower, ctx_min)
-            if lower > upper:
-                raise ManagerError(400, f"{model}: ctx_min {lower} exceeds profile/trained maximum {upper}")
-            if context_mode == "min":
-                ctx = lower
-            elif context_mode == "working" and rt.get("ctx_size"):
-                ctx = max(int(rt["ctx_size"]), lower)
-                if ctx > upper:
-                    raise ManagerError(400, f"{model}: working ctx {ctx} exceeds profile/trained maximum {upper}")
-        # batch_size: a request may override the profile's (a micro-batch sweep); it sets the compute buffer.
-        kw = {"ctx": ctx, "ctx_min": lower, "ctx_max": upper,
-              "ubatch": min(int(batch_size or rt.get("batch_size", 64)), 512),
-              "parallel": int(rt.get("parallel", 1)), "margin_mb": margin_mb,
-              "runtime_image": r.get("image")}
-        return r, shape, kw
-
-    def _strata_plan(self, r: dict, obs: dict, free: list[dict], *,
-                     ctx: int | None, ctx_min: int, context_mode: str,
-                     cards: int | None, gpu_ids: list[int] | None) -> dict:
-        """Measured one-card Strata tier. The rig remains the authority on launch and readiness."""
-        cfg = r.get("strata") or {}
-        bounds = r.get("context_bounds") or {}
-        maximum = min(int(bounds.get("max") or 0), int(cfg.get("max_context") or 0))
-        tested_limit = int((r.get("loading_stage") or {}).get("context_limit") or 0)
-        if tested_limit:
-            maximum = min(maximum, tested_limit)
-        minimum = max(int(bounds.get("min") or fit.CTX_MIN_DEFAULT), ctx_min)
-        if context_mode not in ("working", "min", "max"):
-            raise ManagerError(400, "context_mode must be working, min, or max")
-        if ctx is not None and context_mode != "working":
-            raise ManagerError(400, "ctx is exact; use context_mode only when ctx is omitted")
-        wanted = (ctx if ctx is not None else maximum if context_mode == "max" else
-                  minimum if context_mode == "min" else
-                  max(int((r.get("runtime") or {}).get("ctx_size") or minimum), minimum))
-        reason = None
-        if not cfg:
-            reason = f"{r['model']} has no registered Strata pack"
-        elif cards not in (None, 1) or (gpu_ids is not None and sorted(gpu_ids) != [0]):
-            reason = "validated Strata placement uses GPU 0 alone"
-        elif wanted < minimum or wanted > maximum:
-            reason = f"Strata context {wanted} is outside validated range {minimum}..{maximum}"
-        elif not any(g["index"] == 0 for g in free):
-            reason = "GPU 0 is unavailable for Strata"
-        else:
-            available = (obs.get("guard") or {}).get("mem_available_mb")
-            required = int(cfg.get("min_host_available_mb") or 0)
-            if available is None or int(available) < required:
-                reason = f"Strata needs {required} MiB available host RAM; observed {available}"
-        return {"fits": reason is None, "reason": reason or "registered Strata pack and resources available",
-                "placement": "strata", "backend": "strata", "gpus": [0], "ctx": wanted,
-                "tensor_split": None, "cards": [], "strata": cfg,
-                "model_size_bytes": r.get("model_size_bytes"),
-                "ngram_size_bytes": r.get("ngram_size_bytes", 0),
-                "total_size_bytes": r.get("total_size_bytes"),
-                "chosen_by": "gateway: registered Strata storage tier"}
+        request = {"model": selected["model"], "use": use, "assume_idle": assume_idle,
+                   **{key: value for key, value in options.items() if value is not None}}
+        answer = await self.record.model_fit(request)
+        local_sha = models.catalog().get("source_sha256")
+        rig_sha = answer.get("source_sha256")
+        if not local_sha or not rig_sha or local_sha != rig_sha:
+            raise ManagerError(503, "Gateway and rig model libraries differ; refresh both from Benchmarking",
+                               gateway_source_sha256=local_sha, rig_source_sha256=rig_sha)
+        return answer["fit"]
 
     async def fit_model(self, model: str, *, cards: int | None = None, gpu_ids: list[int] | None = None,
                         ctx: int | None = None, ctx_min: int = fit.CTX_MIN_DEFAULT, use: str = "benchmark",
@@ -904,124 +802,44 @@ class Manager:
                         margin_mb: int = fit.MARGIN_MB_DEFAULT, requester: str = "",
                         batch_size: int | None = None, context_mode: str = "working",
                         engine: str = "auto", placement_policy: str | None = None) -> dict:
-        """The harness's answer to "load `model` on `cards` cards (or on `gpu_ids`, or, with neither, on the
-        fewest free cards that give `ctx` / at least `ctx_min`)": will it fit, at what context and split.
-        Nothing is leased or sent to the rig. ManagerError 422 when it will not fit."""
-        if cards and gpu_ids:
-            raise ManagerError(400, "give cards (a count) or gpu_ids, not both")
-        if use not in memory.USES:
-            raise ManagerError(400, f"use must be one of {memory.USES}")
-        policy = placement_policy or ("fastest_fit" if use == "chat" else "smallest_fit")
-        if policy not in fit.PLACEMENT_POLICIES:
-            raise ManagerError(400, f"placement_policy must be one of {fit.PLACEMENT_POLICIES}")
-        if engine not in ("auto", "llama", "strata"):
-            raise ManagerError(400, "engine must be auto, llama, or strata")
-        try:
-            selected = models.resolve(model, use, profile)
-        except (KeyError, FileNotFoundError) as exc:
-            raise ManagerError(404, str(exc.args[0] if exc.args else exc)) from exc
-        if engine == "llama" and (selected.get("strata") or {}).get("only"):
-            raise ManagerError(422, f"{model} is registered as a Strata-only pack")
-        if engine == "strata" or (engine == "auto" and (selected.get("strata") or {}).get("only")):
-            obs = await self.observe(fresh=True)
-            try:
-                free, _ = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), claim)
-            except KeyError as exc:
-                raise ManagerError(404, str(exc.args[0])) from exc
-            result = self._strata_plan(selected, obs, free, ctx=ctx, ctx_min=ctx_min,
-                                       context_mode=context_mode, cards=cards, gpu_ids=gpu_ids)
-            if not result["fits"]:
-                raise ManagerError(422, result["reason"], fit=result)
-            return {**result, "registry_profile": selected["profile"], "status": selected["status"],
-                    "use": use, "gguf_path": selected["gguf_path"], "placement_policy": policy}
-        r, shape, kw = await self._shape(model, use, profile, ctx, ctx_min, margin_mb, batch_size, context_mode)
+        """Request a rig-owned fit preview; no hardware state changes in this call."""
+        result = await self._rig_model_fit(
+            model, use, cards=cards, gpu_ids=gpu_ids, ctx=ctx, ctx_min=ctx_min,
+            profile=profile, claim=claim, margin_mb=margin_mb, batch_size=batch_size,
+            context_mode=context_mode, engine=engine, placement_policy=placement_policy)
+        if cards or gpu_ids or claim:
+            return result
+        # Gateway owns work scheduling: preserve a card needed by queued work.
+        # The rig still chooses every alternative placement.
         obs = await self.observe(fresh=True)
+        demand = self._demand(obs, requester)
+        if not demand:
+            return result
+        idle = await self._rig_model_fit(
+            model, use, assume_idle=True, ctx=ctx, ctx_min=ctx_min, profile=profile,
+            margin_mb=margin_mb, batch_size=batch_size, context_mode=context_mode,
+            engine=engine, placement_policy=placement_policy)
+        size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}
+        natural = {size[g] for g in idle.get("gpus", []) if g in size}
+        extra = {size[g] for g in result.get("gpus", []) if g in size} - natural
+        kept = {mb: demand[mb] for mb in extra if mb in demand}
+        if not kept:
+            return result
+        excluded = [g for g, mb in size.items() if mb in kept]
+        why = "; ".join(f"{mb} MiB cards for {', '.join(sorted(set(who)))}"
+                        for mb, who in kept.items())
         try:
-            free, why = placement.availability(obs, obs.get("leases", []), obs.get("claims", []), claim)
-        except KeyError as exc:
-            raise ManagerError(404, str(exc.args[0])) from exc
-        if gpu_ids:
-            wanted = sorted({int(g) for g in gpu_ids})
-            blocked = {g: why.get(g, "unknown GPU") for g in wanted if g not in {f["index"] for f in free}}
-            if blocked:
-                raise ManagerError(409, "GPU(s) not available: " + "; ".join(f"GPU {g} {w}" for g, w in blocked.items()),
-                                   unavailable=blocked)
-            chosen = [f for f in free if f["index"] in wanted]
-        elif cards:
-            if cards > len(free):
-                raise ManagerError(503, f"{cards} card(s) asked, {len(free)} free: {[f['index'] for f in free]}",
-                                   unavailable=why)
-            sets = fit.candidate_sets(free, int(cards))
-            if context_mode == "max":
-                options = [(fit.plan(shape, group, **kw), group) for group in sets]
-                chosen = max(options, key=lambda item: item[0]["ctx"] if item[0]["fits"] else -1)[1]
-            else:
-                if use == "chat" and context_mode == "working" and cards == 1:
-                    sets = sorted(sets, key=lambda group: -group[0]["total_mb"])
-                chosen = next((group for group in sets if fit.plan(shape, group, **kw)["fits"]), sets[0])
-        else:
-            chosen = None
-        if chosen is None:
-            fastest = policy == "fastest_fit"
-            choice = (fit.choose_chat(shape, free, **kw) if context_mode == "max" and fastest else
-                      fit.plan(shape, free, **kw) if context_mode == "max" else
-                      fit.choose_min(shape, free, **kw) if context_mode == "min" else
-                      fit.choose_chat(shape, free, **kw) if fastest else
-                      fit.choose_smallest(shape, free, **kw))
-            result = choice or fit.plan(shape, fit.choose_cards(free, len(free)), **kw)
-            result["chosen_by"] = ("policy: fastest fit at largest available context"
-                                   if context_mode == "max" and fastest else
-                                   "harness: largest context across free cards" if context_mode == "max" else
-                                   "harness: fewest free cards at profile minimum" if context_mode == "min" else
-                                   "harness: measured response speed" if result.get("performance_basis") else
-                                   "policy: fastest available fit" if fastest else
-                                   "policy: smallest available fit")
-            if result.get("fits"):
-                result = self._keep_for_demand(
-                    r["model"], shape, kw, obs, free, result, requester, policy)
-        else:
-            result = fit.plan(shape, chosen, **kw)
-        # Only interactive, unpinned requests may spill to host RAM. Preserve
-        # the requested context; a missing RAM reading cannot authorize a load.
-        if (not result.get("fits") and use == "chat" and chosen is None
-                and kw["ctx"] is not None):
-            available = (obs.get("guard") or {}).get("mem_available_mb")
-            if available is not None:
-                card_order = (lambda g: (-int(g["total_mb"]), int(g["index"]))) \
-                    if policy == "fastest_fit" else \
-                    (lambda g: (int(g["total_mb"]), int(g["index"])))
-                for card in sorted(free, key=card_order):
-                    ram = fit.plan_ram(shape, card, ctx=int(kw["ctx"]), ubatch=int(kw["ubatch"]),
-                                       mem_available_mb=int(available), margin_mb=margin_mb)
-                    if ram["fits"]:
-                        result = {**ram, "chosen_by": "gateway: GPU then bounded host RAM"}
-                        break
-        if not result.get("fits") and engine == "auto" and r.get("strata"):
-            tier = self._strata_plan(r, obs, free, ctx=kw["ctx"], ctx_min=kw["ctx_min"],
-                                     context_mode=context_mode, cards=cards, gpu_ids=gpu_ids)
-            if tier["fits"]:
-                result = tier
-        result.update(registry_profile=r["profile"], status=r["status"], use=use, gguf_path=r["gguf_path"],
-                      ubatch=kw["ubatch"], context_mode=context_mode, placement_policy=policy,
-                      context_bounds={"min": kw["ctx_min"], "working": r.get("runtime", {}).get("ctx_size"),
-                                      "max": kw["ctx_max"], "max_basis": (r.get("context_bounds") or {}).get("max_basis", "gguf_train")})
-        if not result["fits"]:
-            # A model that fits the rig when its cards are free is waiting on
-            # capacity, not intrinsically too large for the hardware.
-            idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
-            if why and fit.choose_smallest(shape, idle_cards, **kw):
-                raise ManagerError(503, f"{model}: no capacity while GPUs are occupied or reserved",
-                                   unavailable=why, fit=result)
-            alts = fit.suggest(shape, free, **kw)
-            if chosen is not None and kw["ctx"] and kw["ctx"] > kw["ctx_min"]:
-                smaller = fit.plan(shape, chosen, **{**kw, "ctx": kw["ctx_min"]})
-                if smaller["fits"]:
-                    alts.insert(0, f"same GPU {smaller['gpus']} at minimum ctx {smaller['ctx']} "
-                                   f"(context_mode=min)")
-            msg = result["reason"] + (". Fits on: " + "; ".join(alts) if alts else
-                                      ". No combination of the free cards holds it.")
-            raise ManagerError(422, msg, fit=result, suggestions=alts)
-        return result
+            alternative = await self._rig_model_fit(
+                model, use, exclude_gpu_ids=excluded, ctx=ctx, ctx_min=ctx_min, profile=profile,
+                margin_mb=margin_mb, batch_size=batch_size, context_mode=context_mode,
+                engine=engine, placement_policy=placement_policy)
+            alternative["chosen_by"] = f"rig: alternative fit keeping {why}"
+            return alternative
+        except ManagerError as exc:
+            if exc.status not in (422, 503):
+                raise
+        raise ManagerError(409, f"{model}: GPU {result['gpus']} kept free for waiting work ({why}); "
+                                "load it later or name the cards", kept_for=kept)
 
     async def _collect_cards(self, model: str, wait_s: float, use: str, owner: str = "",
                              **fit_kw) -> tuple[str, list[int]]:
@@ -1031,24 +849,11 @@ class Manager:
         (the claim, its cards). wait_s < 0: no limit. Removing the claim cancels the wait (409); past wait_s
         the claim is dropped and 504. An unreachable rig is waited out; a claim that lapsed during the outage
         is taken again (cards someone else took meanwhile are collected again)."""
-        r, shape, kw = await self._shape(model, use, fit_kw.get("profile"), fit_kw.get("ctx"),
-                                         fit_kw.get("ctx_min", fit.CTX_MIN_DEFAULT),
-                                         fit_kw.get("margin_mb", fit.MARGIN_MB_DEFAULT), fit_kw.get("batch_size"),
-                                         fit_kw.get("context_mode", "working"))
         deadline = time.monotonic() + wait_s if wait_s >= 0 else float("inf")
         watch: dict = {}
+        r = models.resolve(model, use, fit_kw.get("profile"))
+        target = await self._rig_model_fit(model, use, assume_idle=True, **fit_kw)
         obs = await self._next_obs(r["model"], watch, deadline)
-        # Planned on empty cards: a busy card reports the memory its current model uses, which would make
-        # the set look bigger than the model needs once those cards free.
-        idle_cards = [{**g, "used_mb": 0} for g in obs.get("gpus", [])]
-        policy = fit_kw.get("placement_policy") or ("fastest_fit" if use == "chat" else "smallest_fit")
-        target = (fit.plan(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "max" and policy == "smallest_fit" else
-                  fit.choose_chat(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "max" else
-                  fit.choose_min(shape, idle_cards, **kw) if fit_kw.get("context_mode") == "min" else
-                  fit.choose_chat(shape, idle_cards, **kw) if policy == "fastest_fit" else
-                  fit.choose_smallest(shape, idle_cards, **kw))
-        if target is None or not target["fits"]:
-            raise ManagerError(422, f"{model} won't fit on this rig even with every card free")
         size = {g["index"]: int(g["total_mb"]) for g in obs.get("gpus", [])}
         need = Counter(size[g] for g in target["gpus"])
         slug = re.sub(r"[^a-z0-9]+", "-", r["model"].lower()).strip("-")
@@ -1244,10 +1049,11 @@ class Manager:
                 await self.release(lease_id, OWNER, force=True)
                 why = str(done.get("result") or "")[-1500:]
                 try:  # the other side of the fit boundary
-                    observations.record("load_failed", **facts, state=done["state"], error=why,
-                                        oom="out of memory" in why.lower(),
-                                        seconds=round(time.monotonic() - started, 1))
-                except OSError as exc:
+                    row = observations.record("load_failed", **facts, state=done["state"], error=why,
+                                              oom="out of memory" in why.lower(),
+                                              seconds=round(time.monotonic() - started, 1))
+                    await self.record.fit_observation(row)
+                except (OSError, ManagerError, RigUnavailable) as exc:
                     log.warning("failed-load observation for %s not recorded: %s", pid, exc)
                 raise RigUnavailable(502, f"rig did not load {pid} ({done['state']}): {why}")
         finally:
@@ -1256,16 +1062,20 @@ class Manager:
         try:  # what llama.cpp allocated: the next fit of this GGUF plans its compute buffer from it
             # A CPU-offload compute buffer is not a calibration point for a
             # later full-GPU fit of the same GGUF/card count.
-            if plan_.get("placement") not in ("ram", "strata") and not fit.record_observation(
+            row = (fit.record_observation(
                     facts["source"], r["model"], facts["ubatch"], gpus, loaded.get("fit"),
                                           **{k: v for k, v in facts.items()
                                              if k not in ("source", "model", "ubatch", "gpus")},
                                           seconds=round(time.monotonic() - started, 1),
                                           # nvidia-smi once serving: minus llama.cpp's total is the card overhead
                                           used_mb=[next((g.get("used_mb") for g in obs.get("gpus", [])
-                                                         if g.get("index") == i), None) for i in gpus]):
+                                                         if g.get("index") == i), None) for i in gpus])
+                   if plan_.get("placement") not in ("ram", "strata") else None)
+            if row:
+                await self.record.fit_observation(row)
+            elif plan_.get("placement") not in ("ram", "strata"):
                 log.info("load %s: the rig reported no measured fit; nothing to calibrate from", pid)
-        except OSError as exc:
+        except (OSError, ManagerError, RigUnavailable) as exc:
             log.warning("fit observation for %s not recorded: %s", pid, exc)
         return {"profile": pid, "model": r["model"], "state": "ready", "port": lease["metadata"]["port"],
                 "gpus": gpus, "lease": lease_id, "ctx": loaded.get("ctx_size", plan_["ctx"]),

@@ -1,6 +1,6 @@
 # Rig manager
 
-The Manager coordinates model requests, leases, loads, and work plans across the Gateway controller and rig executor. Gateway sends fit requirements or an explicit operator card pin; the rig selects cards from its live state and returns the admitted lease or a specific refusal. Gateway still estimates model/context fit and coordinates load policy. The rig owns durable state and enforces hardware rules. Start with the [dashboard guide](DASHBOARD.md) for operator controls and [design notes](DESIGN_NOTES.md) for the resource model. The operator CLI is `tools/rigctl.py`.
+The Manager coordinates model requests, leases, loads, and work plans across the Gateway controller and rig executor. Gateway sends fit requirements or an explicit operator card pin; the rig selects cards from its live state and returns the admitted lease or a specific refusal. Gateway checks the model offer and coordinates load policy; the rig computes detailed model/context fit. The rig owns durable state and enforces hardware rules. Start with the [dashboard guide](DASHBOARD.md) for operator controls and [design notes](DESIGN_NOTES.md) for the resource model. The operator CLI is `tools/rigctl.py`.
 
 Implementation status and detailed flows follow.
 
@@ -17,7 +17,7 @@ than one rig): [DESIGN_NOTES.md](DESIGN_NOTES.md).
 
 | | Gateway host: controller management (this repo) | Rig: hardware management (`llm_orchestration/shared/scripts/rig/`) |
 |---|---|---|
-| Decides | model offer, context estimate, load policy and work owner | live card admission, lease GPUs and ports |
+| Decides | model offer, work owner and waiting policy | model/context fit, live card placement, lease GPUs and ports |
 | Keeps | a recovery mirror of the rig report, not the authoritative lease record | the lease and claim record, its own mode state, job state |
 | Does | sends requirements or an operator pin, observes, reconciles, reports | selects cards, starts admitted runtimes, reports `rig observe` |
 | Enforces | model and user policy | atomic lease/claim admission, GPU health, port use and runtime rules |
@@ -76,8 +76,8 @@ build) results fall back to local storage when the shared drive is gone and sync
 4. **The rig admits physical placement.** Gateway sends `gpus_needed` (per card `min_vram_mb`, optional
    `max_vram_mb`) or an explicit operator `gpu_ids` pin. The rig selects the smallest complete fit
    under its admission lock. A card is available only if no lease holds it, nothing runs on it, and
-   it is unclaimed (or claimed by the claim the request names). Gateway still estimates model/context
-   fit; those remaining physical capacity calculations are part of the migration.
+   it is unclaimed (or claimed by the claim the request names). `rig model-fit` uses the same
+   live card view for GGUF, context, RAM, and registered Strata placement previews.
 5. **Everything is in the pool by default. A claim takes cards out** (`rigctl claim bench --gpus 0`):
    only requests naming the claim get them. The rig refuses a lease on a claimed card that does not
    name the claim.
@@ -146,42 +146,30 @@ The code was staged without restarting the live gateway while GPU 0 was kept ava
 
 ## Model loads: any registry model on any cards (2026-10-18)
 
-"Load X on Y cards" is two checks, one per layer:
+"Load X on Y cards" has one hardware fit authority:
 
-1. **The manager decides** (`manager/fit.py`, `manager/models.py`). The request names a catalog model,
-   optionally a card count (smallest free cards first) or explicit GPUs, a context, and a use (benchmark,
-   chat, worker) that picks the registry profile and the prompt cache. With no cards named, the request
-   may set `placement_policy=smallest_fit` to preserve larger cards or `placement_policy=fastest_fit`
-   to prioritize response speed. The explicit policy is returned in every fit/load receipt. When omitted,
-   chat keeps its historical `fastest_fit` default while benchmark and worker use `smallest_fit`.
-   `fastest_fit` first tries the largest single free card (the 3090 on this rig), then adds the fewest
-   other cards needed. `smallest_fit` ignores speed observations and uses the smallest card class that
-   holds the model on up to two cards, then the next class, then the fewest cards of any mix
-   (`fit.choose_smallest`). Explicit GPU requests always
-   keep their named cards.
-   For example, a smallest-fit Ornith-9B goes on one 1060 at ctx 26880, or two 1060s when asked
-   for 100k; a 27B goes on the 3090 instead of three 1060s. Fastest-fit Ornith-9B uses the 3090 when free. The manager reads the model's GGUF header
-   from the drive (no weights) and builds what llama.cpp will allocate per card: layer weights (the token
-   embedding stays in host RAM, the output layer goes on the last card, next-token-prediction layers cost
-   nothing), q8_0 KV per attention layer (hybrid and sliding-window layers counted as such), recurrent
-   state, the compute buffer (from this GGUF's measured loads, below) and a margin per card.
-   An unspecified context uses the selected profile's working context for every use. A request can
-   instead set `context_mode=min` to use the profile's minimum or `context_mode=max` to find the
-   largest fit up to its maximum. With no cards named, `min` uses the fewest cards that fit and
-   `max` uses all free cards; with a card count, the manager searches available card classes of
-   that size. An explicit `ctx` is exact and is checked against the profile/trained maximum. The manager
-   balances a contiguous layer split across the cards, and gives exact llama.cpp arguments:
-   `--ctx-size`, `--tensor-split` as layer counts, `--n-gpu-layers all`. If it will not fit it answers
-   422 "won't fit" with the numbers and the free cards that would hold it; if the same named cards
-   fit at the profile minimum, it suggests `context_mode=min`. Nothing is leased or sent.
-2. **The rig loads and confirms** (`rig start remote <id> --spec JSON`, via a plan `load` item). It runs
-   the spec through `run_runtime.sh` on the leased cards, then reads llama.cpp's own startup log
-   (`scripts/rig/hw_loadlog.py`): the fit projection per card, layers offloaded, the context allocated
-   and the buffers per card. A load that is not fully on the GPUs is refused and unloaded. The spec's use
-   picks the rig mode: `benchmark` runs in `bench`, anything else in `remote`, and the rig refuses a load
-   for another mode while one is active (isolated modes, 2026-10-23, `rig.py` `load_mode`). A ready load
-   records `fit` (measured per card) and the real `ctx_size` in its rig profile, and the manager returns
-   both next to its estimate.
+1. **Gateway selects the offered model and coordinates work.** Its imported Benchmarking catalog
+   supplies a quick status/profile check. `active` is available for routine Chat and workers;
+   `candidate` is available for explicit benchmarking. Gateway sends the model, use, profile,
+   context preference, optional card count or operator pin, and placement policy to
+   `rig model-fit --request JSON`. It compares the rig's returned source hash with its local
+   Benchmarking projection. Gateway keeps cards for queued work when necessary and asks the rig
+   for an alternative placement; it does not calculate a GGUF split or choose replacement cards.
+2. **The rig previews and admits hardware.** Its `model-fit` reads the imported library, the GGUF
+   header, measured load receipts, live GPU and host-memory state, claims, and leases. It chooses
+   the card set, context, split, or registered Strata tier and returns the fit and reason. The
+   preview does not reserve resources. A load obtains a lease and the rig rechecks admission under
+   its lock. A ready runtime returns its measured context and per-card allocation. A refusal
+   returns a typed reason to Gateway. `rig fit-observation` stores completed load evidence for
+   the rig's next fit; Gateway retains a copy for Benchmarking.
+
+With no cards named, `smallest_fit` is the default for benchmark and worker use, and
+`fastest_fit` is the default for Chat. `context_mode=working` uses the profile context,
+`min` uses the profile floor, and `max` searches up to the trained/tested ceiling.
+An explicit `ctx` is exact. The rig returns 422 for a layout that does not fit, 503 for
+temporarily occupied capacity, and 409 for a conflicting pinned card. Strata placement is
+limited to the card IDs validated in Benchmarking's model registry. The model library is
+the source of those tested details; the rig scan and observations supply live hardware facts.
 
 **Model requirements versus placement (2026-10-25).** The catalog needs the
 GGUF identity and runtime settings (for example micro-batch, KV type,
@@ -192,20 +180,16 @@ windows stop growing past their window, recurrent state can be fixed, and
 weights stay fixed for a chosen partition. Compute buffers, graph
 allocation, per-card overhead, and margins are calibrated from load
 observations because they are not one perfectly linear context formula.
-The manager computes the card set and `tensor_split` for the requested
-context and available memory, then validates the actual allocation. Compute
-is calibrated per card count. With two comparable speed observations for the
-same GGUF, runtime image, micro-batch, and nearby context, non-chat automatic
-placement can choose the card set with the shortest estimated 1,024-token
-prompt plus 256-token response. Interactive chat now tries the 3090 alone,
-then the smallest fitting 3090 + 1060 split; when the 3090 is occupied,
-it tries the available 1060s. Other non-chat models retain the existing
-`SAME_CLASS_MAX_CARDS=2` placement fallback. Calls without `ctx` use the selected profile's working context by default.
+The rig computes the card set and `tensor_split` for the requested context
+and available memory, then validates the actual allocation at load. Compute
+is calibrated per card count. Comparable speed observations can inform the
+rig's automatic placement. Calls without `ctx` use the selected profile's
+working context by default.
 The library records `context_bounds.min` and `context_bounds.max` for current models; the maximum
 is the GGUF trained limit, not a guarantee of quality or a tested fit. `min` is a deliberate
-lower-context request, and `max` is an opt-in capacity search. The manager still checks
+lower-context request, and `max` is an opt-in capacity search. The rig checks
 measured OOM ceilings, card memory, and real allocation at load. An explicit `ctx` remains exact.
-The imported `schedule.placement` labels remain in imported model metadata; manager fit does not use them. For example
+The imported `schedule.placement` labels remain in model metadata; rig fit does not use them. For example
 `ministral-3:8b` is labeled `single_gpu` there. Its default 16K fit on one
 1060 was refused, while `context_mode=min` now plans 8K on that card; `max` can project
 the largest fit on a chosen two-card split.

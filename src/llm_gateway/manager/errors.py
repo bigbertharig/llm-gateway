@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-# `rig lease` / `rig claim` / `rig controller` / `rig plan` error kinds -> HTTP status.
-KIND_STATUS = {"invalid": 400, "ownership": 403, "not_found": 404, "conflict": 409, "not_controller": 409,
-               "capacity": 503,
-               "state": 500}
+# Rig error kinds -> Gateway HTTP status.
+KIND_STATUS = {"invalid": 400, "ownership": 403, "not_found": 404, "conflict": 409,
+               "not_controller": 409, "unfit": 422, "capacity": 503, "state": 500}
 
 
 class ManagerError(Exception):

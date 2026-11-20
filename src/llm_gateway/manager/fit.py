@@ -256,17 +256,17 @@ _CALIBRATION: dict[str, Any] = {"mtime": None, "points": {}}
 
 
 def record_observation(source: str, model: str, ubatch: int, gpus: list[int], measured: dict[str, Any] | None,
-                       **extra: Any) -> bool:
+                       **extra: Any) -> dict[str, Any] | None:
     """Keep one measured load (the rig's `fit`: n_ctx and buffers per card), with any other facts about it
-    (`extra`: use, cards by UUID and link, the estimate, load time). False when there is nothing usable."""
+    (`extra`: use, cards by UUID and link, the estimate, load time). Return the exact
+    saved row so Gateway can forward it to rig-owned calibration."""
     cards = (measured or {}).get("cards") or []
     n_ctx = (measured or {}).get("n_ctx")
     if not source or not n_ctx or not cards or not all(c.get("compute_mb") is not None for c in cards):
-        return False
-    observations.record("load", source=source, model=model, ubatch=int(ubatch), n_ctx=int(n_ctx),
-                        gpus=list(gpus), cards=[{k: c.get(k) for k in ("gpu", "model_mb", "kv_mb", "compute_mb",
-                                                                       "total_mb")} for c in cards], **extra)
-    return True
+        return None
+    return observations.record("load", source=source, model=model, ubatch=int(ubatch), n_ctx=int(n_ctx),
+                               gpus=list(gpus), cards=[{k: c.get(k) for k in ("gpu", "model_mb", "kv_mb", "compute_mb",
+                                                                              "total_mb")} for c in cards], **extra)
 
 
 def _points() -> dict[tuple[str, int], list[tuple[int, float]]]:

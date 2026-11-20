@@ -748,9 +748,9 @@ def test_smaller_same_card_context_is_suggested(menv, registry):  # noqa: F811
     registry.write_text(json.dumps(cat))
     c = menv["client"]
     working = c.post("/v1/manager/models/fit",
-                     json={"model": "small:9b", "gpu_ids": [1], "margin_mb": 1400})
+                     json={"model": "small:9b", "gpu_ids": [1], "margin_mb": 1370})
     minimum = c.post("/v1/manager/models/fit",
-                     json={"model": "small:9b", "gpu_ids": [1], "context_mode": "min", "margin_mb": 1400})
+                     json={"model": "small:9b", "gpu_ids": [1], "context_mode": "min", "margin_mb": 1370})
     assert working.status_code == 422 and minimum.status_code == 200
     assert any("context_mode=min" in x for x in working.json()["error"]["suggestions"])
 

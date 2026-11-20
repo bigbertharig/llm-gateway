@@ -6,6 +6,7 @@ import json
 import sys
 import textwrap
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -98,8 +99,8 @@ FAKE_RIG = textwrap.dedent("""\
                 i["state"] = "done"; i["result"] = "ready"; changed = True
         return changed
     if refresh(): save()  # a read that changed nothing writes nothing (no lost updates between calls)
-    def fail(kind, msg):
-        print(json.dumps({"error": msg, "kind": kind})); sys.exit(1)
+    def fail(kind, msg, **extra):
+        print(json.dumps({"error": msg, "kind": kind, **extra})); sys.exit(1)
     def opts(xs):
         d, i = {}, 0
         while i < len(xs):
@@ -110,6 +111,96 @@ FAKE_RIG = textwrap.dedent("""\
         c = st["controller"]
         if c and o.get("--controller") != c["id"]:
             fail("not_controller", f"controller {o.get('--controller')!r} is not active (active: {c['id']})")
+    if a[0] == "model-fit":
+        from llm_gateway.manager import fit, models, placement
+        q = json.loads(a[2])
+        if q.get("placement_policy") not in (None, "fastest_fit", "smallest_fit"):
+            fail("invalid", "invalid placement policy")
+        try:
+            r = models.resolve(q["model"], q.get("use", "benchmark"), q.get("profile"))
+        except KeyError as e:
+            fail("not_found", str(e))
+        shape = fit.shape_for(r["gguf_path"], r["model"])
+        full = {"gpus": st["gpus"], "containers": st["containers"]}
+        if q.get("assume_idle"):
+            free, why = [{**g, "used_mb": 0} for g in st["gpus"]], {}
+        else:
+            try:
+                free, why = placement.availability(full, st["leases"], st["claims"], q.get("claim"))
+            except KeyError as e:
+                fail("not_found", str(e))
+        bounds = r.get("context_bounds") or {}
+        minimum = max(int(bounds.get("min") or fit.CTX_MIN_DEFAULT), int(q.get("ctx_min") or fit.CTX_MIN_DEFAULT))
+        maximum = min(int(bounds.get("max") or shape.n_ctx_train), shape.n_ctx_train,
+                      int((r.get("loading_stage") or {}).get("context_limit") or shape.n_ctx_train))
+        mode = q.get("context_mode", "working")
+        ctx = q.get("ctx")
+        if ctx is not None and mode != "working":
+            fail("invalid", "ctx is exact; context_mode applies only when ctx is omitted")
+        if ctx is not None and (ctx < minimum or ctx > maximum):
+            fail("invalid", f"ctx {ctx} exceeds maximum {maximum} or minimum {minimum}")
+        if ctx is None and mode == "min": ctx = minimum
+        if ctx is None and mode == "working": ctx = (r.get("runtime") or {}).get("ctx_size")
+        kw = {"ctx": ctx, "ctx_min": minimum, "ctx_max": maximum,
+              "ubatch": int(q.get("batch_size") or (r.get("runtime") or {}).get("batch_size") or 64),
+              "parallel": int((r.get("runtime") or {}).get("parallel") or 1),
+              "margin_mb": q.get("margin_mb", fit.MARGIN_MB_DEFAULT),
+              "runtime_image": r.get("image")}
+        ids = q.get("gpu_ids")
+        count = q.get("cards")
+        excluded = q.get("exclude_gpu_ids") or []
+        free = [g for g in free if g["index"] not in excluded]
+        if ids:
+            blocked = {g: why.get(g, "unknown GPU") for g in ids if g not in {f["index"] for f in free}}
+            if blocked: fail("conflict", "GPU(s) not available: " + str(blocked))
+            result = fit.plan(shape, [g for g in free if g["index"] in ids], **kw)
+        elif count:
+            sets = fit.candidate_sets(free, int(count))
+            if not sets: fail("capacity", "no capacity for requested cards")
+            result = next((p for group in sets if (p := fit.plan(shape, group, **kw))["fits"]),
+                          fit.plan(shape, sets[0], **kw))
+        else:
+            fastest = q.get("placement_policy", "fastest_fit" if q.get("use") == "chat" else "smallest_fit") == "fastest_fit"
+            result = (fit.choose_chat(shape, free, **kw) if mode == "max" and fastest else
+                      fit.plan(shape, free, **kw) if mode == "max" else
+                      fit.choose_min(shape, free, **kw) if mode == "min" else
+                      fit.choose_chat(shape, free, **kw) if fastest else
+                      fit.choose_smallest(shape, free, **kw))
+        if (not result or not result.get("fits")) and q.get("use") == "chat" and not ids and not count and ctx:
+            host = (st.get("guard") or {}).get("mem_available_mb")
+            if host is not None:
+                for g in sorted(free, key=lambda g: -g["total_mb"]):
+                    ram = fit.plan_ram(shape, g, ctx=ctx, ubatch=kw["ubatch"],
+                                       mem_available_mb=host, margin_mb=kw["margin_mb"])
+                    if ram["fits"]: result = ram; break
+        if not result or not result.get("fits"):
+            idle = [{**g, "used_mb": 0} for g in st["gpus"]]
+            would_fit = fit.choose_smallest(shape, idle, **kw)
+            if would_fit and not ids and not count and not q.get("assume_idle"):
+                fail("capacity", "no capacity while GPUs are occupied or reserved")
+            suggestions = []
+            if ids and ctx and ctx > minimum:
+                smaller = fit.plan(shape, [g for g in free if g["index"] in ids],
+                                   **{**kw, "ctx": minimum})
+                if smaller["fits"]:
+                    suggestions.append(f"same GPU {ids} at minimum ctx {minimum} (context_mode=min)")
+            fail("unfit", "model won't fit; fits on GPU 0 at another placement: " +
+                 str((result or {}).get("reason")), suggestions=suggestions)
+        if not ids and not count:
+            result["chosen_by"] = ("policy: fastest available fit" if fastest else
+                                   "policy: smallest available fit")
+        result.update(registry_profile=r["profile"], status=r["status"],
+                      use=q.get("use", "benchmark"), gguf_path=r["gguf_path"],
+                      placement_policy=q.get("placement_policy") or ("fastest_fit" if q.get("use") == "chat" else "smallest_fit"),
+                      ubatch=kw["ubatch"], context_mode=mode,
+                      context_bounds={"min": minimum, "working": (r.get("runtime") or {}).get("ctx_size"),
+                                      "max": maximum, "max_basis": bounds.get("max_basis", "gguf_train")})
+        print(json.dumps({"fit": result, "source_sha256": os.getenv("FAKE_RIG_SOURCE_OVERRIDE") or
+                          models.catalog()["source_sha256"]})); sys.exit(0)
+    if a[0] == "fit-observation":
+        row = json.loads(a[2])
+        st.setdefault("fit_observations", []).append(row)
+        save(); print(json.dumps({"recorded": True, "kind": row["kind"]})); sys.exit(0)
     def plan_report():
         return {"controller": st["controller"], "items": st["plan_items"], "version": st.get("plan_version", 1),
                 "hold": st.get("plan_hold"), "boot_id": st.get("boot_id", "boot-1"),
@@ -339,6 +430,7 @@ def menv(tmp_path, monkeypatch):
         {"id": "worker", "model": "w:7b", "registry_profile": "default", "ctx_size": 8192, "use": "worker"},
     ]}))
     monkeypatch.setenv("FAKE_RIG_STATE", str(state))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
     monkeypatch.setattr(core, "LOAD_POLL_S", 0.1)
     monkeypatch.setattr(core, "OBSERVE_CACHE_S", 0.0)
     settings = Settings(
@@ -545,6 +637,14 @@ def test_lease_preview_uses_rig_admission_without_reserving_cards(menv):
         "gpus_needed": [{"min_vram_mb": 30000}]})
     assert refused.status_code == 503
     assert "no capacity" in refused.json()["error"]["message"]
+    assert menv["leases"]() == []
+
+
+def test_model_fit_refuses_divergent_library_revisions(menv, monkeypatch):
+    monkeypatch.setenv("FAKE_RIG_SOURCE_OVERRIDE", "different-revision")
+    response = menv["client"].post("/v1/manager/models/fit", json={"model": "s:7b"})
+    assert response.status_code == 503
+    assert "libraries differ" in response.json()["error"]["message"]
     assert menv["leases"]() == []
 
 

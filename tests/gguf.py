@@ -49,7 +49,8 @@ def card(i, mb=6144):
 def write_catalog(path, models: dict[str, tuple[str, str]], profile: dict | None = None) -> str:
     """A model catalog (what tools/generate_profiles.py imports) for {model id: (status, gguf path)}."""
     prof = profile or {"runtime": {"batch_size": 64, "parallel": 1}, "extra_args": []}
-    path.write_text(json.dumps({"image": "llama-runtime:test", "roles": {}, "models": {
+    path.write_text(json.dumps({"image": "llama-runtime:test", "source_sha256": "test-source",
+                                "roles": {}, "models": {
         mid: {"status": status, "aliases": [], "gguf_path": gguf,
               "profiles": {"default": json.loads(json.dumps(prof))}} for mid, (status, gguf) in models.items()}}))
     return str(path)

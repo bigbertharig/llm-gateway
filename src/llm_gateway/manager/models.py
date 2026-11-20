@@ -1,9 +1,9 @@
 """Models for "load model X on N cards" (MANAGER.md, "Model loads").
 
 How each model loads (GGUF, context, batch, extra args per named profile) comes from the gateway's own
-`model_catalog.json`, which `tools/generate_profiles.py` imports from the benchmarking model library. The
-gateway never reads benchmarking at runtime: re-run the importer to take in what benchmarking has learned.
-This module turns one model plus a use into a load spec the rig can run without a published remote profile.
+`model_catalog.json`, which `tools/generate_profiles.py` imports from Benchmarking at startup when available.
+The last valid local snapshot remains usable if Benchmarking is unavailable. This module checks
+catalog offers and builds the requested load spec; the rig computes detailed fit and placement.
 """
 
 from __future__ import annotations
