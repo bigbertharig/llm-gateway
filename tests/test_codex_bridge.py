@@ -128,12 +128,23 @@ def test_running_turn_follows_reconciled_active_turn_for_final_answer(tmp_path):
     assert "saved-thread" not in bridge.active_turns
 
 
+def test_chat_research_rejects_unowned_nonempty_directory(tmp_path):
+    bridge = CodexBridge()
+    bridge.research_root = tmp_path / "research"
+    bridge.research_root.mkdir()
+    (bridge.research_root / "private.txt").write_text("unrelated")
+    with pytest.raises(CodexBridgeError, match="must be empty"):
+        bridge.research_workspace()
+
+
 def test_chat_codex_defaults_to_local_full_access_and_research_tools(tmp_path, monkeypatch):
     from llm_gateway.dashboard import dashboard_mcp_servers
 
     bridge = CodexBridge()
     bridge.research_root = tmp_path / "research"
     workspace = bridge.research_workspace()
+    (workspace / "notes.md").write_text("research result")
+    assert bridge.research_workspace(str(workspace)) == workspace
     observed = []
     def tools(workspace=None, mode="coding", conversation_id=None):
         observed.append((workspace, mode))

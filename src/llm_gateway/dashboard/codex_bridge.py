@@ -110,11 +110,19 @@ class CodexBridge:
         if root.is_symlink():
             raise CodexBridgeError("Chat research directory cannot be a symlink")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not root.is_dir() or any(root.iterdir()):
-            raise CodexBridgeError("Chat research directory must be empty")
+        if not root.is_dir():
+            raise CodexBridgeError("Chat research directory is unavailable")
         selected = root.resolve()
         if path is not None and Path(path).resolve() != selected:
             raise CodexBridgeError("Chat research directory changed")
+        marker = root / ".dashboard-research-root"
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise CodexBridgeError("Chat research directory marker is invalid")
+        if not marker.exists() and any(root.iterdir()):
+            raise CodexBridgeError("Chat research directory must be empty")
+        if not marker.exists():
+            marker.touch(exist_ok=True)
+            marker.chmod(0o600)
         return selected
 
     def dashboard_tools(self, server: str) -> list[dict]:
