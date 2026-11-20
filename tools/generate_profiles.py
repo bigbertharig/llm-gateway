@@ -10,11 +10,12 @@ into files the gateway owns, so the gateway runs with no benchmarking checkout:
 - remote_profiles.json: the offer, the models the gateway publishes on /v1/models under which registry
   profile. The offer names no cards: the manager's fit places a published profile and sizes its context.
 
-Re-run it after benchmarking learns something new.
+The Gateway service runs it at startup when the Benchmarking export is available.
 
 Usage (on the Pi, where the benchmarking repo is on the shared drive):
   tools/generate_profiles.py            rewrite both files
   tools/generate_profiles.py --check    exit 1 if the offer is invalid or either file is stale
+  tools/generate_profiles.py --sync-if-available  service startup; use the last valid snapshot if source is unavailable
   BENCHMARKING_ROOT=<path> ...          a different benchmarking checkout
 """
 
@@ -33,6 +34,7 @@ REPO = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = REPO / "remote_profiles.json"
 CATALOG_PATH = REPO / "model_catalog.json"
 BENCHMARKING_ROOTS = (
+    REPO.parent / "benchmarking",  # sibling checkout on the controller
     Path("/media/bryan/shared/plans/shoulders/benchmarking"),          # Pi
     Path.home() / "llm_orchestration/shared/plans/shoulders/benchmarking",  # rig
 )
@@ -85,13 +87,34 @@ CATALOG_NOTE = ("Imported by tools/generate_profiles.py from the benchmarking mo
                 "the gateway reads models only from here. Re-run the importer to take in new lessons.")
 
 
-def benchmarking_root() -> Path:
+def benchmarking_root(*, optional: bool = False) -> Path | None:
     env = os.getenv("BENCHMARKING_ROOT")
     candidates = [Path(env)] if env else list(BENCHMARKING_ROOTS)
     for root in candidates:
         if (root / "model_library_export.json").is_file():
             return root
+    if optional:
+        return None
     raise SystemExit(f"model library export not found under {[str(c) for c in candidates]}; set BENCHMARKING_ROOT")
+
+
+def verify_local_snapshot() -> str:
+    """Use the deployed snapshot only when Benchmarking is not installed here."""
+    catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    profiles = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+    digest = catalog.get("source_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("local catalog has no Benchmarking source hash")
+    if not isinstance(catalog.get("models"), dict) or not catalog["models"]:
+        raise ValueError("local model catalog is empty")
+    if not isinstance(profiles.get("remote_profiles"), list):
+        raise ValueError("local remote profiles are missing")
+    if profiles.get("source_sha256") != digest:
+        raise ValueError("local offer and catalog have different source hashes")
+    for offer in profiles["remote_profiles"]:
+        if offer.get("model") not in catalog["models"]:
+            raise ValueError(f"local offer names unknown model: {offer.get('model')}")
+    return digest
 
 
 def load_export(root: Path) -> dict[str, Any]:
@@ -324,9 +347,16 @@ def _summary(root: Path) -> dict[str, Any] | None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true", help="validate and compare, do not write")
+    ap.add_argument("--sync-if-available", action="store_true",
+                    help="import Benchmarking at startup; use local snapshot if source is absent")
     args = ap.parse_args()
+    if args.check and args.sync_if_available:
+        ap.error("--check and --sync-if-available are mutually exclusive")
 
-    root = benchmarking_root()
+    root = benchmarking_root(optional=args.sync_if_available)
+    if root is None:
+        print(f"Benchmarking unavailable; using Gateway snapshot {verify_local_snapshot()}")
+        return 0
     library = load_library(root)
     registry = library.load_registry(root / "model_registry.json")
     doc, problems = build(OFFER, library, registry)
@@ -359,11 +389,19 @@ def main() -> int:
         print(f"not written: {len(problems)} problem(s)", file=sys.stderr)
         return 1
     for path, text in outputs.items():
-        path.write_text(text, encoding="utf-8", newline="\n")
+        if not path.is_file() or path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8", newline="\n")
+    print(f"Benchmarking source {library.doc['source_sha256']} from {root}")
     print(f"wrote {OUTPUT_PATH.name}: {', '.join(p['id'] for p in doc['remote_profiles'])}")
     print(f"wrote {CATALOG_PATH.name}: {len(catalog['models'])} models, {len(catalog['roles'])} roles")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        if "--sync-if-available" not in sys.argv:
+            raise
+        print(f"Benchmarking update unavailable: {exc}", file=sys.stderr)
+        print(f"Using Gateway snapshot {verify_local_snapshot()}")
