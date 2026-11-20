@@ -955,7 +955,6 @@ function renderOrch(d) {
     batches.map(([id, b]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(b.display_name || b.plan || "")}</td>
       <td class="mono">${esc(String(b.started_at || "").slice(0, 16))}</td>
       <td><button class="act" data-activity="${esc(id)}">Activity</button>
-          <button class="act" data-batch="resume_plan" data-id="${esc(id)}">Resume</button>
           <button class="act" data-batch="batch_outputs" data-id="${esc(id)}">Outputs</button>
           <button class="act danger" data-batch="kill_plan" data-id="${esc(id)}">Kill</button></td></tr>`).join("") + "</table>" : '<div class="line">No active batches.</div>';
   $("#orch-batches").querySelectorAll("[data-batch]").forEach((b) => b.onclick = () => {

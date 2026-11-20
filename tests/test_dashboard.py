@@ -79,15 +79,15 @@ def test_orchestration_tab_uses_the_orchestration_api(menv, monkeypatch):  # noq
         raise AssertionError((method, path, body))
 
     monkeypatch.setattr(sources, "orchestration_request", fake_request)
-    monkeypatch.setattr(sources, "orchestration_options", lambda: {"ok": True, "plans": ["p"]})
     c = menv["client"]
     assert c.get("/dashboard/api/orchestration").json()["active_batch_count"] == 1
     assert c.get("/dashboard/api/orchestration/diagnostics").json()["ok"] is True
     assert c.get("/dashboard/api/orchestration/activity?batch_id=b1").json()["events"][0]["event"] == "task_started"
-    assert c.get("/dashboard/api/orchestration/options").json()["plans"] == ["p"]
+    assert c.get("/dashboard/api/orchestration/options").status_code == 405
     assert c.post("/dashboard/api/orchestration/kill_plan", json={"batch_id": "b1"}).json()["message"] == "Killed batch b1"
     assert c.post("/dashboard/api/orchestration/requeue_worker", json={"worker": "gpu-3"}).json()["ok"]
     assert c.post("/dashboard/api/orchestration/rm_rf", json={}).status_code == 404
+    assert c.post("/dashboard/api/orchestration/start_plan", json={}).status_code == 404
 
 
 def test_a_missing_orchestration_socket_is_reported_not_raised(menv, tmp_path, monkeypatch):  # noqa: F811

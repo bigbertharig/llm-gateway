@@ -18,7 +18,6 @@ UPSTREAM = "http://127.0.0.1:8080"
 GET_PATHS = frozenset({
     "/gpurig", "/gpurig/", "/dashboard", "/dashboard/", "/dashboard/api/rig", "/dashboard/api/models",
     "/dashboard/api/benchmarks", "/dashboard/api/orchestration",
-    "/dashboard/api/orchestration/options",
     "/dashboard/api/orchestration/diagnostics", "/dashboard/api/orchestration/activity",
     "/dashboard/api/chat/options", "/dashboard/api/chat/conversations",
     "/dashboard/api/chat/codex/account",
@@ -28,7 +27,7 @@ GET_PATHS = frozenset({
 RIG_ACTIONS = frozenset({"kill", "unload", "unclaim", "cancel", "load"})
 RUN_ACTIONS = frozenset({"recover", "dismiss", "stop"})
 ORCHESTRATION_ACTIONS = frozenset({
-    "start_plan", "resume_plan", "kill_plan", "kill_all_active",
+    "kill_plan", "kill_all_active",
     "batch_outputs", "cleanup_stale", "requeue_worker",
 })
 MAX_BODY = 1_048_576

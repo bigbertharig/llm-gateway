@@ -77,7 +77,7 @@ def operation(method: str, path: str) -> tuple[str, str] | None:
                          for name in ("recover", "dismiss", "stop")})
         controls.update({f"/mobile/api/orchestration/{name}":
                          ("orchestration-control", f"/dashboard/api/orchestration/{name}")
-                         for name in ("start_plan", "resume_plan", "kill_plan", "kill_all_active",
+                         for name in ("kill_plan", "kill_all_active",
                                       "batch_outputs", "cleanup_stale", "requeue_worker")})
         return controls.get(path)
     return None

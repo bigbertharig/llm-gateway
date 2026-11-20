@@ -12,24 +12,6 @@ from ..manager import models as registry_models
 
 ORCHESTRATION_API_SOCKET = Path("/run/llm-orchestration/api.sock")
 
-SHARED_ROOTS = (Path("/media/bryan/shared"), Path("/mnt/shared"))  # gateway-owned plan source
-
-
-def shared_root() -> Path:
-    env = os.getenv("SHARED_ROOT")
-    for root in [Path(env)] if env else SHARED_ROOTS:
-        if root.is_dir():
-            return root
-    raise FileNotFoundError("shared drive not found; set SHARED_ROOT")
-
-
-def _json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
 # ------------------------------------------------------------------ models
 
 def models_summary() -> dict:
@@ -92,11 +74,6 @@ def orchestration_activity(batch_id: str, after: int = 0) -> dict:
     from urllib.parse import urlencode
     return orchestration_request("GET", "/v1/orchestration/activity?" +
                                  urlencode({"batch_id": batch_id, "after": after}))
-
-
-def orchestration_options() -> dict:
-    from .plan_requests import PlanRequests
-    return PlanRequests(shared_root(), {}).options()
 
 
 def orchestration_action(action: str, body: dict) -> dict:

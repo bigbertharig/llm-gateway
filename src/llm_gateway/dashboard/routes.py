@@ -16,7 +16,7 @@ from ..manager.errors import ManagerError
 from . import sources
 
 STATIC = Path(__file__).parent / "static"
-ORCHESTRATION_ACTIONS = ("start_plan", "resume_plan", "kill_plan", "kill_all_active", "batch_outputs",
+ORCHESTRATION_ACTIONS = ("kill_plan", "kill_all_active", "batch_outputs",
                          "cleanup_stale", "requeue_worker")
 
 
@@ -149,13 +149,6 @@ def router(manager: Manager) -> APIRouter:
         except Exception as exc:  # the other repo's code: report, never take the gateway down
             return _unavailable(exc)
 
-    @r.get("/api/orchestration/options")
-    async def orchestration_options():
-        try:
-            return await asyncio.to_thread(sources.orchestration_options)
-        except Exception as exc:
-            return _unavailable(exc)
-
     @r.get("/api/orchestration/diagnostics")
     async def orchestration_diagnostics():
         try:
@@ -179,30 +172,6 @@ def router(manager: Manager) -> APIRouter:
         b = await _body(request)
 
         try:
-            if action in {"start_plan", "resume_plan"}:
-                from .plan_requests import PlanRequests
-                plans = PlanRequests(sources.shared_root(), {})
-                if action == "start_plan":
-                    from .plan_assignments import assign_plan_models, plan_role_requests
-                    plan_name = str(b.get("plan_name") or "")
-                    plan_scope = str(b.get("plan_scope") or "shoulders")
-                    starter_file = str(b.get("starter_file") or "")
-                    try:
-                        requests = await asyncio.to_thread(plan_role_requests, plans.shared_path,
-                                                           plan_name, plan_scope, starter_file)
-                        assignment_doc, decisions = await assign_plan_models(manager, requests) if requests else (None, [])
-                    except ValueError as exc:
-                        return {"ok": False, "message": str(exc)}
-                    out = await asyncio.to_thread(
-                        plans.start_plan, str(b.get("plan_name") or ""), str(b.get("config_json") or ""),
-                        str(b.get("plan_scope") or "shoulders"), str(b.get("starter_file") or ""),
-                        str(b.get("repo_path") or ""), str(b.get("repo_url") or ""),
-                        str(b.get("claimed_behavior") or ""), str(b.get("inline_query_text") or ""),
-                        assignment_doc)
-                    if out.get("ok") and decisions:
-                        out["model_assignments"] = decisions
-                    return out
-                return await asyncio.to_thread(plans.resume_plan, str(b.get("batch_id") or ""))
             return await asyncio.to_thread(sources.orchestration_action, action, b)
         except Exception as exc:
             return _unavailable(exc)

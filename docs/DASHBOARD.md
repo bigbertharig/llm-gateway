@@ -47,7 +47,7 @@ requeue that worker's tasks on the Orchestration tab.
 
 | File | Owns |
 |---|---|
-| `src/llm_gateway/dashboard/routes.py` | the page at `/dashboard/` and its API under `/dashboard/api/` (`rig`, `rig/{kill,unclaim,unload,cancel,load}`, `models`, `benchmarks`, `orchestration`, `orchestration/options`, `orchestration/{start_plan,resume_plan,kill_plan,kill_all_active,batch_outputs,cleanup_stale,requeue_worker}`) |
+| `src/llm_gateway/dashboard/routes.py` | the page at `/dashboard/` and its API under `/dashboard/api/` (`rig`, `rig/{kill,unclaim,unload,cancel,load}`, `models`, `benchmarks`, `orchestration`, `orchestration/{kill_plan,kill_all_active,batch_outputs,cleanup_stale,requeue_worker}`) |
 | `src/llm_gateway/dashboard/sources.py` | Models and Benchmarks readers, plus the orchestration API client (the routes run them in a thread) |
 | `src/llm_gateway/dashboard/static/index.html` | the page: one file, no build step, no dependencies beyond two web fonts |
 | `tests/test_dashboard.py` | page, rig API and overrides, both summaries, orchestration API forwarding and unavailable socket |
