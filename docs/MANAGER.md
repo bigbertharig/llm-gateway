@@ -494,9 +494,9 @@ Operator overrides (`rigctl`, act immediately, logged in the manager's events):
 **B, orchestration (left as a mode for now; likely folded into the manager later).**
 - `rig start orchestration` (`rig.py` `start_stack`) becomes a manager request: the manager leases
   the brain's GPU and the worker GPUs (`plans` controller) before starting the stack, releases on stop.
-- Workers already refuse plan claims on leased GPUs (`agents/gpu.py` `_read_gpu_lease`, reading
-  `/mnt/shared/gpus/leases.json`, now the rig's mirror). Change the reader to the rig-local record
-  (`shared/brain/hw/gpus/`, `scripts/rig/hw_state.py`) so it works without the drive.
+- Legacy GPU workers refuse plan claims on leased GPUs by reading the authoritative rig-local
+  record (`shared/brain/hw/gpus/`) through `agents/gpu.py` and `scripts/rig/hw_state.py`.
+  The shared lease and claim mirrors and old watchdog have been removed.
 - Brain meta tasks (`agents/brain_resources.py` `_insert_resource_task`, executed by
   `agents/gpu_llama.py` `load_model`) keep their shape; a load_llm targets only GPUs under the
   stack's lease.
