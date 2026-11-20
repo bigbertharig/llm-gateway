@@ -71,3 +71,21 @@ def test_sheet_values_are_bounded():
     assert google._values({"values": [["name", 3, True, None]]}) == [["name", 3, True, None]]
     with pytest.raises(ManagerError):
         google._values({"values": [["x"] * (google.MAX_SHEET_COLUMNS + 1)]})
+
+
+def test_image_upload_is_confined_to_configured_root(monkeypatch, tmp_path):
+    root = tmp_path / "exports"
+    root.mkdir()
+    image = root / "chart.png"
+    image.write_bytes(b"png bytes")
+    outside = tmp_path / "private.png"
+    outside.write_bytes(b"private")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_UPLOAD_ROOTS", str(root))
+    assert google._allowed_image(str(image), "image/png") == image
+    for path, mime in [(str(outside), "image/png"), (str(image), "image/jpeg")]:
+        with pytest.raises(ManagerError):
+            google._allowed_image(path, mime)
+    link = root / "link.png"
+    link.symlink_to(outside)
+    with pytest.raises(ManagerError):
+        google._allowed_image(str(link), "image/png")

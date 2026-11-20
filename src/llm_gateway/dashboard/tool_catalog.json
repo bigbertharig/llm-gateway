@@ -1,5 +1,5 @@
 {
-  "imported_at": "2026-11-19T06:49:41+00:00",
+  "imported_at": "2026-11-20T18:27:52+00:00",
   "schema_version": 1,
   "servers": {
     "gateway_reset": {
@@ -71,6 +71,10 @@
         {
           "approval": "automatic",
           "name": "upload_drive_text"
+        },
+        {
+          "approval": "automatic",
+          "name": "upload_drive_image"
         },
         {
           "approval": "automatic",
@@ -231,5 +235,5 @@
       ]
     }
   },
-  "source_sha256": "71aa9c5da760f8fe6fc40972842b02d3b43022da1bff187b6f73915a5cdaf44d"
+  "source_sha256": "fe5a8fe4e177ce48b30170bb97ffd4c4f35dc3ca976ab71bdad53de41070e23e"
 }

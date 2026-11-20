@@ -39,6 +39,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 TEXT_MIME_TYPES = {"text/plain", "text/markdown", "text/csv", "application/json"}
+IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
+MAX_IMAGE_BYTES = 64 * 1024 * 1024
 
 
 def _settings() -> tuple[Path, str]:
@@ -310,6 +312,46 @@ def _upload_text(name: str, content: str, mime_type: str, folder_id: str | None)
     return {key: row.get(key) for key in ("id", "name", "mimeType", "parents", "webViewLink", "size")}
 
 
+def _allowed_image(path: str, mime_type: str) -> Path:
+    """Only expose images under explicitly configured export roots to model tools."""
+    roots = os.getenv("GOOGLE_WORKSPACE_UPLOAD_ROOTS", "").split(os.pathsep)
+    allowed_roots = [Path(root).expanduser().resolve() for root in roots if root]
+    if not allowed_roots:
+        raise ManagerError(503, "Google Drive image upload roots are not configured")
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute() or candidate.is_symlink():
+        raise ManagerError(400, "Google Drive image path must be an absolute regular file")
+    try:
+        resolved = candidate.resolve(strict=True)
+        size = resolved.stat().st_size
+    except (OSError, ValueError) as exc:
+        raise ManagerError(400, "Google Drive image is unavailable") from exc
+    if not resolved.is_file() or not any(resolved.is_relative_to(root) for root in allowed_roots):
+        raise ManagerError(403, "Google Drive image is outside configured upload roots")
+    if mime_type not in IMAGE_MIME_TYPES or resolved.suffix.lower() not in {
+        "image/png": {".png"}, "image/jpeg": {".jpg", ".jpeg"}, "image/webp": {".webp"}
+    }[mime_type]:
+        raise ManagerError(400, "Unsupported Google Drive image type")
+    if not 0 < size <= MAX_IMAGE_BYTES:
+        raise ManagerError(400, "Google Drive image exceeds the upload size limit")
+    return resolved
+
+
+def _upload_image(path: Path, name: str, mime_type: str, folder_id: str | None) -> dict:
+    try:
+        from googleapiclient.http import MediaFileUpload
+    except ImportError as exc:
+        raise ManagerError(503, "Google Workspace dependencies are unavailable") from exc
+    drive = _service("drive", "v3")
+    metadata = {"name": name}
+    if folder_id:
+        metadata["parents"] = [folder_id]
+    media = MediaFileUpload(str(path), mimetype=mime_type, resumable=True)
+    row = drive.files().create(body=metadata, media_body=media,
+                               fields="id,name,mimeType,parents,webViewLink,size").execute()
+    return {key: row.get(key) for key in ("id", "name", "mimeType", "parents", "webViewLink", "size")}
+
+
 def _create_document(title: str, initial_text: str, folder_id: str | None):
     docs = _service("docs", "v1")
     document = docs.documents().create(body={"title": title}).execute()
@@ -443,6 +485,22 @@ async def upload_drive_text(request: Request):
     return await asyncio.to_thread(_mutate, "upload_drive_text", request_id,
                                    {"name": name, "mime_type": mime_type, "folder_id": folder_id},
                                    lambda: _upload_text(name, content, mime_type, folder_id))
+
+
+@router.post("/drive/upload-image")
+async def upload_drive_image(request: Request):
+    body = await _json_body(request, {"path", "name", "mime_type", "folder_id", "request_id", "confirmed"},
+                            {"path", "name", "mime_type", "request_id", "confirmed"})
+    path = _text(body, "path", 1, 4096)
+    name = _text(body, "name", 1, 255)
+    mime_type = _text(body, "mime_type", 1, 80)
+    image = _allowed_image(path, mime_type)
+    folder_id = _object_id(body, "folder_id", optional=True)
+    request_id = _mutation_fields(body)
+    return await asyncio.to_thread(_mutate, "upload_drive_image", request_id,
+                                   {"path": str(image), "name": name, "mime_type": mime_type,
+                                    "folder_id": folder_id, "size": image.stat().st_size},
+                                   lambda: _upload_image(image, name, mime_type, folder_id))
 
 
 @router.post("/docs/create")
