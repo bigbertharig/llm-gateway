@@ -24,6 +24,12 @@ continuation and revocation still need operator verification.
 - The mobile composer accepts the same bounded Codex picture inputs and converted
   document types as the main dashboard. It previews pending attachments locally;
   pictures remain Codex-only and attachments cannot be added to an active steer.
+  The Upload tab sends document bytes across the existing Tailscale HTTPS route
+  into the Pi desktop Transfer inbox and shows the generated local path with a
+  copy action. Chats select admitted transfer IDs. Codex documents are copied
+  into the conversation's private workspace attachment directory so the agent
+  can read past the bounded extracted preview. The GPU host does not join the
+  tailnet and no SMB, subnet route, or browser-supplied server path is used.
 - Mobile local-model turns use the gateway's streamed turn path. If the phone
   disconnects, the gateway continues the saved turn; the phone can reopen the
   same conversation to see progress and the final reply. Codex turns already

@@ -29,11 +29,14 @@
   .work-card{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #36515d;border-radius:10px;background:#1b2d38;padding:11px}.work-card strong{display:block;overflow-wrap:anywhere}.work-card small{display:block}.section-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:12px}.section-head h2{margin:0}
   #chatPanel{min-width:0}.chat-heading{display:flex;align-items:center;gap:10px;margin-bottom:12px}.chat-heading h2{margin:0;flex:1;min-width:0;overflow-wrap:anywhere}.chat-heading button{flex:none}
 </style>
-<header><strong>Rig mobile</strong><small>Private session access</small><nav><button id="statusTab" class="active">Status</button><button id="workTab">Work</button></nav></header>
+<header><strong>Rig mobile</strong><small>Private session access</small><nav><button id="statusTab" class="active">Status</button><button id="uploadTab">Upload</button><button id="workTab">Work</button></nav></header>
 <main id="statusView">
   <section class="panel"><div class="row between"><div><div class="eyebrow">Remote check-in</div><h1>Rig overview</h1></div><button id="refreshStatus">Refresh</button></div><div id="statusMessage" class="muted">Loading…</div><div class="hero"><div id="capacityRing" class="ring"><span id="capacityValue">—</span></div><div class="hero-copy"><div class="eyebrow">GPU cards ready to allocate</div><h2 id="capacityLabel">Checking</h2><span id="healthPill" class="pill">Connecting</span></div></div><div id="metrics" class="row"></div></section>
   <section class="panel"><div class="section-head"><h2>Graphics cards</h2><small id="gpuCount"></small></div><div id="gpuCards" class="gpu-grid"></div></section>
   <section class="panel"><div class="section-head"><h2>Work in progress</h2><small id="workMode"></small></div><div id="workSummary" class="row"></div><div id="activeRuns" class="stack"></div></section>
+</main>
+<main id="uploadView" class="hide">
+  <section class="panel stack"><div><h1>Upload files to the Pi</h1><p class="muted">Validated files are stored in the Pi desktop Transfer folder.</p></div><button id="mobileUploadChoose" class="primary" type="button">Choose files</button><input id="mobileUploadInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden><div id="mobileUploadStatus" class="muted">Up to 3 files, 8 MiB each.</div><div id="mobileUploadList" class="stack"></div></section>
 </main>
 <main id="workView" class="work hide">
   <div id="workTitle" class="row between"><h1>Conversations</h1><button id="refreshWork">Refresh</button></div>
@@ -41,16 +44,16 @@
   <section id="chatPanel" class="panel hide"><div class="chat-heading"><button id="backToList" type="button" aria-label="Back to conversations">← Back</button><h2 id="conversationTitle">Conversation</h2></div><div class="row between"><span id="turnState" class="muted"></span></div>
     <div id="conversationMeta" class="muted"></div><div id="messages" class="messages"></div>
     <div id="approvals" class="stack"></div>
-    <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000"></textarea><div class="attachment-actions"><button id="attachImage" type="button">Attach picture</button><button id="attachFile" type="button">Attach file</button><span class="attachment-help">Up to 3 attachments · pictures require Codex</span><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden></div><div id="pendingAttachments" class="attachments"></div><div id="composerStatus" class="notice error hide" role="alert"></div><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
+    <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000"></textarea><div class="attachment-actions"><button id="attachImage" type="button">Attach picture</button><button id="attachFile" type="button">Upload file</button><span class="attachment-help">Up to 3 attachments · pictures require Codex</span><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden></div><div class="row"><select id="mobileTransferSelect" aria-label="Uploaded file"><option value="">Choose uploaded file…</option></select><button id="mobileUseTransfer" type="button">Attach uploaded</button></div><div id="pendingAttachments" class="attachments"></div><div id="composerStatus" class="notice error hide" role="alert"></div><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
   </section>
 </main>
 <script>
-const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[];
+const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[],uploadedFiles=[];
 const json=async(path,options={})=>{const response=await fetch(path,{credentials:'same-origin',cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}return data};
 const post=(path,data)=>json(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 const text=(node,value)=>{node.textContent=value==null?'':String(value)};
-function show(name){$('statusView').classList.toggle('hide',name!=='status');$('workView').classList.toggle('hide',name!=='work');$('statusTab').classList.toggle('active',name==='status');$('workTab').classList.toggle('active',name==='work');if(name==='work')loadWork()}
-$('statusTab').onclick=()=>show('status');$('workTab').onclick=()=>show('work');$('refreshStatus').onclick=loadStatus;$('refreshWork').onclick=loadWork;
+function show(name){$('statusView').classList.toggle('hide',name!=='status');$('uploadView').classList.toggle('hide',name!=='upload');$('workView').classList.toggle('hide',name!=='work');$('statusTab').classList.toggle('active',name==='status');$('uploadTab').classList.toggle('active',name==='upload');$('workTab').classList.toggle('active',name==='work');if(name==='work')loadWork();if(name==='upload')loadUploads()}
+$('statusTab').onclick=()=>show('status');$('uploadTab').onclick=()=>show('upload');$('workTab').onclick=()=>show('work');$('refreshStatus').onclick=loadStatus;$('refreshWork').onclick=loadWork;
 function showList(){selected=null;conversation=null;agentActive=false;clearAttachments();$('workTitle').classList.remove('hide');$('listPanel').classList.remove('hide');$('chatPanel').classList.add('hide');window.scrollTo(0,0);loadWork()}
 function showChat(){ $('workTitle').classList.add('hide');$('listPanel').classList.add('hide');$('chatPanel').classList.remove('hide');window.scrollTo(0,0) }
 $('backToList').onclick=showList;
@@ -74,7 +77,7 @@ function activityText(event){
   return detail?`${event.method==='item/started'?'Working':'Done'} · ${String(detail).slice(0,800)}`:'';
 }
 function clearAttachments(){pendingImages=[];pendingFiles=[];renderPendingAttachments()}
-function attachmentBytes(){return [...pendingImages,...pendingFiles].reduce((sum,item)=>sum+(item.size||0),0)}
+function attachmentBytes(){return [...pendingImages,...pendingFiles].reduce((sum,item)=>sum+(item.size||item.size_bytes||0),0)}
 const readDataUrl=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error);reader.readAsDataURL(file)});
 function attachmentNode(item,removable=false,index=0,kind='image'){
   const box=document.createElement('div');box.className='attachment';
@@ -96,10 +99,29 @@ async function addAttachments(files,kind){
     if(attachmentBytes()+file.size>10*1024*1024){alert('Mobile attachments may total at most 10 MiB.');break}
     let data_url=await readDataUrl(file);
     if(!images&&data_url.startsWith('data:;base64,'))data_url=data_url.replace('data:;base64,',file.name.toLowerCase().endsWith('.pdf')?'data:application/pdf;base64,':'data:application/octet-stream;base64,');
-    (images?pendingImages:pendingFiles).push({name:file.name||'attachment',type:file.type,data_url,size:file.size});
+    if(images)pendingImages.push({name:file.name||'attachment',type:file.type,data_url,size:file.size});
+    else{const admitted=await post('/mobile/api/transfers',{name:file.name,type:file.type,data_url});pendingFiles.push(admitted);await loadUploads()}
   }
   renderPendingAttachments();
 }
+async function uploadMobileFiles(files){
+  if(files.length>3)throw new Error('Upload at most 3 files at a time.');
+  for(const file of files){
+    if(!/\.(pdf|txt|md|csv|json|html|xml|py|js|ts|css|log)$/i.test(file.name)){alert(`${file.name} is not supported.`);continue}
+    if(!file.size||file.size>8*1024*1024){alert(`${file.name} must be under 8 MiB.`);continue}
+    let data_url=await readDataUrl(file);if(data_url.startsWith('data:;base64,'))data_url=data_url.replace('data:;base64,',file.name.toLowerCase().endsWith('.pdf')?'data:application/pdf;base64,':'data:application/octet-stream;base64,');
+    await post('/mobile/api/transfers',{name:file.name,type:file.type,data_url})
+  }
+  await loadUploads()
+}
+async function loadUploads(){
+  const result=await json('/mobile/api/transfers');uploadedFiles=result.transfers||[];const list=$('mobileUploadList');list.replaceChildren();
+  const select=$('mobileTransferSelect'),selectedValue=select.value;select.replaceChildren(new Option('Choose uploaded file…',''));for(const file of uploadedFiles)select.append(new Option(file.name,file.id));select.value=uploadedFiles.some(file=>file.id===selectedValue)?selectedValue:'';
+  for(const file of uploadedFiles){const card=document.createElement('div');card.className='work-card';const name=document.createElement('strong');text(name,file.name);const location=document.createElement('small');text(location,`File located here: ${file.path}`);const row=document.createElement('div');row.className='row';const copy=document.createElement('button');text(copy,'Copy path');copy.onclick=()=>navigator.clipboard.writeText(file.path);const download=document.createElement('a');download.href=`/mobile/api/transfers/${file.id}`;download.textContent='Download';row.append(copy,download);card.append(name,location,row);list.append(card)}
+  if(!uploadedFiles.length)text(list,'No uploaded files yet.')
+}
+$('mobileUploadChoose').onclick=()=>$('mobileUploadInput').click();$('mobileUploadInput').onchange=async event=>{try{text($('mobileUploadStatus'),'Uploading and validating…');await uploadMobileFiles([...event.target.files]);text($('mobileUploadStatus'),'Upload complete.')}catch(error){text($('mobileUploadStatus'),error.message)}event.target.value=''};
+$('mobileUseTransfer').onclick=()=>{const file=uploadedFiles.find(item=>item.id===$('mobileTransferSelect').value);if(file&&!pendingFiles.some(item=>item.id===file.id)&&pendingImages.length+pendingFiles.length<3){pendingFiles.push(file);renderPendingAttachments()}};
 $('attachImage').onclick=()=>$('imageInput').click();$('attachFile').onclick=()=>$('fileInput').click();
 $('imageInput').onchange=async event=>{await addAttachments([...event.target.files],'image');event.target.value=''};
 $('fileInput').onchange=async event=>{await addAttachments([...event.target.files],'file');event.target.value=''};
@@ -141,13 +163,13 @@ async function loadAgent(id,navigate=false){try{
   const box=$('approvals');box.replaceChildren();for(const item of state.approvals||[]){const card=document.createElement('div');card.className='notice';const description=document.createElement('pre');text(description,JSON.stringify(item.preview||item.params||{},null,2));card.append(description);if(permissions.has('approve'))for(const decision of ['accept','decline']){const button=document.createElement('button');text(button,decision==='accept'?'Approve':'Decline');button.onclick=async()=>{if(decision==='accept'&&!confirm('Approve this exact action?'))return;try{await post(`/mobile/api/conversations/${id}/agent/approval`,{request_id:item.id,decision});await openConversation(id)}catch(error){alert(error.message)}};card.append(button)}box.append(card)}
 }catch(error){text($('approvals'),error.message)}}
 async function sendTurn(target,value){
-  const images=pendingImages.map(({name,type,data_url})=>({name,type,data_url})),files=pendingFiles.map(({name,type,data_url})=>({name,type,data_url}));
+  const images=pendingImages.map(({name,type,data_url})=>({name,type,data_url})),transfers=pendingFiles.map(item=>item.id);
   if(conversation.provider==='local'){
-    const response=await fetch(`/mobile/api/conversations/${target}/turn`,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:conversation.model,message:value,images,files,stream:true})});
+    const response=await fetch(`/mobile/api/conversations/${target}/turn`,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:conversation.model,message:value,images,transfers,stream:true})});
     if(!response.ok){const data=await response.json();const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}
     $('message').value='';clearAttachments();await openConversation(target);const reader=response.body.getReader();while(true){const result=await reader.read();if(result.done)break}await openConversation(target);return;
   }
-  await post(`/mobile/api/conversations/${target}/turn`,{model:conversation.model,message:value,images,files});$('message').value='';clearAttachments();await openConversation(target);
+  await post(`/mobile/api/conversations/${target}/turn`,{model:conversation.model,message:value,images,transfers});$('message').value='';clearAttachments();await openConversation(target);
 }
 $('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conversation)return;const value=$('message').value.trim();if(!value&&!pendingImages.length&&!pendingFiles.length)return;const button=$('sendForm').querySelector('button[type=submit]');button.disabled=true;const target=selected;try{
   composerError();
@@ -155,6 +177,6 @@ $('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conve
   await sendTurn(target,value);
 }catch(error){composerError(error.message)}finally{button.disabled=false}};
 $('interrupt').onclick=async()=>{if(!selected||!confirm('Stop the current turn?'))return;try{composerError();await post(`/mobile/api/conversations/${selected}/agent/interrupt`,{});await openConversation(selected)}catch(error){composerError(error.message)}};
-async function start(){try{const caps=await json('/mobile/api/capabilities');permissions=new Set(caps.permissions||[])}catch(error){text($('statusMessage'),error.message)}loadStatus();setInterval(()=>{if(!$('chatPanel').classList.contains('hide')&&!$('workView').classList.contains('hide')&&selected)openConversation(selected)},5000);setInterval(()=>{if(!$('listPanel').classList.contains('hide')&&!$('workView').classList.contains('hide'))loadWork()},15000);setInterval(()=>{if(!$('statusView').classList.contains('hide'))loadStatus()},20000)}start();
+async function start(){try{const caps=await json('/mobile/api/capabilities');permissions=new Set(caps.permissions||[]);if(permissions.has('transfer-read'))await loadUploads()}catch(error){text($('statusMessage'),error.message)}loadStatus();setInterval(()=>{if(!$('chatPanel').classList.contains('hide')&&!$('workView').classList.contains('hide')&&selected)openConversation(selected)},5000);setInterval(()=>{if(!$('listPanel').classList.contains('hide')&&!$('workView').classList.contains('hide'))loadWork()},15000);setInterval(()=>{if(!$('statusView').classList.contains('hide'))loadStatus()},20000)}start();
 </script>
 </html>

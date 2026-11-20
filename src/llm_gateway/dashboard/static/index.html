@@ -379,6 +379,7 @@ a { color: var(--cool); }
   <button role="tab" data-tab="rig" aria-selected="true">Rig</button>
   <button role="tab" data-tab="models" aria-selected="false">Models</button>
   <button role="tab" data-tab="benchmarks" aria-selected="false">Benchmarks</button>
+  <button role="tab" data-tab="upload" aria-selected="false">Upload</button>
   <button role="tab" data-tab="chat" aria-selected="false">Chat</button>
   <button role="tab" data-tab="coding" aria-selected="false">Coding</button>
 </nav>
@@ -426,6 +427,17 @@ a { color: var(--cool); }
     <h2>Model evidence</h2><div class="scroll" id="benchmark-evidence"></div>
   </section>
 
+  <section id="tab-upload" hidden>
+    <h2>Upload files to the Pi</h2>
+    <p class="line">Files are admitted through a single sanitized inbox. The dashboard stores generated IDs, verifies type, size, UTF-8/PDF structure, and SHA-256, and never accepts a destination path from the browser.</p>
+    <div class="chat-attach-row">
+      <button class="act" id="upload-choose" type="button">Choose files</button>
+      <input id="upload-input" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden>
+      <span id="upload-status" class="line">Up to 3 files, 8 MiB each.</span>
+    </div>
+    <div id="upload-list" class="scroll"></div>
+  </section>
+
   <section id="tab-chat" hidden>
     <div class="chat-layout" id="chat-shell">
       <aside class="chat-sidebar">
@@ -471,8 +483,10 @@ a { color: var(--cool); }
           <div id="chat-slash-menu" class="chat-slash-menu" aria-label="Codex commands" hidden></div>
           <div class="chat-attach-row" id="chat-attach-row" hidden>
             <button class="act" id="chat-attach" type="button">Attach images</button>
-            <button class="act" id="chat-attach-file" type="button">Attach files/PDFs</button>
-            <span class="line">PDF and text files are converted to text; images require Codex.</span>
+            <button class="act" id="chat-attach-file" type="button">Upload file</button>
+            <select id="chat-transfer-select" aria-label="Previously uploaded file"><option value="">Choose uploaded file…</option></select>
+            <button class="act" id="chat-use-transfer" type="button">Attach uploaded</button>
+            <span class="line">Documents pass through the Upload inbox; images require Codex.</span>
             <input id="chat-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
             <input id="chat-file-input" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden>
           </div>
@@ -1244,6 +1258,7 @@ let chatImages = [];
 let chatImageWarning = "";
 const chatFileDrafts = new Map();
 let chatFiles = [];
+let uploadedFiles = [];
 let openChatTabs = (() => { try { return JSON.parse(localStorage.getItem("dash-chat-tabs") || "[]"); } catch (e) { return []; } })();
 let codexConnected = false;
 let chatEnterSends = (() => { try { return localStorage.getItem("dash-chat-enter-sends") !== "false"; }
@@ -1603,19 +1618,69 @@ function renderPendingChatImages() {
     chip.append(remove); files.append(chip);
   });
 }
-async function addChatFiles(files) {
+async function uploadDocuments(files, attachToChat) {
   const supported = /\.(pdf|txt|md|csv|json|html|xml|py|js|ts|css|log)$/i;
+  const admittedFiles = [];
+  if (files.length > 3) throw new Error("Upload at most 3 files at a time.");
   for (const file of files) {
     if (!supported.test(file.name)) { toast(file.name + " is not a supported document.", "bad"); continue; }
     if (!file.size || file.size > 8 * 1024 * 1024) { toast(file.name + " must be under 8 MiB.", "bad"); continue; }
-    if (chatFiles.length >= 3) { toast("Attach at most 3 files.", "bad"); break; }
+    if (attachToChat && chatFiles.length >= 3) { toast("Attach at most 3 files.", "bad"); break; }
     let data_url = await new Promise((resolve, reject) => { const reader = new FileReader();
       reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
     if (data_url.startsWith("data:;base64,")) data_url = data_url.replace("data:;base64,",
       file.name.toLowerCase().endsWith(".pdf") ? "data:application/pdf;base64," : "data:application/octet-stream;base64,");
-    chatFiles.push({name: file.name, type: file.type, data_url});
+    const admitted = await api("transfers", {name: file.name, type: file.type, data_url});
+    admittedFiles.push(admitted);
+    if (attachToChat) chatFiles.push(admitted);
+    toast(file.name + " uploaded to the Pi.", "good");
   }
+  await loadUploads();
   renderPendingChatImages();
+  return admittedFiles;
+}
+const addChatFiles = (files) => uploadDocuments(files, true);
+
+function attachUploadedFile(file) {
+  if (!file || chatFiles.some((item) => item.id === file.id)) return;
+  if (chatFiles.length >= 3) { toast("Attach at most 3 files.", "bad"); return; }
+  chatFiles.push(file); renderPendingChatImages();
+}
+
+async function loadUploads() {
+  const result = await api("transfers");
+  uploadedFiles = result.transfers || [];
+  const select = $("#chat-transfer-select");
+  if (select) {
+    const selected = select.value; select.replaceChildren(new Option("Choose uploaded file…", ""));
+    for (const file of uploadedFiles) select.append(new Option(`${file.name} · ${(file.size_bytes / 1024).toFixed(1)} KiB`, file.id));
+    select.value = uploadedFiles.some((file) => file.id === selected) ? selected : "";
+  }
+  const list = $("#upload-list");
+  if (!list) return;
+  list.replaceChildren();
+  for (const file of uploadedFiles) {
+    const row = document.createElement("div"); row.className = "chat-loaded-item";
+    const detail = document.createElement("div");
+    const name = document.createElement("b"); name.textContent = file.name;
+    const meta = document.createElement("small"); meta.textContent = `${file.size_bytes.toLocaleString()} bytes · ${file.sha256.slice(0, 16)}… · ${new Date(file.created_at).toLocaleString()}`;
+    const location = document.createElement("small"); location.textContent = "File located here: " + file.path;
+    const copy = document.createElement("button"); copy.type = "button"; copy.className = "act"; copy.textContent = "Copy path";
+    copy.onclick = async () => { await navigator.clipboard.writeText(file.path); toast("Copied: " + file.path, "good"); };
+    detail.append(name, meta, location);
+    const download = document.createElement("a"); download.className = "act";
+    download.href = "/dashboard/api/transfers/" + encodeURIComponent(file.id); download.textContent = "Download";
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "act danger"; remove.textContent = "Delete";
+    remove.onclick = async () => {
+      if (!confirm(`Delete uploaded file ${file.name}? Existing conversation copies remain available.`)) return;
+      const response = await fetch("/dashboard/api/transfers/" + encodeURIComponent(file.id), {
+        method: "DELETE", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: "{}"});
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error?.message || "Delete failed"); }
+      chatFiles = chatFiles.filter((item) => item.id !== file.id); renderPendingChatImages(); await loadUploads();
+    };
+    row.append(detail, copy, download, remove); list.append(row);
+  }
+  if (!uploadedFiles.length) list.textContent = "No uploaded files yet.";
 }
 async function addChatImages(files) {
   if ($("#chat-model").value !== "Codex") {
@@ -1769,9 +1834,20 @@ $("#chat-disconnect").onclick = async () => {
 };
 $("#chat-attach").onclick = () => $("#chat-image-input").click();
 $("#chat-attach-file").onclick = () => $("#chat-file-input").click();
+$("#chat-use-transfer").onclick = () => {
+  attachUploadedFile(uploadedFiles.find((file) => file.id === $("#chat-transfer-select").value));
+};
 $("#chat-file-input").onchange = async (event) => {
   try { await addChatFiles([...event.target.files]); }
   catch (e) { toast("Could not read file: " + e.message, "bad"); }
+  event.target.value = "";
+};
+$("#upload-choose").onclick = () => $("#upload-input").click();
+$("#upload-input").onchange = async (event) => {
+  const status = $("#upload-status");
+  try { status.textContent = "Uploading and validating…"; await uploadDocuments([...event.target.files], false);
+    status.textContent = "Upload complete."; }
+  catch (e) { status.textContent = e.message; toast("Upload failed: " + e.message, "bad"); }
   event.target.value = "";
 };
 $("#chat-image-input").onchange = async (event) => {
@@ -2285,7 +2361,7 @@ $("#chat-form").onsubmit = async (event) => {
     return;
   }
   const turnImages = cloud ? chatImages.map(({name, type, data_url}) => ({name, type, data_url})) : [];
-  const turnFiles = chatFiles.map(({name, type, data_url}) => ({name, type, data_url}));
+  const turnFiles = chatFiles.map(({id, name, type}) => ({id, name, type}));
   if (cloud && prompt.toLowerCase().startsWith("/local-agent")) {
     const match = prompt.match(/^\/local-agent\s+(coding|research|research-web|coding-read)\s+([\s\S]+)$/i);
     if (!match || !match[2].trim()) {
@@ -2397,7 +2473,8 @@ $("#chat-form").onsubmit = async (event) => {
     sendingId = chatId; busyChats.add(sendingId); chatBusy = true;
     renderLoadedChatModels();
     if (cloud) refreshCodexApprovals(sendingId);
-    const turnBody = {model, message: prompt, images: turnImages, files: turnFiles};
+    const turnBody = {model, message: prompt, images: turnImages,
+      transfers: turnFiles.map((file) => file.id)};
     let out;
     if (!cloud) {
       streamingAnswer = document.createElement("div"); streamingAnswer.className = "chat-message assistant";
@@ -2943,8 +3020,11 @@ $("#load-form").onsubmit = (e) => {
                 args: f.get("args"), force: f.get("force") === "on"};
   act(`Load ${body.model}`, "rig/load", body, body.force ? `Kill whatever runs on cards ${body.gpu_ids} and load ${body.model}?` : "");
 };
-const every = {rig: 5000, models: 60000, benchmarks: 15000, chat: 10000};
+const every = {rig: 5000, models: 60000, benchmarks: 15000, upload: 10000, chat: 10000};
 let last = {};
+const localClock = (stamp) => new Intl.DateTimeFormat(undefined, {
+  hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short"
+}).format(new Date(stamp));
 async function refresh(now) {
   const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
   try {
@@ -2955,11 +3035,12 @@ async function refresh(now) {
     }
     if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
     if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
+    if (tab === "upload" && due("upload")) { await loadUploads(); last.upload = Date.now(); }
     if ((tab === "chat" || tab === "coding") && due("chat") && !chatBusy) {
-      await loadChat(); last.chat = Date.now();
+      await Promise.all([loadChat(), loadUploads()]); last.chat = Date.now();
       if (tab === "coding") { await loadCodingWorkspace(); last.coding = Date.now(); }
     }
-    if (tab !== "rig" && last[tab]) $("#stamp").textContent = "updated " + new Date(last[tab]).toLocaleTimeString();
+    if (last[tab]) $("#stamp").textContent = "updated " + localClock(last[tab]);
   } catch (e) {
     $("#stamp").textContent = "refresh failed: " + e.message;
   }

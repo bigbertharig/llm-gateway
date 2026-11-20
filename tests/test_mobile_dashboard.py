@@ -75,9 +75,25 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert ".message.assistant{color:#fff}" in page
     assert ".tool-message" in page and "color:#9eabb2" in page and "'tool-message'" in page
     assert 'id="attachImage"' in page and 'id="attachFile"' in page
+    assert 'id="uploadTab"' in page and 'id="uploadView"' in page
+    assert "File located here:" in page and "Copy path" in page
+    assert "/mobile/api/transfers" in page
     assert 'accept="image/png,image/jpeg,image/webp"' in page
     assert "state.active===true&&state.turn?.state==='running'" in page
     assert "if(error.status!==409)throw error" in page
     assert 'id="composerStatus"' in page
     assert "catch(error){composerError(error.message)}" in page
     assert "event.item?.type==='agentMessage'?'message assistant':'tool-message'" in page
+
+
+def test_mobile_transfer_routes_are_exact_and_separately_permissioned():
+    from llm_gateway.mobile_dashboard import operation
+    transfer_id = "a" * 32
+    assert operation("POST", "/mobile/api/transfers") == (
+        "transfer-write", "/dashboard/api/transfers")
+    assert operation("GET", "/mobile/api/transfers") == (
+        "transfer-read", "/dashboard/api/transfers")
+    assert operation("GET", "/mobile/api/transfers/" + transfer_id) == (
+        "transfer-read", "/dashboard/api/transfers/" + transfer_id)
+    assert operation("DELETE", "/mobile/api/transfers/" + transfer_id) is None
+    assert operation("GET", "/mobile/api/transfers/not-an-id") is None

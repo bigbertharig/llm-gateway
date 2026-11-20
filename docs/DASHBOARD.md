@@ -12,6 +12,10 @@ Gateway serves the dashboard at `/dashboard/`. Its Rig view reads Gateway Manage
 
 Gateway remains the controller whether it runs on the GPU host or another machine. Orchestration owns physical admission and reports service readiness or a specific refusal. The dashboard does not read shared task queues or call Orchestration's old batch API. The mobile dashboard is a separate, restricted Gateway view and reads the same Rig status.
 
+The Upload tab sends documents through the authenticated LAN or mobile HTTPS route into the Gateway-owned `/home/bryan/Desktop/Transfer` inbox (`DASHBOARD_TRANSFER_ROOT` may override it). Gateway accepts only bounded PDF and UTF-8 text/code types, rejects client paths and unsafe names, assigns an opaque ID and generated server filename, and records size, canonical type, SHA-256, and creation time. The UI shows “File located here” with a copy-path action plus authenticated download and desktop deletion. Chats attach an admitted transfer ID rather than resending arbitrary bytes. Harness still produces a bounded text excerpt for initial model context. For Codex conversations, Gateway also copies the validated original into a private generated directory inside that conversation's authorized workspace and supplies its path, size, and digest to Codex. Git workspaces use `.git/llm-gateway-attachments/<conversation>/<upload>/`; non-Git research workspaces use `.llm-gateway-attachments/<conversation>/<upload>/`. Deleting an inbox file does not invalidate an existing conversation copy; deleting the conversation removes its scoped copy. Local-model and Claude attachments remain excerpt-only.
+
+Persisted timestamps are UTC. Browsers convert them and successful-refresh clocks to their local timezone; the desktop clock includes the timezone abbreviation so DST and differing operator locations remain explicit.
+
 ## Code
 
 - `src/llm_gateway/dashboard/routes.py`: dashboard API and manager actions.

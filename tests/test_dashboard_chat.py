@@ -1,7 +1,10 @@
 """Dashboard chat storage, generation bridge, and LAN route scope."""
 
 import asyncio
+import base64
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -15,7 +18,8 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from llm_gateway.dashboard.chat import (ChatStore, _collect_stream, _compact_tool_history,
-                                        _model_tool_result, _image_attachments,
+                                        _model_tool_result, _image_attachments, _file_context,
+                                        _materialize_codex_attachments, _remove_codex_attachments,
                                         context_history, shared_history_handoff, requested_page_url,
                                         malformed_reasoning, router)
 from llm_gateway.lan_dashboard import _allowed
@@ -25,12 +29,50 @@ from llm_gateway.manager.errors import ManagerError
 
 def test_dashboard_hides_internal_workspace_routing_from_chat_sidebars():
     page = (Path(__file__).parents[1] / "src/llm_gateway/dashboard/static/index.html").read_text()
+    assert 'data-tab="upload"' in page and 'id="tab-upload"' in page
+    assert "File located here:" in page and "Copy path" in page
+    assert 'timeZoneName: "short"' in page
     assert "Agent workspace" not in page
     assert 'id="chat-workspace" aria-hidden="true" tabindex="-1" hidden' in page
     assert '<h2>Availability</h2><div id="chat-rig-summary">' in page
     assert "Currently loaded" not in page
     assert "Local agent capacity" not in page
     assert "The manager controls model loading and GPU placement" not in page
+
+
+def test_codex_attachment_original_is_private_complete_and_conversation_scoped(tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / ".git").mkdir()
+    cid = "a" * 32
+    original = ("first section\n" + "complete evidence\n" * 900).encode()
+    encoded = base64.b64encode(original).decode()
+    raw = [{"name": "report.md", "type": "text/markdown",
+            "data_url": "data:text/markdown;base64," + encoded}]
+    converted = [{"name": "report.md", "type": "text/markdown", "method": "plain_text",
+                  "text": original.decode()[:10000], "source_chars": len(original),
+                  "truncated": True, "note": "Read as UTF-8 text. Content was truncated."}]
+
+    class Codex:
+        def workspace(self, value):
+            assert value == str(workspace)
+            return workspace
+
+    conversation = {"cwd": str(workspace), "mode": "coding"}
+    files = _materialize_codex_attachments(raw, converted, conversation, cid, Codex())
+    stored = Path(files[0]["path"])
+    assert stored.read_bytes() == original
+    assert stored.is_relative_to(workspace / ".git" / "llm-gateway-attachments" / cid)
+    assert files[0]["size_bytes"] == len(original)
+    assert files[0]["sha256"] == hashlib.sha256(original).hexdigest()
+    assert os.stat(stored).st_mode & 0o777 == 0o600
+    context = _file_context(files)
+    assert str(stored) in context
+    assert "Read it in bounded sections" in context
+    assert "SHA-256" in context
+
+    _remove_codex_attachments(conversation, cid, Codex())
+    assert not (workspace / ".git" / "llm-gateway-attachments" / cid).exists()
 
 
 def test_shared_model_whitespace_loop_is_malformed():
@@ -648,6 +690,9 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
         return [{"name": "paper.pdf", "type": "application/pdf", "method": "pdf_text",
                  "text": "The finding is 42.", "note": "Extracted PDF text; page images omitted."}]
     monkeypatch.setattr(chat_module, "_document_attachments", extracted_files)
+    monkeypatch.setattr(chat_module, "selected_items", lambda ids: ([{
+        "name": "paper.pdf", "type": "application/pdf",
+        "data_url": "data:application/pdf;base64,JVBERi0=", "transfer_id": ids[0]}] if ids else []))
     profile = {"id": "harness-gemma4-e4b-64k", "model": "gemma-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
     other = {"id": "gpt-oss-20b", "model": "other-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
     unmarked = {"id": "code-only", "model": "code-test", "status": "active", "use": "chat", "good_for": ["coding"]}
@@ -802,8 +847,7 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
         assert client.get(f"/dashboard/api/chat/conversations/{c['id']}").json()["last_total_tokens"] == 51
         assert manager.loads == [profile["id"], profile["id"]]
         document = client.post(f"/dashboard/api/chat/conversations/{c['id']}/turn",
-            json={"model": profile["id"], "message": "", "files": [
-                {"name": "paper.pdf", "data_url": "data:application/pdf;base64,JVBERi0="}]})
+            json={"model": profile["id"], "message": "", "transfers": ["a" * 32]})
         assert document.status_code == 200, document.text
         uploaded = document.json()["conversation"]["messages"][-2]
         assert uploaded["content"] == "Please analyze the attached file."
@@ -898,6 +942,12 @@ def test_lan_chat_routes_are_explicit():
     cid = "a" * 32
     assert _allowed("GET", "/dashboard/api/chat/options")
     assert _allowed("POST", "/dashboard/api/chat/conversations")
+    assert _allowed("GET", "/dashboard/api/transfers")
+    assert _allowed("POST", "/dashboard/api/transfers")
+    assert _allowed("GET", "/dashboard/api/transfers/" + "a" * 32)
+    assert _allowed("DELETE", "/dashboard/api/transfers/" + "a" * 32)
+    assert not _allowed("POST", "/dashboard/api/transfers/" + "a" * 32)
+    assert not _allowed("GET", "/dashboard/api/transfers/not-an-id")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/turn")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/model")
     assert _allowed("POST", "/dashboard/api/chat/loaded-model/reset")
@@ -928,7 +978,21 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
     monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
     workspace = tmp_path / "repo"
     workspace.mkdir()
+    (workspace / ".git").mkdir()
     (workspace / "example.py").write_text("answer = 42\n")
+    from llm_gateway.dashboard import chat as chat_module
+    document_bytes = b"beginning only\n" + b"full report evidence\n" * 1000
+    document = {"name": "report.md", "type": "text/markdown",
+                "data_url": "data:text/markdown;base64," + base64.b64encode(document_bytes).decode(),
+                "transfer_id": "d" * 32}
+    async def extracted_files(files):
+        if not files:
+            return []
+        return [{"name": files[0]["name"], "type": "text/markdown", "method": "plain_text",
+                 "text": "beginning only", "source_chars": 20000, "truncated": True,
+                 "note": "Read as UTF-8 text. Content was truncated to 10,000 characters."}]
+    monkeypatch.setattr(chat_module, "_document_attachments", extracted_files)
+    monkeypatch.setattr(chat_module, "selected_items", lambda ids: [document] if ids else [])
 
     class Codex:
         def __init__(self):
@@ -1017,7 +1081,8 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
                 cloud.gate.clear()
             response = client.post(f"/dashboard/api/chat/conversations/{cid}/turn",
                                    json={"model": "Codex", "message": message,
-                                         "images": [image] if index == 0 else []})
+                                         "images": [image] if index == 0 else [],
+                                         "transfers": [document["transfer_id"]] if index == 0 else []})
             assert response.status_code == 200
             assert response.json()["turn_id"]
             if index == 0:
@@ -1052,10 +1117,16 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
             time.sleep(.01)
         assert cloud.calls[-1][3] == "chat"
         assert cloud.images[0] == [image]
+        first_saved = client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()
+        stored = Path(first_saved["messages"][0]["attachments"][1]["path"])
+        assert stored.read_bytes() == document_bytes
+        assert stored.is_relative_to(workspace / ".git" / "llm-gateway-attachments" / first["id"])
+        assert str(stored) in cloud.calls[0][1]
+        assert "Read it in bounded sections" in cloud.calls[0][1]
         assert cloud.steers == [("thread-1", "Focus on the dashboard UI")]
         assert cloud.interrupts == ["thread-1"]
         assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["messages"][1]["content"] == "Focus on the dashboard UI"
-        assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["messages"][0]["attachments"] == [image]
+        assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["messages"][0]["attachments"][0] == image
         assert "attachments" not in client.get(f"/dashboard/api/chat/conversations/{first['id']}/agent").json()["turn"]
         assert client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()["thread_id"] == "thread-1"
         assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/prepare", json={}).status_code == 400
@@ -1072,3 +1143,6 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
                            json={"command": "delete"}).status_code == 400
         assert client.delete(f"/dashboard/api/chat/conversations/{second['id']}").status_code == 200
         assert cloud.deleted == ["thread-2"]
+        assert client.delete(f"/dashboard/api/chat/conversations/{first['id']}").status_code == 200
+        assert cloud.deleted == ["thread-2", "thread-1"]
+        assert not stored.exists()

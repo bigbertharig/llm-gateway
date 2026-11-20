@@ -22,6 +22,7 @@ UPSTREAM = "http://127.0.0.1:8080"
 STATIC = Path(__file__).parent / "dashboard" / "static" / "mobile.html"
 MAX_BODY = 1_048_576
 MAX_TURN_BODY = 15 * 1024 * 1024
+MAX_TRANSFER_BODY = 12 * 1024 * 1024
 HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -38,6 +39,10 @@ def operation(method: str, path: str) -> tuple[str, str] | None:
     """Return (permission, upstream path) for an exact mobile operation."""
     if method == "POST" and path == "/mobile/api/conversations":
         return "create", "/dashboard/api/chat/conversations"
+    if method == "POST" and path == "/mobile/api/transfers":
+        return "transfer-write", "/dashboard/api/transfers"
+    if method in ("GET", "HEAD") and re.fullmatch(r"/mobile/api/transfers(?:/[0-9a-f]{32})?", path):
+        return "transfer-read", path.replace("/mobile/api", "/dashboard/api", 1)
     if method in ("GET", "HEAD"):
         static = {
             "/mobile/api/rig": ("observe", "/dashboard/api/rig"),
@@ -106,14 +111,14 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
             return HTMLResponse(STATIC.read_text(encoding="utf-8"), headers=HEADERS)
         if route == "/mobile/api/capabilities" and request.method == "GET":
             enabled = sorted({item.strip() for item in os.getenv(
-            "MOBILE_PERMISSIONS", "observe,create,continue,interrupt,approve,workspace-read").split(",") if item.strip()})
+            "MOBILE_PERMISSIONS", "observe,create,continue,interrupt,approve,workspace-read,transfer-read,transfer-write").split(",") if item.strip()})
             return JSONResponse({"permissions": enabled}, headers=HEADERS)
         selected = operation(request.method, route)
         if selected is None:
             return JSONResponse({"error": "not found"}, status_code=404, headers=HEADERS)
         permission, upstream = selected
         enabled = {item.strip() for item in os.getenv(
-            "MOBILE_PERMISSIONS", "observe,create,continue,interrupt,approve,workspace-read").split(",")}
+            "MOBILE_PERMISSIONS", "observe,create,continue,interrupt,approve,workspace-read,transfer-read,transfer-write").split(",")}
         if permission not in enabled:
             return JSONResponse({"error": "mobile permission denied", "permission": permission},
                                 status_code=403, headers=HEADERS)
@@ -125,7 +130,8 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
                 return JSONResponse({"error": "cross-site request"}, status_code=403, headers=HEADERS)
             if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
                 return JSONResponse({"error": "JSON required"}, status_code=415, headers=HEADERS)
-            limit = MAX_TURN_BODY if upstream.endswith("/turn") else MAX_BODY
+            limit = (MAX_TURN_BODY if upstream.endswith("/turn") else
+                     MAX_TRANSFER_BODY if upstream == "/dashboard/api/transfers" else MAX_BODY)
             try:
                 length = int(request.headers.get("content-length", "0"))
             except ValueError:

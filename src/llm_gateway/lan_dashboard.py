@@ -32,6 +32,7 @@ ORCHESTRATION_ACTIONS = frozenset({
 })
 MAX_BODY = 1_048_576
 MAX_CHAT_TURN_BODY = 15 * 1024 * 1024
+MAX_TRANSFER_BODY = 12 * 1024 * 1024
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -47,6 +48,12 @@ SECURITY_HEADERS = {
 
 
 def _allowed(method: str, path: str) -> bool:
+    transfer = re.fullmatch(r'/dashboard/api/transfers(?:/[0-9a-f]{32})?', path)
+    if transfer:
+        collection = path == '/dashboard/api/transfers'
+        return (method in ('GET', 'HEAD') or
+                (method == 'POST' and collection) or
+                (method == 'DELETE' and not collection))
     workspace = re.fullmatch(r'/dashboard/api/chat/conversations/[0-9a-f]{32}/workspace/(tree|file|image|search)', path)
     if workspace:
         return method in ('GET', 'HEAD') or (method == 'POST' and path.endswith('/file'))
@@ -112,7 +119,8 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
                 declared_length = int(request.headers.get("content-length", "0"))
             except ValueError:
                 return JSONResponse({"error": "invalid length"}, status_code=400, headers=SECURITY_HEADERS)
-            body_limit = MAX_CHAT_TURN_BODY if route.endswith("/turn") else MAX_BODY
+            body_limit = (MAX_CHAT_TURN_BODY if route.endswith("/turn") else
+                          MAX_TRANSFER_BODY if route == "/dashboard/api/transfers" else MAX_BODY)
             if declared_length < 0 or declared_length > body_limit:
                 return JSONResponse({"error": "request too large"}, status_code=413, headers=SECURITY_HEADERS)
             chunks = bytearray()
