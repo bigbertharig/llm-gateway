@@ -75,6 +75,13 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     page = STATIC.read_text(encoding="utf-8")
     assert ".message.assistant{color:#fff}" in page
     assert ".tool-message" in page and "color:#9eabb2" in page and "'tool-message'" in page
+    assert 'id="toggleTools"' in page and "mobile-show-tools" in page
+    assert ".messages.hide-tools .tool-message{display:none}" in page
+    assert "messages.classList.toggle('hide-tools',!showTools)" in page
+    assert "showTools?'Hide tools':'Show tools'" in page
+    assert "visibleToolRows=80" in page and "Show earlier activity" in page
+    assert "toolRows.slice(0,hiddenCount)" in page and "visibleToolRows+=80" in page
+    assert ".messages .older-tool" in page
     assert 'id="attachImage"' in page and 'id="attachFile"' in page
     assert 'id="uploadTab"' in page and 'id="uploadView"' in page
     assert "File located here:" in page and "Copy path" in page

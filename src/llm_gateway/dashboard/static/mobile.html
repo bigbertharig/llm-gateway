@@ -19,6 +19,8 @@
   .conversation time{display:block;color:#9bdbc9;font-size:12px;margin-top:5px}
   .message{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:11px 13px;border-radius:12px;background:#223440}.message.assistant{color:#fff}.message.user{background:#244a47;margin-left:12%}
   .tool-message{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:7px 10px;border:1px solid #2e404a;border-radius:9px;background:#18252d;color:#9eabb2;font:12.5px/1.45 ui-monospace,monospace}
+  .messages.hide-tools .tool-message{display:none}
+  .messages .older-tool,.messages.hide-tools .tool-history-more{display:none}.tool-history-more{justify-self:start}
   .attachments,.attachment-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.attachments:empty{display:none}.attachment{position:relative;max-width:150px;padding:6px;border:1px solid #3a505b;border-radius:9px;background:#14212a;color:#a9bac4;font-size:12px;overflow-wrap:anywhere}.attachment img{display:block;width:100%;max-height:120px;object-fit:contain;border-radius:6px;margin-bottom:4px}.attachment button{position:absolute;top:3px;right:3px;padding:1px 7px;border-radius:99px;background:#111c24dd}.attachment-help{font-size:12px;color:#91a5af}
   textarea,input,select{width:100%;font:inherit;color:#edf4f6;background:#111c24;border:1px solid #46606e;border-radius:10px;padding:10px}textarea{min-height:92px;resize:vertical}
   .notice{min-width:0;max-width:100%;overflow-wrap:anywhere;padding:10px 12px;border-radius:10px;background:#503b27;color:#ffe6bb}.error{background:#5a302f;color:#ffd9d6}
@@ -41,14 +43,15 @@
 <main id="workView" class="work hide">
   <div id="workTitle" class="row between"><h1>Conversations</h1><button id="refreshWork">Refresh</button></div>
   <section id="listPanel" class="panel"><div id="conversationList" class="stack"></div></section>
-  <section id="chatPanel" class="panel hide"><div class="chat-heading"><button id="backToList" type="button" aria-label="Back to conversations">← Back</button><h2 id="conversationTitle">Conversation</h2></div><div class="row between"><span id="turnState" class="muted"></span></div>
+  <section id="chatPanel" class="panel hide"><div class="chat-heading"><button id="backToList" type="button" aria-label="Back to conversations">← Back</button><h2 id="conversationTitle">Conversation</h2></div><div class="row between"><span id="turnState" class="muted"></span><button id="toggleTools" type="button" aria-pressed="false">Hide tools</button></div>
     <div id="conversationMeta" class="muted"></div><div id="messages" class="messages"></div>
     <div id="approvals" class="stack"></div>
     <form id="sendForm" class="stack hide"><label for="message">Continue this work</label><textarea id="message" maxlength="40000"></textarea><div class="attachment-actions"><button id="attachImage" type="button">Attach picture</button><button id="attachFile" type="button">Upload file</button><span class="attachment-help">Up to 3 attachments · pictures require Codex</span><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.py,.js,.ts,.css,.log" multiple hidden></div><div class="row"><select id="mobileTransferSelect" aria-label="Uploaded file"><option value="">Choose uploaded file…</option></select><button id="mobileUseTransfer" type="button">Attach uploaded</button></div><div id="pendingAttachments" class="attachments"></div><div id="composerStatus" class="notice error hide" role="alert"></div><div class="row"><button class="primary" type="submit">Send</button><button id="interrupt" type="button" class="hide">Stop current turn</button></div></form>
   </section>
 </main>
 <script>
-const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[],uploadedFiles=[],agentEvents=null,agentEventsId=null,conversationSerial=0;
+const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[],uploadedFiles=[],agentEvents=null,agentEventsId=null,conversationSerial=0,visibleToolRows=80;
+let showTools=true;try{showTools=localStorage.getItem('mobile-show-tools')!=='false'}catch(_error){}
 const json=async(path,options={})=>{const response=await fetch(path,{credentials:'same-origin',cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}return data};
 const post=(path,data)=>json(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 const text=(node,value)=>{node.textContent=value==null?'':String(value)};
@@ -58,6 +61,8 @@ function stopAgentEvents(){if(agentEvents)agentEvents.close();agentEvents=null;a
 function showList(){selected=null;conversation=null;agentActive=false;conversationSerial++;stopAgentEvents();clearAttachments();$('workTitle').classList.remove('hide');$('listPanel').classList.remove('hide');$('chatPanel').classList.add('hide');window.scrollTo(0,0);loadWork()}
 function showChat(){ $('workTitle').classList.add('hide');$('listPanel').classList.add('hide');$('chatPanel').classList.remove('hide');window.scrollTo(0,0) }
 $('backToList').onclick=showList;
+function syncToolVisibility(){const messages=$('messages');messages.classList.toggle('hide-tools',!showTools);$('toggleTools').setAttribute('aria-pressed',String(!showTools));text($('toggleTools'),showTools?'Hide tools':'Show tools')}
+$('toggleTools').onclick=()=>{showTools=!showTools;try{localStorage.setItem('mobile-show-tools',String(showTools))}catch(_error){}syncToolVisibility()};syncToolVisibility();
 const percent=value=>Math.max(0,Math.min(100,Number(value)||0));
 const compact=value=>Number.isFinite(Number(value))?Math.round(Number(value)).toLocaleString():'—';
 function metric(label,value){const box=document.createElement('div');box.className='metric';const heading=document.createElement('small');text(heading,label);const strong=document.createElement('b');text(strong,value);box.append(heading,strong);return box}
@@ -128,6 +133,7 @@ $('imageInput').onchange=async event=>{await addAttachments([...event.target.fil
 $('fileInput').onchange=async event=>{await addAttachments([...event.target.files],'file');event.target.value=''};
 function renderMessages(current,liveEvents=[],forceBottom=false){
   const id=current.id,messages=$('messages');
+  syncToolVisibility();
   const atBottom=forceBottom||messages.scrollHeight-messages.scrollTop-messages.clientHeight<80;
   const priorScroll=messages.scrollTop;
   messages.replaceChildren();
@@ -147,6 +153,9 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
     if(turn.state==='running'&&!liveEvents.length&&!(turn.activity||[]).length)add('Working…','muted');
     if(turn.error)add(`${turn.state}: ${turn.error}`,'notice error');
   }
+  const toolRows=[...messages.querySelectorAll('.tool-message')],hiddenCount=Math.max(0,toolRows.length-visibleToolRows);
+  toolRows.slice(0,hiddenCount).forEach(row=>row.classList.add('older-tool'));
+  if(hiddenCount){const more=document.createElement('button');more.type='button';more.className='tool-history-more';text(more,`Show earlier activity (${hiddenCount})`);more.onclick=()=>{visibleToolRows+=80;renderMessages(current,liveEvents,false)};messages.insertBefore(more,messages.firstChild)}
   requestAnimationFrame(()=>{if(selected===id&&!$('chatPanel').classList.contains('hide'))messages.scrollTop=atBottom?messages.scrollHeight:priorScroll});
 }
 function syncComposer(running){agentActive=!!running;const localBusy=conversation?.provider!=='codex'&&conversation?.last_turn?.state==='running';$('sendForm').classList.toggle('hide',!permissions.has('continue')||localBusy);text($('sendForm').querySelector('button[type=submit]'),agentActive?'Steer current turn':'Send');$('interrupt').classList.toggle('hide',!agentActive||!permissions.has('interrupt'));$('attachImage').disabled=agentActive;$('attachFile').disabled=agentActive}
@@ -158,7 +167,7 @@ function watchAgentEvents(id,enabled){
   source.onerror=()=>{/* EventSource reconnects; the five-second recovery poll remains active. */};
 }
 async function openConversation(id,navigate=false){
-  if(selected!==id)clearAttachments();selected=id;agentActive=false;const serial=++conversationSerial;
+  if(selected!==id){clearAttachments();visibleToolRows=80}selected=id;agentActive=false;const serial=++conversationSerial;
   if(navigate){showChat();text($('conversationTitle'),'Opening conversation…')}
   try{const current=await json(`/mobile/api/conversations/${id}`);if(selected!==id||serial!==conversationSerial)return;conversation=current;watchAgentEvents(id,conversation.provider==='codex');text($('conversationTitle'),conversation.title||'Conversation');text($('conversationMeta'),conversationLabel(conversation));text($('turnState'),conversation.last_turn?.state||'idle');renderMessages(current,[],navigate);syncComposer(false);if(conversation.provider==='codex')await loadAgent(id,navigate,serial);else $('approvals').replaceChildren()}catch(error){if(serial===conversationSerial)text($('conversationTitle'),error.message)}
 }

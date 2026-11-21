@@ -404,6 +404,20 @@ def test_progress_messages_are_not_cut_at_the_command_preview_limit():
     assert bridge.status("thread-1")["events"][0]["item"]["text"] == commentary
 
 
+def test_tool_noise_does_not_evict_assistant_progress_messages():
+    bridge = CodexBridge()
+    bridge._remember_recent("thread-1", {"method": "item/completed", "params": {"item": {
+        "id": "update-1", "type": "agentMessage", "phase": "commentary",
+        "text": "I found the relevant path."}}})
+    for index in range(1100):
+        bridge._remember_recent("thread-1", {"method": "item/completed", "params": {"item": {
+            "id": f"tool-{index}", "type": "commandExecution", "command": f"step {index}"}}})
+    events = bridge.status("thread-1")["events"]
+    assert len(bridge.recent["thread-1"]) == 1000
+    assert any(event.get("item", {}).get("text") == "I found the relevant path."
+               for event in events)
+
+
 def test_status_subscriber_is_signalled_by_live_activity():
     bridge = CodexBridge()
 

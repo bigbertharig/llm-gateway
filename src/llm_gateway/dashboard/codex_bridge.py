@@ -18,6 +18,7 @@ from pathlib import Path
 from . import dashboard_mcp_servers
 
 log = logging.getLogger(__name__)
+RECENT_EVENT_LIMIT = 1000
 
 
 class CodexBridgeError(RuntimeError):
@@ -98,6 +99,19 @@ class CodexBridge:
         self.research_root = Path(os.getenv("CODEX_CHAT_RESEARCH_ROOT") or
                                   (Path(os.getenv("CHAT_DATA_ROOT", str(Path.home() / ".local/share/llm-gateway/chat"))) /
                                    "codex-chat-research"))
+
+    def _remember_recent(self, thread_id: str, event: dict) -> None:
+        """Bound tool noise without evicting assistant commentary first."""
+        events = self.recent.setdefault(thread_id, deque())
+        events.append(event)
+        while len(events) > RECENT_EVENT_LIMIT:
+            removable = next((index for index, saved in enumerate(events)
+                              if ((saved.get("params") or {}).get("item") or {}).get("type")
+                              != "agentMessage"), None)
+            if removable is None:
+                events.popleft()
+            else:
+                del events[removable]
 
     def workspace(self, path: str) -> Path:
         selected = Path(path).resolve()
@@ -282,7 +296,7 @@ class CodexBridge:
                 # Keep durable activity items, not token deltas. A long streamed
                 # answer otherwise evicts every tool call from the bounded deque.
                 if thread_id and method in ("item/started", "item/completed", "turn/completed"):
-                    self.recent.setdefault(thread_id, deque(maxlen=80)).append(message)
+                    self._remember_recent(thread_id, message)
                 if "id" in message and method:
                     if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
                         self.approvals[str(message["id"])] = {"id": str(message["id"]),
@@ -500,7 +514,7 @@ class CodexBridge:
         queue = self.events.setdefault(thread_id, asyncio.Queue())
         # Completed turn activity is stored with the transcript by ChatStore.
         # Keep this deque scoped to the current turn to avoid duplicate receipts.
-        self.recent[thread_id] = deque(maxlen=80)
+        self.recent[thread_id] = deque()
         answer = []
         try:
             inputs = [{"type": "text", "text": prompt}]
