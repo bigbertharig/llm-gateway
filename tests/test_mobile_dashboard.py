@@ -27,7 +27,7 @@ def test_mobile_identity_and_permissions_are_checked_before_forwarding(monkeypat
         assert client.get("/mobile/api/conversations", headers=identity).status_code == 200
         assert client.get("/dashboard/api/chat/conversations", headers=identity).status_code == 404
         assert client.get("/mobile/api/rig/kill", headers=identity).status_code == 404
-        assert client.get("/mobile/api/conversations/" + cid + "/agent/events", headers=identity).status_code == 404
+        assert client.get("/mobile/api/conversations/" + cid + "/agent/events", headers=identity).status_code == 200
         assert client.post("/mobile/api/rig/kill", headers=post, json={"gpu_ids": [0]}).status_code == 403
         assert client.post("/mobile/api/conversations/" + cid + "/turn",
                            headers={**post, "origin": "https://evil.invalid"}, json={}).status_code == 403
@@ -35,6 +35,7 @@ def test_mobile_identity_and_permissions_are_checked_before_forwarding(monkeypat
                            headers=post, json={"model": "Codex", "message": "Continue"}).status_code == 200
         assert client.get("/mobile/api/conversations/" + cid + "/../rig", headers=identity).status_code == 404
     assert calls == [("GET", "/dashboard/api/chat/conversations", "a" * 48),
+                     ("GET", "/dashboard/api/chat/conversations/" + cid + "/agent/events", "a" * 48),
                      ("POST", "/dashboard/api/chat/conversations/" + cid + "/turn", "a" * 48)]
 
 
@@ -84,6 +85,8 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert 'id="composerStatus"' in page
     assert "catch(error){composerError(error.message)}" in page
     assert "event.item?.type==='agentMessage'?'message assistant':'tool-message'" in page
+    assert "new EventSource(`/mobile/api/conversations/${id}/agent/events`)" in page
+    assert "document.addEventListener('visibilitychange',refreshVisibleConversation)" in page
 
 
 def test_mobile_transfer_routes_are_exact_and_separately_permissioned():

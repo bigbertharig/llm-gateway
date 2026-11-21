@@ -56,7 +56,7 @@ def operation(method: str, path: str) -> tuple[str, str] | None:
     if match:
         cid, suffix = match.groups()
         base = f"/dashboard/api/chat/conversations/{cid}"
-        if method in ("GET", "HEAD") and suffix in (None, "agent"):
+        if method in ("GET", "HEAD") and suffix in (None, "agent", "agent/events"):
             return "observe", base + ("/" + suffix if suffix else "")
         if method in ("GET", "HEAD") and suffix in (
                 "workspace/tree", "workspace/file", "workspace/image", "workspace/search"):
@@ -145,8 +145,9 @@ def create_app(transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
                     return JSONResponse({"error": "request too large"}, status_code=413, headers=HEADERS)
             body = bytes(chunks)
         try:
-            streaming = (upstream.endswith("/turn") and body and
-                         json.loads(body).get("stream") is True)
+            streaming = (upstream.endswith("/agent/events") or
+                         (upstream.endswith("/turn") and body and
+                          json.loads(body).get("stream") is True))
         except (ValueError, AttributeError):
             streaming = False
         try:

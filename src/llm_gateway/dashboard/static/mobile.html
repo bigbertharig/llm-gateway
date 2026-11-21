@@ -48,13 +48,14 @@
   </section>
 </main>
 <script>
-const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[],uploadedFiles=[];
+const $=id=>document.getElementById(id);let selected=null,conversation=null,permissions=new Set(),agentActive=false,pendingImages=[],pendingFiles=[],uploadedFiles=[],agentEvents=null,agentEventsId=null,conversationSerial=0;
 const json=async(path,options={})=>{const response=await fetch(path,{credentials:'same-origin',cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}return data};
 const post=(path,data)=>json(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 const text=(node,value)=>{node.textContent=value==null?'':String(value)};
 function show(name){$('statusView').classList.toggle('hide',name!=='status');$('uploadView').classList.toggle('hide',name!=='upload');$('workView').classList.toggle('hide',name!=='work');$('statusTab').classList.toggle('active',name==='status');$('uploadTab').classList.toggle('active',name==='upload');$('workTab').classList.toggle('active',name==='work');if(name==='work')loadWork();if(name==='upload')loadUploads()}
 $('statusTab').onclick=()=>show('status');$('uploadTab').onclick=()=>show('upload');$('workTab').onclick=()=>show('work');$('refreshStatus').onclick=loadStatus;$('refreshWork').onclick=loadWork;
-function showList(){selected=null;conversation=null;agentActive=false;clearAttachments();$('workTitle').classList.remove('hide');$('listPanel').classList.remove('hide');$('chatPanel').classList.add('hide');window.scrollTo(0,0);loadWork()}
+function stopAgentEvents(){if(agentEvents)agentEvents.close();agentEvents=null;agentEventsId=null}
+function showList(){selected=null;conversation=null;agentActive=false;conversationSerial++;stopAgentEvents();clearAttachments();$('workTitle').classList.remove('hide');$('listPanel').classList.remove('hide');$('chatPanel').classList.add('hide');window.scrollTo(0,0);loadWork()}
 function showChat(){ $('workTitle').classList.add('hide');$('listPanel').classList.add('hide');$('chatPanel').classList.remove('hide');window.scrollTo(0,0) }
 $('backToList').onclick=showList;
 const percent=value=>Math.max(0,Math.min(100,Number(value)||0));
@@ -151,14 +152,20 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
 }
 function syncComposer(running){agentActive=!!running;const localBusy=conversation?.provider!=='codex'&&conversation?.last_turn?.state==='running';$('sendForm').classList.toggle('hide',!permissions.has('continue')||localBusy);text($('sendForm').querySelector('button[type=submit]'),agentActive?'Steer current turn':'Send');$('interrupt').classList.toggle('hide',!agentActive||!permissions.has('interrupt'));$('attachImage').disabled=agentActive;$('attachFile').disabled=agentActive}
 function composerError(value=''){text($('composerStatus'),value);$('composerStatus').classList.toggle('hide',!value)}
-async function openConversation(id,navigate=false){
-  if(selected!==id)clearAttachments();selected=id;agentActive=false;
-  if(navigate){showChat();text($('conversationTitle'),'Opening conversation…')}
-  try{const current=await json(`/mobile/api/conversations/${id}`);if(selected!==id)return;conversation=current;text($('conversationTitle'),conversation.title||'Conversation');text($('conversationMeta'),conversationLabel(conversation));text($('turnState'),conversation.last_turn?.state||'idle');renderMessages(current,[],navigate);syncComposer(false);if(conversation.provider==='codex')await loadAgent(id,navigate);else $('approvals').replaceChildren()}catch(error){text($('conversationTitle'),error.message)}
+function watchAgentEvents(id,enabled){
+  if(!enabled){stopAgentEvents();return}if(agentEvents&&agentEventsId===id)return;stopAgentEvents();agentEventsId=id;
+  const source=new EventSource(`/mobile/api/conversations/${id}/agent/events`);agentEvents=source;
+  source.onmessage=()=>{if(selected!==id)return;openConversation(id);setTimeout(()=>{if(selected===id)openConversation(id)},1200)};
+  source.onerror=()=>{/* EventSource reconnects; the five-second recovery poll remains active. */};
 }
-async function loadAgent(id,navigate=false){try{
-  const state=await json(`/mobile/api/conversations/${id}/agent`);if(selected!==id)return;
-  if(state.turn&&conversation?.last_turn&&(state.turn.id!==conversation.last_turn.id||state.turn.state!==conversation.last_turn.state)){conversation=await json(`/mobile/api/conversations/${id}`);if(selected!==id)return;text($('turnState'),conversation.last_turn?.state||'idle')}
+async function openConversation(id,navigate=false){
+  if(selected!==id)clearAttachments();selected=id;agentActive=false;const serial=++conversationSerial;
+  if(navigate){showChat();text($('conversationTitle'),'Opening conversation…')}
+  try{const current=await json(`/mobile/api/conversations/${id}`);if(selected!==id||serial!==conversationSerial)return;conversation=current;watchAgentEvents(id,conversation.provider==='codex');text($('conversationTitle'),conversation.title||'Conversation');text($('conversationMeta'),conversationLabel(conversation));text($('turnState'),conversation.last_turn?.state||'idle');renderMessages(current,[],navigate);syncComposer(false);if(conversation.provider==='codex')await loadAgent(id,navigate,serial);else $('approvals').replaceChildren()}catch(error){if(serial===conversationSerial)text($('conversationTitle'),error.message)}
+}
+async function loadAgent(id,navigate=false,serial=conversationSerial){try{
+  const state=await json(`/mobile/api/conversations/${id}/agent`);if(selected!==id||serial!==conversationSerial)return;
+  if(state.turn&&conversation?.last_turn&&(state.turn.id!==conversation.last_turn.id||state.turn.state!==conversation.last_turn.state)){conversation=await json(`/mobile/api/conversations/${id}`);if(selected!==id||serial!==conversationSerial)return;text($('turnState'),conversation.last_turn?.state||'idle')}
   const running=state.active===true&&state.turn?.state==='running';syncComposer(running);renderMessages(conversation,running?(state.events||[]):[],navigate);
   const box=$('approvals');box.replaceChildren();for(const item of state.approvals||[]){const card=document.createElement('div');card.className='notice';const description=document.createElement('pre');text(description,JSON.stringify(item.preview||item.params||{},null,2));card.append(description);if(permissions.has('approve'))for(const decision of ['accept','decline']){const button=document.createElement('button');text(button,decision==='accept'?'Approve':'Decline');button.onclick=async()=>{if(decision==='accept'&&!confirm('Approve this exact action?'))return;try{await post(`/mobile/api/conversations/${id}/agent/approval`,{request_id:item.id,decision});await openConversation(id)}catch(error){alert(error.message)}};card.append(button)}box.append(card)}
 }catch(error){text($('approvals'),error.message)}}
@@ -177,6 +184,7 @@ $('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conve
   await sendTurn(target,value);
 }catch(error){composerError(error.message)}finally{button.disabled=false}};
 $('interrupt').onclick=async()=>{if(!selected||!confirm('Stop the current turn?'))return;try{composerError();await post(`/mobile/api/conversations/${selected}/agent/interrupt`,{});await openConversation(selected)}catch(error){composerError(error.message)}};
-async function start(){try{const caps=await json('/mobile/api/capabilities');permissions=new Set(caps.permissions||[]);if(permissions.has('transfer-read'))await loadUploads()}catch(error){text($('statusMessage'),error.message)}loadStatus();setInterval(()=>{if(!$('chatPanel').classList.contains('hide')&&!$('workView').classList.contains('hide')&&selected)openConversation(selected)},5000);setInterval(()=>{if(!$('listPanel').classList.contains('hide')&&!$('workView').classList.contains('hide'))loadWork()},15000);setInterval(()=>{if(!$('statusView').classList.contains('hide'))loadStatus()},20000)}start();
+function refreshVisibleConversation(){if(document.visibilityState==='visible'&&!$('chatPanel').classList.contains('hide')&&!$('workView').classList.contains('hide')&&selected)openConversation(selected)}
+async function start(){try{const caps=await json('/mobile/api/capabilities');permissions=new Set(caps.permissions||[]);if(permissions.has('transfer-read'))await loadUploads()}catch(error){text($('statusMessage'),error.message)}loadStatus();setInterval(refreshVisibleConversation,5000);setInterval(()=>{if(!$('listPanel').classList.contains('hide')&&!$('workView').classList.contains('hide'))loadWork()},15000);setInterval(()=>{if(!$('statusView').classList.contains('hide'))loadStatus()},20000);document.addEventListener('visibilitychange',refreshVisibleConversation);window.addEventListener('focus',refreshVisibleConversation);window.addEventListener('pageshow',refreshVisibleConversation);window.addEventListener('online',refreshVisibleConversation)}start();
 </script>
 </html>
