@@ -46,7 +46,9 @@ def test_existing_codex_thread_resumes_without_experimental_capability(tmp_path)
     assert resume_config["approvals_reviewer"] == "auto_review"
     assert resume_config["web_search"] == "disabled"
     assert resume_config["mcp_servers"]["workspace_git"]["enabled_tools"] == [
-        "get_workspace_git_status", "get_workspace_git_log", "get_workspace_git_diff"]
+        "get_workspace_git_status", "get_workspace_git_log", "get_workspace_git_diff",
+        "get_workspace_git_commit", "compare_workspace_git_revisions",
+        "read_workspace_file_at_revision", "get_workspace_file_history"]
     assert calls[1][0] == "turn/start"
     assert calls[1][1]["model"] == "test-codex"
     assert calls[1][1]["effort"] == "high"
@@ -241,7 +243,9 @@ def test_new_codex_thread_uses_local_full_access_without_sandbox_prompts(tmp_pat
     assert config["approvals_reviewer"] == "auto_review"
     assert config["web_search"] == "disabled"
     assert config["mcp_servers"]["workspace_git"]["enabled_tools"] == [
-        "get_workspace_git_status", "get_workspace_git_log", "get_workspace_git_diff"]
+        "get_workspace_git_status", "get_workspace_git_log", "get_workspace_git_diff",
+        "get_workspace_git_commit", "compare_workspace_git_revisions",
+        "read_workspace_file_at_revision", "get_workspace_file_history"]
     assert calls[0][1]["permissions"] == ":danger-full-access"
     assert calls[1][1]["permissions"] == ":danger-full-access"
 
