@@ -17,6 +17,7 @@
   "manager": {
     "purpose": "Manager scheduling, rig lifecycle, reservations, recovery, and shared chat services",
     "tests": [
+      "tests/test_campaign_preview.py",
       "tests/test_manager.py",
       "tests/test_shared_chat.py"
     ]

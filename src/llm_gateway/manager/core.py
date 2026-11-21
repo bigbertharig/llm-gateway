@@ -841,6 +841,17 @@ class Manager:
         raise ManagerError(409, f"{model}: GPU {result['gpus']} kept free for waiting work ({why}); "
                                 "load it later or name the cards", kept_for=kept)
 
+    async def schedule_preview(self, workloads: list[dict], candidate_limit: int = 16) -> dict:
+        """Read-only Orchestration alternatives. This does not reserve or load hardware."""
+        answer = await self.record.schedule_preview({"workloads": workloads,
+                                                     "candidate_limit": candidate_limit})
+        local_sha = models.catalog().get("source_sha256")
+        rig_sha = answer.get("model_library_sha256")
+        if not local_sha or not rig_sha or local_sha != rig_sha:
+            raise ManagerError(503, "Gateway and rig model libraries differ; refresh both from Benchmarking",
+                               gateway_source_sha256=local_sha, rig_source_sha256=rig_sha)
+        return answer
+
     async def _collect_cards(self, model: str, wait_s: float, use: str, owner: str = "",
                              **fit_kw) -> tuple[str, list[int]]:
         """For a load that names no cards: the cards the harness would choose on an idle rig say how many

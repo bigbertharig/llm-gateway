@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 
-from . import fit, models, observations
+from . import campaigns, fit, models, observations
 from .core import Manager
 from .errors import ManagerError
 from ..rig import RigUnavailable
@@ -600,6 +600,17 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
         return await manager.load_model(b["model"], extra_args=[str(a) for a in b.get("extra_args") or []],
                                         wait_s=float(b.get("wait_s") or 0), force=bool(b.get("force")),
                                         owner=str(b.get("owner") or ""), **req)
+
+    @r.post("/benchmark-campaigns/preview")
+    async def preview_benchmark_campaign(request: Request):
+        """Simulate a campaign over Orchestration-owned placement alternatives; change no rig state."""
+        body = await _body(request)
+        try:
+            campaign, workloads = campaigns.compile_campaign(body)
+            offered = await manager.schedule_preview(workloads, campaign["candidate_limit"])
+            return campaigns.simulate(campaign, offered)
+        except ValueError as exc:
+            raise ManagerError(400, str(exc)) from exc
 
     @r.get("/observations")
     async def list_observations(kind: str = "load", model: str | None = None, limit: int = 200):

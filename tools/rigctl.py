@@ -30,6 +30,8 @@ Runs on the Pi, or anywhere over ssh (the rig: `ssh pi python3 ~/llm-gateway/too
     rigctl takeover                                        explicit handoff: this controller takes control
     rigctl plan [--json]                                   the rig's queue (now and next)
     rigctl cancel ITEM                                     cancel a queued plan item
+    rigctl campaign-preview FILE [--planning-mode live|after_current_work]
+                                                           simulate only; no leases or loads
 
 Exit codes follow `rig`: 0 ok, 1 failed, 2 refused (held, not admitted, wrong owner), 4 no capacity.
 Env: RIGCTL_URL (default http://127.0.0.1:8080), RIGCTL_KEY (bearer key, if the gateway has keys).
@@ -217,7 +219,29 @@ def main() -> int:
     s = sub.add_parser("observations", help="every load the manager knows of (its log and the capacity records)")
     s.add_argument("--kind", choices=("load", "load_failed"), default="load")
     s.add_argument("--model"); s.add_argument("--limit", type=int, default=50); s.add_argument("--json", action="store_true")
+    s = sub.add_parser("campaign-preview", help="simulate a benchmark campaign without changing rig state")
+    s.add_argument("file", help="benchmark-campaign-plan/1 JSON file")
+    s.add_argument("--planning-mode", choices=("live", "after_current_work"))
+    s.add_argument("--candidate-limit", type=int)
     a = ap.parse_args()
+
+    if a.cmd == "campaign-preview":
+        try:
+            with open(a.file, encoding="utf-8") as handle:
+                body = json.load(handle)
+        except (OSError, ValueError) as exc:
+            print(f"cannot read campaign preview file: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(body, dict):
+            print("campaign preview file must contain a JSON object", file=sys.stderr)
+            return 1
+        if a.planning_mode:
+            body["planning_mode"] = a.planning_mode
+        if a.candidate_limit is not None:
+            body["candidate_limit"] = a.candidate_limit
+        code, out = call("POST", "/v1/manager/benchmark-campaigns/preview", body)
+        print(json.dumps(out, indent=2))
+        return EXIT.get(code, 1)
 
     if a.cmd == "observations":
         q = "&".join(f"{k}={v}" for k, v in (("kind", a.kind), ("model", a.model), ("limit", a.limit)) if v is not None)

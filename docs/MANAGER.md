@@ -364,6 +364,33 @@ Open: a VRAM check for published profiles; context per slot with `--parallel`.
 
 ## Runs, cancel by owner, and demand (2026-10-22)
 
+### Read-only benchmark campaign planning
+
+Gateway can arrange a Benchmarking-owned campaign over placement alternatives supplied by
+Orchestration without reserving or loading hardware:
+
+```bash
+rigctl campaign-preview campaign-plan.json --planning-mode after_current_work
+```
+
+The input uses `benchmark-campaign-plan/1`: `name` and `blocks`, where every block has a unique
+`id`, a registry `model`, an optional `suite`, `depends_on`, `runtime_group`, and
+`estimated_duration_s`. Blocks in one runtime group must use the same model and fit settings; their
+durations are run sequentially on one load. A missing duration is an explicit 300-second fallback in
+the response. `planning_mode=live` uses only placements free in the Orchestration snapshot;
+`after_current_work` evaluates every offered placement after existing work releases it.
+
+`POST /v1/manager/benchmark-campaigns/preview` asks the rig's `schedule-preview` command for a
+revisioned snapshot and candidate placements. Gateway then performs a deterministic discrete-event
+simulation: model loads are serialized, while suite groups on disjoint GPU sets may overlap. The
+response includes the Orchestration revision, relative load/run times, placement, estimate basis,
+and `admission_required_at_execution: true`.
+
+The preview is never allocation authority. Gateway does not reproduce VRAM, topology, host-memory,
+thermal, or runtime-health rules. When execution is added, every proposed load must return through
+Orchestration's ordinary fit, lease, and guarded load path; a changed revision causes unfinished work
+to be replanned.
+
 **Runs.** `rigctl run-start --run ID [--resume "CMD"] [--auto-resume] [--needs MIB[xN]] -- CMD...` hands the rig
 a long run: the rig's plan executor starts it as its own unit (`rig-run-ID`, under the rig service identity) and records it in the
 plan's `runs` (owner, command, resume command, needs, attempts). Its state follows the unit: running, then

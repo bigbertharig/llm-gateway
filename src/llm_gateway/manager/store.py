@@ -46,6 +46,10 @@ class RigRecord:
         """Ask the rig for its detailed, read-only model placement proposal."""
         return await self._call("model-fit", "--request", json.dumps(request))
 
+    async def schedule_preview(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Ask Orchestration for revisioned, read-only workload placement alternatives."""
+        return await self._call("schedule-preview", "--request", json.dumps(request))
+
     async def fit_observation(self, row: dict[str, Any]) -> dict[str, Any]:
         """Send completed load evidence to the rig's calibration ledger."""
         return await self._call("fit-observation", "--row", json.dumps(row))
