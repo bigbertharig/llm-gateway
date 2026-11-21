@@ -1384,8 +1384,12 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 or not all(isinstance(item, str) for item in expected)
                 or (expected_instance is not None and not isinstance(expected_instance, str))):
             raise ManagerError(400, "provide model, expected_loaded, and an optional expected_instance_id")
-        if active_local or active_codex:
-            raise ManagerError(409, "Wait for active chat turns before unloading a model")
+        # Cloud Codex turns do not consume the rig model. Local turns do, and
+        # remain the only conversation-level reason to block an unload; exact
+        # shared-service identity and Orchestration reservations guard races
+        # with delegated local children.
+        if active_local:
+            raise ManagerError(409, "Wait for active local chat turns before unloading a model")
         availability = await manager.chat_availability()
         profiles = availability.get("ready_profiles", [])
         service = (await manager.rig.status()).get("shared_kv_service") or {}
