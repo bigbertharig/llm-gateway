@@ -89,6 +89,9 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "document.addEventListener('visibilitychange',refreshVisibleConversation)" in page
     assert "timeline([...(turn.activity||[]),...liveEvents],turn.steers||[])" in page
     assert "records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)" in page
+    assert "Rig occupancy" in page
+    assert "Math.round(occupied/gpus.length*100)" in page
+    assert "cards occupied" in page and "metric('Available',free)" in page
 
 
 def test_mobile_transfer_routes_are_exact_and_separately_permissioned():
