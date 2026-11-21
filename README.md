@@ -155,6 +155,8 @@ FastAPI + uvicorn + httpx (Python >= 3.11), in a per-host `.venv`.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m pytest -q                    # fake rig + fake llama-server
+.venv/bin/python tools/run_test_suite.py --list  # named, change-scoped suites
+.venv/bin/python tools/run_test_suite.py conversations tool_policy
 .venv/bin/python -m llm_gateway                  # run locally (env vars above)
 deploy/deploy_pi.sh                              # on the Pi: check profiles, copy repo to the rig, restart Pi services
 ```

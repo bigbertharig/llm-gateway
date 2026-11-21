@@ -14,7 +14,7 @@ MANIFEST = ROOT / "tests/suites.json"
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("suite", nargs="?")
+    parser.add_argument("suite", nargs="*")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
     suites = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -22,13 +22,16 @@ def main() -> int:
         for name, details in suites.items():
             print(f"{name}: {details['purpose']}")
         return 0
-    if args.suite not in suites:
+    if not args.suite or any(name not in suites for name in args.suite):
         parser.error("choose a suite from: " + ", ".join(sorted(suites)))
-    tests = suites[args.suite].get("tests")
-    if (not isinstance(tests, list) or not tests or
-            any(not isinstance(test, str) or not test.startswith("tests/") or ".." in test
-                for test in tests)):
-        parser.error("suite contains an invalid test selector")
+    tests = []
+    for name in args.suite:
+        selected = suites[name].get("tests")
+        if (not isinstance(selected, list) or not selected or
+                any(not isinstance(test, str) or not test.startswith("tests/") or ".." in test
+                    for test in selected)):
+            parser.error(f"suite {name} contains an invalid test selector")
+        tests.extend(test for test in selected if test not in tests)
     return subprocess.run([sys.executable, "-m", "pytest", "-q", *tests], cwd=ROOT).returncode
 
 

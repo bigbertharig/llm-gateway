@@ -1,10 +1,65 @@
 {
+  "gateway_api": {
+    "purpose": "OpenAI and Claude-compatible HTTP APIs, authentication, streaming, and upstream failures",
+    "tests": [
+      "tests/test_gateway.py",
+      "tests/test_claude_api.py"
+    ]
+  },
+  "model_planning": {
+    "purpose": "Model fit, generated offers, and imported Benchmarking model-library contracts",
+    "tests": [
+      "tests/test_fit.py",
+      "tests/test_generate_profiles.py",
+      "tests/test_sync_model_library.py"
+    ]
+  },
+  "manager": {
+    "purpose": "Manager scheduling, rig lifecycle, reservations, recovery, and shared chat services",
+    "tests": [
+      "tests/test_manager.py",
+      "tests/test_shared_chat.py"
+    ]
+  },
+  "dashboard_ui": {
+    "purpose": "Desktop, LAN, mobile, workspace, transfer, and site-settings dashboard routes",
+    "tests": [
+      "tests/test_dashboard.py",
+      "tests/test_lan_dashboard.py",
+      "tests/test_mobile_dashboard.py",
+      "tests/test_coding_workspace.py",
+      "tests/test_transfers.py",
+      "tests/test_site_settings.py"
+    ]
+  },
+  "conversations": {
+    "purpose": "Dashboard conversations, Codex bridge lifecycle, shared local models, and recovery controls",
+    "tests": [
+      "tests/test_dashboard_chat.py",
+      "tests/test_codex_bridge.py",
+      "tests/test_shared_chat.py"
+    ]
+  },
+  "tool_policy": {
+    "purpose": "Imported tool catalog, mode grants, MCP discovery, dispatch, and approval boundaries",
+    "tests": [
+      "tests/test_tool_catalog_sync.py",
+      "tests/test_tool_family_modes.py",
+      "tests/test_dashboard_tool_runtime.py"
+    ]
+  },
   "google_workspace": {
-    "purpose": "Gateway Google validation, idempotent receipts, imported catalog provenance, and dashboard MCP routing",
+    "purpose": "Google validation, idempotent receipts, imported catalog provenance, and dashboard MCP routing",
     "tests": [
       "tests/test_google_workspace.py",
       "tests/test_tool_family_modes.py",
       "tests/test_dashboard_tool_runtime.py"
+    ]
+  },
+  "test_infrastructure": {
+    "purpose": "Named-suite manifest coverage and runner contracts",
+    "tests": [
+      "tests/test_test_suites.py"
     ]
   }
 }
