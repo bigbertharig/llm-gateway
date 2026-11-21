@@ -1081,7 +1081,9 @@ function renderLoadedChatModels() {
     if (m.kind === "shared" && (Number.isInteger(m.available_chat_slots) ?
         m.available_chat_slots : m.free_gpu_count) === 0) details.push("no safe placement for another attached chat");
     if (!details.length) details.push("Loaded; no active chat");
-    return `<div class="chat-loaded-item"><b>${esc(m.model)}</b><small>${esc(details.join(" · "))}</small></div>`;
+    return `<div class="chat-loaded-item"><b>${esc(m.model)}</b><small>${esc(details.join(" · "))}</small>` +
+      `<button class="act" type="button" data-unload-chat-model="${esc(m.id)}"` +
+      ` data-instance="${esc(m.service_instance_id || "")}">Unload model</button></div>`;
   }).join("");
   const hot = chatOptions.hot_chats || [];
   slots.innerHTML = loaded.filter((m) => m.kind === "shared").map((m) => {
@@ -1119,6 +1121,18 @@ function renderLoadedChatModels() {
       if (target === chatId) await openChat(target, false);
       await loadChat();
     } catch (error) { toast("Could not park chat: " + error.message, "bad"); button.disabled = false; }
+  });
+  box.querySelectorAll("[data-unload-chat-model]").forEach((button) => button.onclick = async () => {
+    const model = button.dataset.unloadChatModel;
+    const loadedModel = loaded.find((item) => item.id === model);
+    if (!loadedModel || !confirm(`Unload ${loadedModel.model}?\n\nLive model contexts will stop. Saved conversations remain available.`)) return;
+    button.disabled = true;
+    try {
+      await api("chat/loaded-model/unload", {model,
+        expected_loaded: loaded.map((item) => item.id),
+        expected_instance_id: loadedModel.service_instance_id || null});
+      toast(`${loadedModel.model} unloaded.`, "good"); await loadChat();
+    } catch (error) { toast("Could not unload model: " + error.message, "bad"); button.disabled = false; }
   });
 }
 function renderAgentCapacity(data) {

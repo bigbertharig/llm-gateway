@@ -493,6 +493,17 @@ def test_nemo_shared_dashboard_claims_main_then_worker_and_rejects_reloaded_cont
         assert reset.json()["reset"] == ["shared-35b"]
         assert client.post("/dashboard/api/chat/loaded-model/reset", json={
             "model": "shared-35b", "expected_loaded": ["shared-35b"]}).status_code == 409
+        assert client.post(f"{base}/{first['id']}/prepare").status_code == 200
+        loaded_qwen = client.get("/dashboard/api/chat/options").json()["loaded_models"][0]
+        stale_unload = client.post("/dashboard/api/chat/loaded-model/unload", json={
+            "model": "shared-35b", "expected_loaded": ["shared-35b"],
+            "expected_instance_id": "stale-instance"})
+        assert stale_unload.status_code == 409
+        unloaded = client.post("/dashboard/api/chat/loaded-model/unload", json={
+            "model": "shared-35b", "expected_loaded": ["shared-35b"],
+            "expected_instance_id": loaded_qwen["service_instance_id"]})
+        assert unloaded.status_code == 200, unloaded.text
+        assert unloaded.json() == {"unloaded": "shared-35b", "remaining": []}
 
 
 def test_chat_tool_intent_keeps_ordinary_question_conversational():
@@ -951,6 +962,7 @@ def test_lan_chat_routes_are_explicit():
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/turn")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/model")
     assert _allowed("POST", "/dashboard/api/chat/loaded-model/reset")
+    assert _allowed("POST", "/dashboard/api/chat/loaded-model/unload")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/prepare")
     assert _allowed("POST", f"/dashboard/api/chat/conversations/{cid}/park")
     assert _allowed("DELETE", f"/dashboard/api/chat/conversations/{cid}")

@@ -8,6 +8,8 @@ The unification report recommended using bounded local agents for basic work and
 |---|---|---|---|
 | Contract review | Benchmarking; inspect the cross-repository contract and propose the smallest truthful status/compatibility edit | `qwen3.6:35b-a3b-xl`, 65,536-token context, seven successful text-bridge reads, 65,414 result bytes, 110.73 seconds, exit 0, reservation released, no runner error | Useful gap extraction and correct source identification. Rejected as an edit because the proposed Markdown truncated mid-sentence and one ownership inference was broader than its cited table. |
 | Architecture status | Gateway; read `ARCHITECTURE.md` and `README.md`, then draft one short status subsection | Same model/context, zero tool calls, 13.87 seconds, exit 0, reservation released, receipt error `child did not execute an allowed tool` | Rejected completely. It invented a nonexistent insertion point and unsupported repository-state claims without reading either file. |
+| Architecture status, Nemotron baseline | Same Gateway task with `nemotron-3.5-bolt:74b-a9b` at 262,144-token context | Emitted an XML-shaped batch of reads and searches; the JSON-only bridge executed none and correctly returned `child did not execute an allowed tool` | Rejected. This identified a model/adapter dialect mismatch, not evidence quality. |
+| Architecture status, Nemotron normalized batch | Same task after strict allowlisted XML normalization and bounded batch execution | Twelve successful calls, 27,172 result bytes, 87.9 seconds, exit 0, stable roster, reservation released | Rejected. The model replayed its completed tool plan instead of returning the requested subsection; the controller reported `child repeated or exceeded its tool-call limit`. |
 
 The accepted documentation changes were written and reviewed by the parent after reading the report and repository sources; no child draft was pasted verbatim.
 
@@ -21,3 +23,5 @@ For repository documentation, accept a local-child proposal only when all of the
 4. The final diff is reviewed by the parent. Workspace-read children remain proposal-only until a separate edit policy and approval path exist.
 
 The first trial's bridge receipt reports a 12-call, 32,000-byte-per-result, 80,000-byte-total budget. Native adapter events use different accounting today, so this trial does not establish equivalent budget enforcement across adapters.
+
+For this documentation task, Qwen produced one useful evidence extraction but unreliable final prose. Nemotron was more explicit about the evidence operations it wanted, but did not transition from tool planning to a final answer even after its dialect and batch were supported. Neither model is approved for unattended documentation edits from this trial.

@@ -16,6 +16,8 @@ The Upload tab sends documents through the authenticated LAN or mobile HTTPS rou
 
 Persisted timestamps are UTC. Browsers convert them and successful-refresh clocks to their local timezone; the desktop clock includes the timezone abbreviation so DST and differing operator locations remain explicit.
 
+The Chat and Coding availability details show every resident chat model, including a shared service with no active generation. **Unload model** stops the exact observed shared-service instance or manager profile after operator confirmation; it refuses stale state and active turns. Saved conversation text remains available, but live model contexts stop.
+
 ## Code
 
 - `src/llm_gateway/dashboard/routes.py`: dashboard API and manager actions.

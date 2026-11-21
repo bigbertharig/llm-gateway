@@ -67,7 +67,7 @@ def _allowed(method: str, path: str) -> bool:
         return False
     if path == "/dashboard/api/chat/conversations":
         return True
-    if path == "/dashboard/api/chat/loaded-model/reset":
+    if path in ("/dashboard/api/chat/loaded-model/reset", "/dashboard/api/chat/loaded-model/unload"):
         return True
     if path == "/v1/manager/agent-routes/release":
         return True

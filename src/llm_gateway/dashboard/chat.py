@@ -1022,6 +1022,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             if not isinstance(available_chat_slots, int):
                 available_chat_slots = free_gpu_count
             loaded_models.append({"id": shared_profile, "model": shared["model"], "kind": "shared",
+                                  "service_instance_id": shared.get("instance_id"),
                                   "gpu_ids": sorted({row["gpu"] for row in shared.get("chats", [])
                                                      if isinstance(row, dict) and isinstance(row.get("gpu"), int)}),
                                   "live_chats": len(shared.get("chats", [])),
@@ -1373,6 +1374,36 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         for profile_id in profiles:
             await manager.unload_profile(profile_id)
         return {"reset": loaded, "target": target}
+
+    @r.post("/loaded-model/unload")
+    async def unload_loaded_model(request: Request):
+        body = await _json_body(request)
+        target, expected = body.get("model"), body.get("expected_loaded")
+        expected_instance = body.get("expected_instance_id")
+        if (not isinstance(target, str) or not isinstance(expected, list)
+                or not all(isinstance(item, str) for item in expected)
+                or (expected_instance is not None and not isinstance(expected_instance, str))):
+            raise ManagerError(400, "provide model, expected_loaded, and an optional expected_instance_id")
+        if active_local or active_codex:
+            raise ManagerError(409, "Wait for active chat turns before unloading a model")
+        availability = await manager.chat_availability()
+        profiles = availability.get("ready_profiles", [])
+        service = (await manager.rig.status()).get("shared_kv_service") or {}
+        shared_profile = next((pid for pid, spec in SHARED_PROFILES.items()
+                               if spec["model"] == service.get("model")
+                               and service.get("status") == "ready"), None)
+        loaded = [*profiles, *([shared_profile] if shared_profile else [])]
+        if sorted(loaded) != sorted(expected):
+            raise ManagerError(409, "Loaded models changed; refresh before unloading")
+        if target not in loaded:
+            raise ManagerError(409, "Requested model is no longer loaded")
+        if target == shared_profile:
+            if not expected_instance or expected_instance != service.get("instance_id"):
+                raise ManagerError(409, "Shared model instance changed; refresh before unloading")
+            await manager.rig.shared_kv("stop", model=service["model"])
+        else:
+            await manager.unload_profile(target)
+        return {"unloaded": target, "remaining": [item for item in loaded if item != target]}
 
     @r.post("/conversations/{cid}/prepare")
     async def prepare(cid: str):
