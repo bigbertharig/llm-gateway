@@ -2103,7 +2103,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     if (m.role === "assistant" && savedTools.length) {
       const activity = document.createElement("details"); activity.className = "chat-activity";
       renderChatActivity(activity, savedTools, false, m.reused_activity?.length ? "Tool history" : "");
-      box.append(item, activity);
+      box.append(activity, item);
     } else {
       box.append(item);
     }

@@ -87,6 +87,7 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "event.item?.type==='agentMessage'?'message assistant':'tool-message'" in page
     assert "new EventSource(`/mobile/api/conversations/${id}/agent/events`)" in page
     assert "document.addEventListener('visibilitychange',refreshVisibleConversation)" in page
+    assert "if(assistant)activity(item.activity);add(item.content" in page
 
 
 def test_mobile_transfer_routes_are_exact_and_separately_permissioned():

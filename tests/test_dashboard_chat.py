@@ -38,6 +38,7 @@ def test_dashboard_hides_internal_workspace_routing_from_chat_sidebars():
     assert "Currently loaded" not in page
     assert "Local agent capacity" not in page
     assert "The manager controls model loading and GPU placement" not in page
+    assert "box.append(activity, item)" in page
 
 
 def test_codex_attachment_original_is_private_complete_and_conversation_scoped(tmp_path):

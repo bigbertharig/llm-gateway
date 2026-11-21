@@ -138,7 +138,7 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
     if(seen.has(key))continue;seen.add(key);const value=activityText(event);
     if(value)add(value.slice(0,1200),event.item?.type==='agentMessage'?'message assistant':'tool-message');
   }};
-  for(const item of current.messages||[]){add(item.content||'',`message ${item.role==='user'?'user':'assistant'}`);attachments(item.attachments);activity(item.activity)}
+  for(const item of current.messages||[]){const assistant=item.role!=='user';if(assistant)activity(item.activity);add(item.content||'',`message ${assistant?'assistant':'user'}`);attachments(item.attachments);if(!assistant)activity(item.activity)}
   const turn=current.last_turn;
   if(turn&&turn.state!=='completed'){
     add(turn.prompt||'(request in progress)','message user');
