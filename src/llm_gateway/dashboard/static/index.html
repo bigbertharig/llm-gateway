@@ -25,6 +25,8 @@ header { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; paddi
 header h1 { margin: 0; color: #e8f7ff; font: 700 19px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
 header h1::before { content: ">_ "; color: var(--cool); text-shadow: 0 0 12px #4fc3ff80; }
 header .stamp { color: var(--muted); font: 12px var(--mono); }
+header .refresh { margin-left: auto; padding: 3px 8px; }
+header .refresh[disabled] { cursor: wait; opacity: .65; }
 nav { display: flex; gap: 1px; padding: 0 20px; background: #091f32e8; border-bottom: 1px solid var(--line); }
 nav button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted);
   font: 600 12px var(--mono); letter-spacing: .045em; text-transform: uppercase; padding: 10px 14px 9px; cursor: pointer; }
@@ -374,6 +376,7 @@ a { color: var(--cool); }
 <header>
   <h1>Rig dashboard</h1>
   <span class="stamp" id="stamp">loading</span>
+  <button class="act refresh" id="dashboard-refresh" type="button" aria-label="Refresh dashboard">Refresh</button>
 </header>
 <nav role="tablist">
   <button role="tab" data-tab="rig" aria-selected="true">Rig</button>
@@ -3039,26 +3042,36 @@ let last = {};
 const localClock = (stamp) => new Intl.DateTimeFormat(undefined, {
   hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short"
 }).format(new Date(stamp));
+let refreshInFlight = null;
 async function refresh(now) {
-  const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
-  try {
-    if (tab === "rig" && due("rig")) {
-      renderRig(await api("rig"));
-      last.rig = Date.now();
-      if (!modelsData) renderModels(await api("models"));
+  if (refreshInFlight) return refreshInFlight;
+  const button = $("#dashboard-refresh");
+  button.disabled = true;
+  refreshInFlight = (async () => {
+    const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
+    try {
+      if (tab === "rig" && due("rig")) {
+        renderRig(await api("rig"));
+        last.rig = Date.now();
+        if (!modelsData) renderModels(await api("models"));
+      }
+      if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
+      if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
+      if (tab === "upload" && due("upload")) { await loadUploads(); last.upload = Date.now(); }
+      if ((tab === "chat" || tab === "coding") && due("chat") && !chatBusy) {
+        await Promise.all([loadChat(), loadUploads()]); last.chat = Date.now();
+        if (tab === "coding") { await loadCodingWorkspace(); last.coding = Date.now(); }
+      }
+      if (last[tab]) $("#stamp").textContent = "updated " + localClock(last[tab]);
+    } catch (e) {
+      const prior = last[tab] ? " · last updated " + localClock(last[tab]) : "";
+      $("#stamp").textContent = "refresh failed: " + e.message + prior;
     }
-    if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
-    if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
-    if (tab === "upload" && due("upload")) { await loadUploads(); last.upload = Date.now(); }
-    if ((tab === "chat" || tab === "coding") && due("chat") && !chatBusy) {
-      await Promise.all([loadChat(), loadUploads()]); last.chat = Date.now();
-      if (tab === "coding") { await loadCodingWorkspace(); last.coding = Date.now(); }
-    }
-    if (last[tab]) $("#stamp").textContent = "updated " + localClock(last[tab]);
-  } catch (e) {
-    $("#stamp").textContent = "refresh failed: " + e.message;
-  }
+  })();
+  try { await refreshInFlight; }
+  finally { refreshInFlight = null; button.disabled = false; }
 }
+$("#dashboard-refresh").onclick = () => refresh(true);
 show(tab);
 setInterval(() => refresh(false), 2500);
 </script>

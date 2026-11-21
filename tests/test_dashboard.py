@@ -12,6 +12,10 @@ def test_page_and_rig_status(menv):  # noqa: F811
     c = menv["client"]
     page = c.get("/dashboard/")
     assert page.status_code == 200 and "Rig dashboard" in page.text and "/dashboard/api/" in page.text
+    assert 'id="dashboard-refresh"' in page.text
+    assert '$("#dashboard-refresh").onclick = () => refresh(true)' in page.text
+    assert '" · last updated " + localClock(last[tab])' in page.text
+    assert "if (refreshInFlight) return refreshInFlight" in page.text
     assert page.text.count('id="chat-context-meter"') == 1
     assert "Updating through the current tool/model step." in page.text
     assert 'api("chat/options")' in page.text
