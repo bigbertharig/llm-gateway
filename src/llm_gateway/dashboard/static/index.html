@@ -244,6 +244,15 @@ textarea { width: 100%; min-height: 80px; }
 .chat-activity { margin: 10px 0; padding: 8px 11px; border-left: 2px solid var(--cool); color: var(--muted); font: 12px var(--mono); }
 .chat-activity summary { cursor: pointer; color: var(--text); }
 .chat-activity-item { margin: 6px 0 0 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat-tool-disclosure { margin: 5px 0 0 10px; padding: 4px 8px; border-left: 2px solid var(--code-accent, var(--cool));
+  color: var(--muted); font: 11px/1.45 var(--mono); min-width: 0; }
+.chat-tool-disclosure summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-tool-disclosure[open] summary { white-space: normal; }
+.chat-tool-disclosure pre { margin: 7px 0 0; padding: 8px; max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-messages.hide-tools .chat-tool-disclosure,.chat-messages.hide-tools .chat-tool-history-more,
+.chat-messages.hide-tools .chat-activity[data-tool-only="true"] { display: none; }
+.chat-tool-history-more { margin: 2px 0 8px; }
+.chat-tool-disclosure.older-tool { display: none; }
 .chat-failure-actions { display: flex; gap: 8px; margin-top: 8px; }
 .chat-live[hidden], .chat-agent-events[hidden] { display: none; }
 .chat-agent-events { padding: 4px 0; }
@@ -469,8 +478,9 @@ a { color: var(--cool); }
       </aside>
       <div class="chat-main">
         <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Open conversations"></div>
-        <div class="chat-heading"><h2 id="chat-title">Choose a conversation</h2>
-          <button class="act danger" id="chat-delete" type="button" hidden>Delete</button></div>
+        <div class="chat-heading"><h2 id="chat-title">Choose a conversation</h2><div class="chat-actions">
+          <button class="act" id="chat-toggle-tools" type="button" aria-pressed="false" hidden>Hide tools</button>
+          <button class="act danger" id="chat-delete" type="button" hidden>Delete</button></div></div>
         <div id="chat-placement" class="chat-placement" role="status" hidden></div>
         <div id="chat-messages" class="chat-messages" aria-live="polite">
           <div id="chat-live" class="chat-live" hidden>
@@ -688,7 +698,8 @@ async function api(path, body) {
   const res = await fetch("/dashboard/api/" + path, opt);
   let data = {};
   try { data = await res.json(); } catch (e) { data = {}; }
-  if (!res.ok) throw new Error((data.error && data.error.message) || `${res.status} ${res.statusText}`);
+  if (!res.ok) { const error = new Error((data.error && data.error.message) || `${res.status} ${res.statusText}`);
+    error.status = res.status; throw error; }
   return data;
 }
 async function managerApi(path, body) {
@@ -994,6 +1005,34 @@ const codexLimitAlerts = new Map();
 let codexEventSource = null;
 let codexEventChat = "";
 let localContextRefreshInFlight = false;
+let chatShowTools = true, chatVisibleToolRows = 80;
+try { chatShowTools = localStorage.getItem("desktop-show-tools") !== "false"; } catch (e) { /* private window */ }
+function syncDesktopToolVisibility() {
+  $("#chat-messages").classList.toggle("hide-tools", !chatShowTools);
+  const button = $("#chat-toggle-tools");
+  button.textContent = chatShowTools ? "Hide tools" : "Show tools";
+  button.setAttribute("aria-pressed", String(!chatShowTools));
+}
+function applyDesktopToolPagination() {
+  const transcript = $("#chat-messages");
+  transcript.querySelector(".chat-tool-history-more")?.remove();
+  const rows = [...transcript.querySelectorAll(".chat-tool-disclosure")];
+  rows.forEach((row) => row.classList.remove("older-tool"));
+  const hiddenCount = Math.max(0, rows.length - chatVisibleToolRows);
+  rows.slice(0, hiddenCount).forEach((row) => row.classList.add("older-tool"));
+  if (!hiddenCount) return;
+  const more = document.createElement("button"); more.type = "button";
+  more.className = "act chat-tool-history-more";
+  more.textContent = "Show earlier activity (" + hiddenCount + ")";
+  more.onclick = () => { chatVisibleToolRows += 80; applyDesktopToolPagination(); };
+  transcript.insertBefore(more, transcript.firstChild);
+}
+$("#chat-toggle-tools").onclick = () => {
+  chatShowTools = !chatShowTools;
+  try { localStorage.setItem("desktop-show-tools", String(chatShowTools)); } catch (e) { /* private window */ }
+  syncDesktopToolVisibility();
+};
+syncDesktopToolVisibility();
 function watchCodexEvents(id) {
   if (codexEventChat === id && codexEventSource) return;
   if (codexEventSource) codexEventSource.close();
@@ -1416,6 +1455,13 @@ function formatChatToolOutput(event) {
     return JSON.stringify(data, null, 2);
   } catch (e) { return raw; }
 }
+function chatToolDisclosure(event, line, detail = "") {
+  const row = document.createElement("details"); row.className = "chat-tool-disclosure";
+  const summary = document.createElement("summary"); summary.textContent = String(line).split("\n")[0].slice(0, 800);
+  const body = document.createElement("pre"); body.textContent =
+    (detail ? detail + "\n\nEvent details:\n" : "") + JSON.stringify(event, null, 2);
+  row.append(summary, body); return row;
+}
 function renderChatActivity(target, events, active = false, label = "") {
   const byId = new Map();
   for (const [index, event] of (events || []).entries()) {
@@ -1429,10 +1475,10 @@ function renderChatActivity(target, events, active = false, label = "") {
     byId.set(key, event);
   }
   const items = [...byId.values()], signature = JSON.stringify(items);
-  const toolOnly = items.length > 0 && items.every((event) => event.type === "tool");
+  const toolOnly = items.length > 0 && items.every((event) => event.item?.type !== "agentMessage");
   if (target.dataset.signature === signature && target.dataset.active === String(active)) return;
-  const wasOpen = target.open, firstUpdate = !target.dataset.signature;
   target.replaceChildren(); target.dataset.signature = signature; target.dataset.active = String(active);
+  target.dataset.toolOnly = String(toolOnly);
   target.hidden = !items.length;
   if (!items.length) return;
   const summary = document.createElement("summary");
@@ -1442,43 +1488,38 @@ function renderChatActivity(target, events, active = false, label = "") {
   target.append(summary);
   for (const event of items) {
     if (event.type === "tool") {
-      const row = document.createElement("div"); row.className = "chat-activity-item";
-      row.textContent = String(event.name || "Tool") +
+      const line = String(event.name || "Tool") +
         (event.path || event.url ? " · " + String(event.path || event.url) : "") +
         (event.reused ? " · from prior attempt" : "") +
         " · " + String(event.result || "completed") +
         (event.elapsed_ms != null ? " · " + loadDuration(event.elapsed_ms / 1000) : "");
-      if (event.output || event.excerpt) {
-        const result = document.createElement("details");
-        result.open = active && event === items.at(-1);
-        const label = document.createElement("summary");
-        label.textContent = event.output ? "Show result" : "Show saved excerpt";
-        const body = document.createElement("pre"); body.textContent = formatChatToolOutput(event);
-        body.style.whiteSpace = "pre-wrap"; body.style.overflowWrap = "anywhere";
-        result.append(label, body); row.append(result);
-      }
-      target.append(row);
+      target.append(chatToolDisclosure(event, line,
+        event.output || event.excerpt ? formatChatToolOutput(event) : ""));
       continue;
     }
     const item = event.item || {}, turn = event.turn || {};
     if (item.type === "mcpToolCall") {
-      const row = document.createElement("div"); row.className = "chat-activity-item";
       const name = [item.server, item.tool].filter(Boolean).join(".") || "MCP tool";
       const child = item.child || {};
       const detail = child.child_route ? " · " + child.child_route +
         (child.duration_s == null ? "" : " · " + child.duration_s + "s") +
         (child.tool_calls == null ? "" : " · " + child.tool_calls + " child tools") +
         (child.receipt_id ? " · receipt " + child.receipt_id : "") : "";
-      row.textContent = name + " · " + (item.status || (event.method === "item/started" ? "running" : "completed")) + detail;
-      target.append(row);
+      target.append(chatToolDisclosure(event, name + " · " +
+        (item.status || (event.method === "item/started" ? "running" : "completed")) + detail));
       continue;
+    }
+    if (item.type === "agentMessage" && item.text) {
+      const message = document.createElement("div"); message.className = "chat-message assistant";
+      const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = "assistant · progress";
+      const body = document.createElement("div"); body.className = "chat-body"; renderChatMarkdown(body, item.text);
+      message.append(meta, body); target.append(message); continue;
     }
     const detail = item.command || item.text ||
       (Array.isArray(item.changes) ? item.changes : []).map((change) => change.path).join(", ") ||
       (event.method === "turn/completed" ? "Turn " + (turn.status || "completed") : item.type || "Working");
-    const row = document.createElement("div"); row.className = "chat-activity-item";
-    row.textContent = (event.method === "item/started" ? "Working: " : "Done: ") + String(detail).slice(0, 800);
-    target.append(row);
+    target.append(chatToolDisclosure(event,
+      (event.method === "item/started" ? "Working: " : "Done: ") + String(detail).slice(0, 800)));
   }
   if (items.some((event) => event.item?.type === "fileChange" || event.item?.changes?.length)) {
     const review = document.createElement("button"); review.type = "button"; review.className = "act";
@@ -1486,7 +1527,7 @@ function renderChatActivity(target, events, active = false, label = "") {
     review.onclick = () => runCodexSlashCommand("/diff").catch((error) => showChatCommandOutput(error.message));
     target.append(review);
   }
-  target.open = wasOpen || (active && firstUpdate);
+  target.open = true;
 }
 function codexActivityLine(event) {
   const item = event.item || {};
@@ -1514,7 +1555,7 @@ function renderCodexTurnTimeline(target, turn, events) {
       continue;
     }
     const text = codexActivityLine(event);
-    if (text) records.push({kind: "activity", at: event.received_at || "", order: 100 + index, text});
+    if (text) records.push({kind: "activity", at: event.received_at || "", order: 100 + index, text, event});
   }
   records.sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0) || a.order - b.order);
   target.replaceChildren();
@@ -1525,8 +1566,7 @@ function renderCodexTurnTimeline(target, turn, events) {
       const body = document.createElement("div"); body.className = "chat-body"; renderChatMarkdown(body, record.text);
       item.append(meta, body); target.append(item);
     } else {
-      const line = document.createElement("div"); line.className = "chat-activity-line";
-      line.textContent = record.text; target.append(line);
+      target.append(chatToolDisclosure(record.event, record.text));
     }
   }
 }
@@ -1734,6 +1774,7 @@ function clearChatView({preserveComposer = false} = {}) {
   $("#chat-agent-events").replaceChildren(); $("#chat-agent-events").hidden = true;
   $("#chat-progress").hidden = true; $("#chat-approvals").hidden = true;
   $("#chat-command-output").hidden = true; $("#chat-delete").hidden = true;
+  $("#chat-toggle-tools").hidden = true;
   $("#chat-switch").hidden = true; $("#chat-restore").hidden = true;
   $("#chat-switch-warning").hidden = true; $("#chat-retry").hidden = true;
   $("#chat-stop").hidden = true;
@@ -2008,6 +2049,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       !confirm("Discard unsaved edits in the open workspace files?")) return;
   const opening = ++chatOpening;
   const sameChat = chatId === id;
+  if (!sameChat) chatVisibleToolRows = 80;
   // A live transcript refresh must never write to the composer. The request can
   // be in flight while the user continues typing, including during IME input.
   const refreshingDisplayedChat = sameChat && displayedChatId === id;
@@ -2059,6 +2101,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-placement").textContent = placement;
   $("#chat-placement").hidden = !placement;
   $("#chat-delete").hidden = false;
+  $("#chat-toggle-tools").hidden = false;
   const box = $("#chat-messages");
   const live = $("#chat-live");
   $("#chat-agent-events").replaceChildren();
@@ -2161,6 +2204,8 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     }
   }
   box.append(live);
+  syncDesktopToolVisibility();
+  applyDesktopToolPagination();
   syncChatLive();
   const pinToBottom = forceChatScrollBottom || !sameChat || distanceFromBottom <= 90;
   box.scrollTop = pinToBottom
@@ -2364,6 +2409,23 @@ async function streamChatTurn(id, body, onDelta, onProgress) {
   if (!completed) throw new Error("Model stream ended before the reply was saved");
   return completed;
 }
+async function deliverCodexAtNextBoundary(id, turnBody, preferSteer) {
+  let steer = preferSteer;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (steer && ((turnBody.images || []).length || (turnBody.transfers || []).length))
+      throw new Error("The active turn cannot accept attachments. They remain attached; send them when it finishes.");
+    try {
+      const path = "chat/conversations/" + encodeURIComponent(id) +
+        (steer ? "/agent/steer" : "/turn");
+      const body = steer ? {message: turnBody.message} : turnBody;
+      return {delivery: steer ? "steer" : "turn", result: await api(path, body)};
+    } catch (error) {
+      if (error.status !== 409) throw error;
+      steer = !steer;
+    }
+  }
+  throw new Error("The Codex turn changed state repeatedly. Your message was not duplicated; try once more.");
+}
 $("#chat-form").onsubmit = async (event) => {
   event.preventDefault();
   const input = $("#chat-input"); let prompt = input.value.trim();
@@ -2416,14 +2478,19 @@ $("#chat-form").onsubmit = async (event) => {
     }
     input.value = "";
     try {
-      const result = await api("chat/conversations/" + encodeURIComponent(chatId) + "/agent/steer", {message: prompt});
+      const delivered = await deliverCodexAtNextBoundary(chatId,
+        {model: "Codex", message: prompt, images: [], transfers: []}, true);
+      const result = delivered.result;
       chatDrafts.delete(chatId);
       currentChatSnapshot = result.conversation;
       const timeline = $("#chat-running-timeline");
       if (timeline) renderCodexTurnTimeline(timeline, result.conversation.last_turn,
         codexActivityCache.get(chatId)?.events || result.conversation.last_turn?.activity || []);
-      $("#chat-status").textContent = "Guidance added to the active Codex turn.";
-      toast("Steered the active turn.");
+      $("#chat-status").textContent = delivered.delivery === "steer"
+        ? "Guidance added to the active Codex turn."
+        : "The prior turn finished; your message started the next turn.";
+      if (delivered.delivery === "turn") busyChats.add(chatId);
+      toast(delivered.delivery === "steer" ? "Steered the active turn." : "Started the next turn.");
     } catch (e) {
       input.value = prompt;
       toast("Could not steer Codex: " + e.message, "bad");
@@ -2513,8 +2580,12 @@ $("#chat-form").onsubmit = async (event) => {
         }
         if (chatId === sendingId) transcript.scrollTop = transcript.scrollHeight;
       });
-    } else out = await api("chat/conversations/" + encodeURIComponent(sendingId) + "/turn", turnBody);
-    codexAccepted = cloud && !!out.turn_id;
+    } else {
+      const delivered = await deliverCodexAtNextBoundary(sendingId, turnBody, false);
+      out = delivered.result;
+      if (delivered.delivery === "steer") toast("The turn was still active, so your message was added as guidance.");
+    }
+    codexAccepted = cloud && !!(out.turn_id || out.codex_turn_id);
     chatDrafts.delete(sendingId);
     chatImageDrafts.delete(sendingId);
     chatFileDrafts.delete(sendingId);
@@ -2604,6 +2675,7 @@ async function refreshCodexApprovals(id) {
       renderCodexTurnTimeline(timeline, currentChatSnapshot?.last_turn, activity);
       $("#chat-agent-events").hidden = true;
     } else renderChatActivity($("#chat-agent-events"), activity, busyChats.has(id));
+    applyDesktopToolPagination();
     const box = $("#chat-approvals");
     const approvalSignature = JSON.stringify(state.approvals || []);
     if (box.dataset.signature !== approvalSignature) {

@@ -19,6 +19,7 @@
   .conversation time{display:block;color:#9bdbc9;font-size:12px;margin-top:5px}
   .message{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:11px 13px;border-radius:12px;background:#223440}.message.assistant{color:#fff}.message.user{background:#244a47;margin-left:12%}
   .tool-message{min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:7px 10px;border:1px solid #2e404a;border-radius:9px;background:#18252d;color:#9eabb2;font:12.5px/1.45 ui-monospace,monospace}
+  .tool-message summary{cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tool-message[open] summary{white-space:normal}.tool-message pre{margin:8px 0 0;padding-top:8px;border-top:1px solid #2e404a;color:#bac5ca}
   .messages.hide-tools .tool-message{display:none}
   .messages .older-tool,.messages.hide-tools .tool-history-more{display:none}.tool-history-more{justify-self:start}
   .attachments,.attachment-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.attachments:empty{display:none}.attachment{position:relative;max-width:150px;padding:6px;border:1px solid #3a505b;border-radius:9px;background:#14212a;color:#a9bac4;font-size:12px;overflow-wrap:anywhere}.attachment img{display:block;width:100%;max-height:120px;object-fit:contain;border-radius:6px;margin-bottom:4px}.attachment button{position:absolute;top:3px;right:3px;padding:1px 7px;border-radius:99px;background:#111c24dd}.attachment-help{font-size:12px;color:#91a5af}
@@ -138,12 +139,13 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
   const priorScroll=messages.scrollTop;
   messages.replaceChildren();
   const add=(value,kind)=>{const block=document.createElement('div');block.className=kind; text(block,value);messages.append(block)};
+  const addTool=(value,event)=>{const block=document.createElement('details');block.className='tool-message';const heading=document.createElement('summary');text(heading,String(value).split('\n')[0].slice(0,500));const detail=document.createElement('pre');text(detail,JSON.stringify(event,null,2));block.append(heading,detail);messages.append(block)};
   const attachments=items=>{for(const item of items||[])messages.append(attachmentNode(item))};
   const addMessage=item=>{add(item.content||'',`message ${item.role==='user'?'user':'assistant'}`);attachments(item.attachments)};
   const timeline=(events,steers=[])=>{const seen=new Set(),records=[];for(const [index,event] of (events||[]).entries()){
     const key=event.item?.id?`${event.item.id}:${event.method||''}:${event.item.status||''}`:`${event.method||event.type}:${event.received_at||''}:${index}`;
-    if(seen.has(key))continue;seen.add(key);const value=activityText(event);if(value)records.push({kind:event.item?.type==='agentMessage'?'assistant':'activity',at:event.received_at||'',order:100+index,text:value.slice(0,1200)});
-  }for(const [index,steer] of steers.entries())records.push({kind:'user',at:steer.created_at||'',order:1000+index,text:steer.content||''});records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)||a.order-b.order);for(const record of records)add(record.text,record.kind==='activity'?'tool-message':`message ${record.kind}`)};
+    if(seen.has(key))continue;seen.add(key);const value=activityText(event);if(value)records.push({kind:event.item?.type==='agentMessage'?'assistant':'activity',at:event.received_at||'',order:100+index,text:value.slice(0,1200),event});
+  }for(const [index,steer] of steers.entries())records.push({kind:'user',at:steer.created_at||'',order:1000+index,text:steer.content||''});records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)||a.order-b.order);for(const record of records){if(record.kind==='activity')addTool(record.text,record.event);else add(record.text,`message ${record.kind}`)}};
   let pendingUsers=[];for(const item of current.messages||[]){if(item.role==='user'){pendingUsers.push(item);continue}if(pendingUsers.length)addMessage(pendingUsers.shift());timeline([...(item.reused_activity||[]),...(item.activity||[])],pendingUsers);pendingUsers=[];addMessage(item)}for(const item of pendingUsers)addMessage(item);
   const turn=current.last_turn;
   if(turn&&turn.state!=='completed'){
@@ -184,11 +186,12 @@ async function sendTurn(target,value){
     if(!response.ok){const data=await response.json();const error=Error(data.error?.message||data.error||`HTTP ${response.status}`);error.status=response.status;throw error}
     $('message').value='';clearAttachments();await openConversation(target);const reader=response.body.getReader();while(true){const result=await reader.read();if(result.done)break}await openConversation(target);return;
   }
-  await post(`/mobile/api/conversations/${target}/turn`,{model:conversation.model,message:value,images,transfers});$('message').value='';clearAttachments();await openConversation(target);
+  const delivered=await deliverCodexAtNextBoundary(target,{model:conversation.model,message:value,images,transfers},false);$('message').value='';clearAttachments();await openConversation(target);return delivered;
 }
+async function deliverCodexAtNextBoundary(target,body,preferSteer){let steer=preferSteer;for(let attempt=0;attempt<3;attempt++){if(steer&&((body.images||[]).length||(body.transfers||[]).length))throw Error('The active turn cannot accept attachments. They remain attached; send them when it finishes.');try{return{delivery:steer?'steer':'turn',result:await post(`/mobile/api/conversations/${target}${steer?'/agent/steer':'/turn'}`,steer?{message:body.message}:body)}}catch(error){if(error.status!==409)throw error;steer=!steer}}throw Error('The Codex turn changed state repeatedly. Your message was not duplicated; try once more.')}
 $('sendForm').onsubmit=async event=>{event.preventDefault();if(!selected||!conversation)return;const value=$('message').value.trim();if(!value&&!pendingImages.length&&!pendingFiles.length)return;const button=$('sendForm').querySelector('button[type=submit]');button.disabled=true;const target=selected;try{
   composerError();
-  if(agentActive){if(pendingImages.length||pendingFiles.length){alert('Wait for the active turn to finish before sending attachments.');return}try{await post(`/mobile/api/conversations/${target}/agent/steer`,{message:value});$('message').value='';await openConversation(target);return}catch(error){if(error.status!==409)throw error;await openConversation(target);if(agentActive)throw error}}
+  if(conversation.provider==='codex'){const images=pendingImages.map(({name,type,data_url})=>({name,type,data_url})),transfers=pendingFiles.map(item=>item.id);await deliverCodexAtNextBoundary(target,{model:conversation.model,message:value,images,transfers},agentActive);$('message').value='';clearAttachments();await openConversation(target);return}
   await sendTurn(target,value);
 }catch(error){composerError(error.message)}finally{button.disabled=false}};
 $('interrupt').onclick=async()=>{if(!selected||!confirm('Stop the current turn?'))return;try{composerError();await post(`/mobile/api/conversations/${selected}/agent/interrupt`,{});await openConversation(selected)}catch(error){composerError(error.message)}};

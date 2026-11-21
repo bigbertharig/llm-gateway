@@ -75,6 +75,11 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     page = STATIC.read_text(encoding="utf-8")
     assert ".message.assistant{color:#fff}" in page
     assert ".tool-message" in page and "color:#9eabb2" in page and "'tool-message'" in page
+    assert ".tool-message summary" in page and "document.createElement('details')" in page
+    assert "document.createElement('summary')" in page and "JSON.stringify(event,null,2)" in page
+    assert "String(value).split('\\n')[0]" in page
+    assert "deliverCodexAtNextBoundary" in page and "error.status!==409" in page
+    assert "steer=!steer" in page and "Your message was not duplicated" in page
     assert 'id="toggleTools"' in page and "mobile-show-tools" in page
     assert ".messages.hide-tools .tool-message{display:none}" in page
     assert "messages.classList.toggle('hide-tools',!showTools)" in page
