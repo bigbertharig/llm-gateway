@@ -133,18 +133,17 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
   messages.replaceChildren();
   const add=(value,kind)=>{const block=document.createElement('div');block.className=kind; text(block,value);messages.append(block)};
   const attachments=items=>{for(const item of items||[])messages.append(attachmentNode(item))};
-  const activity=events=>{const seen=new Set();for(const [index,event] of (events||[]).entries()){
+  const addMessage=item=>{add(item.content||'',`message ${item.role==='user'?'user':'assistant'}`);attachments(item.attachments)};
+  const timeline=(events,steers=[])=>{const seen=new Set(),records=[];for(const [index,event] of (events||[]).entries()){
     const key=event.item?.id?`${event.item.id}:${event.method||''}:${event.item.status||''}`:`${event.method||event.type}:${event.received_at||''}:${index}`;
-    if(seen.has(key))continue;seen.add(key);const value=activityText(event);
-    if(value)add(value.slice(0,1200),event.item?.type==='agentMessage'?'message assistant':'tool-message');
-  }};
-  for(const item of current.messages||[]){const assistant=item.role!=='user';if(assistant)activity(item.activity);add(item.content||'',`message ${assistant?'assistant':'user'}`);attachments(item.attachments);if(!assistant)activity(item.activity)}
+    if(seen.has(key))continue;seen.add(key);const value=activityText(event);if(value)records.push({kind:event.item?.type==='agentMessage'?'assistant':'activity',at:event.received_at||'',order:100+index,text:value.slice(0,1200)});
+  }for(const [index,steer] of steers.entries())records.push({kind:'user',at:steer.created_at||'',order:1000+index,text:steer.content||''});records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)||a.order-b.order);for(const record of records)add(record.text,record.kind==='activity'?'tool-message':`message ${record.kind}`)};
+  let pendingUsers=[];for(const item of current.messages||[]){if(item.role==='user'){pendingUsers.push(item);continue}if(pendingUsers.length)addMessage(pendingUsers.shift());timeline([...(item.reused_activity||[]),...(item.activity||[])],pendingUsers);pendingUsers=[];addMessage(item)}for(const item of pendingUsers)addMessage(item);
   const turn=current.last_turn;
   if(turn&&turn.state!=='completed'){
     add(turn.prompt||'(request in progress)','message user');
     attachments(turn.attachments);
-    for(const steer of turn.steers||[])add(steer.content||'','message user');
-    activity([...(turn.activity||[]),...liveEvents]);
+    timeline([...(turn.activity||[]),...liveEvents],turn.steers||[]);
     if(turn.state==='running'&&!liveEvents.length&&!(turn.activity||[]).length)add('Working…','muted');
     if(turn.error)add(`${turn.state}: ${turn.error}`,'notice error');
   }

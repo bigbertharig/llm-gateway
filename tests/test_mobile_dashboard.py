@@ -84,10 +84,11 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "if(error.status!==409)throw error" in page
     assert 'id="composerStatus"' in page
     assert "catch(error){composerError(error.message)}" in page
-    assert "event.item?.type==='agentMessage'?'message assistant':'tool-message'" in page
+    assert "kind:event.item?.type==='agentMessage'?'assistant':'activity'" in page
     assert "new EventSource(`/mobile/api/conversations/${id}/agent/events`)" in page
     assert "document.addEventListener('visibilitychange',refreshVisibleConversation)" in page
-    assert "if(assistant)activity(item.activity);add(item.content" in page
+    assert "timeline([...(turn.activity||[]),...liveEvents],turn.steers||[])" in page
+    assert "records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)" in page
 
 
 def test_mobile_transfer_routes_are_exact_and_separately_permissioned():
