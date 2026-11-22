@@ -121,6 +121,8 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "steer=!steer" in page and "Your message was not duplicated" in page
     assert 'id="toggleTools"' in page and "mobile-show-tools" in page
     assert "current.historical_turns" in page and "addHistorical" in page
+    assert "The dashboard response was interrupted. Refresh and try again." in page
+    assert "return json(path,options,false)" in page and "await response.text()" in page
     assert ".messages.hide-tools .tool-message{display:none}" in page
     assert "messages.classList.toggle('hide-tools',!showTools)" in page
     assert "showTools?'Hide tools':'Show tools'" in page
