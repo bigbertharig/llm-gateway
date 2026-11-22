@@ -21,6 +21,13 @@ continuation and revocation still need operator verification.
 - Both views refer to the same saved gateway conversations. A turn started locally
   can be opened and continued from the phone. The mobile front door forwards a
   private server-to-server token, and the gateway marks the turn as `mobile`.
+- Mobile presents separate Chat and Coding tabs over the same saved conversation
+  store as desktop. Chat lists only `mode=chat`; Coding lists only `mode=coding`.
+  The former Work tab was only a combined conversation list, not a separate work
+  engine. Opening or continuing a conversation preserves its saved mode, workspace,
+  provider, access, and reviewer settings while retaining the mobile-only HTTP and
+  tool restrictions described below. New conversations are still created on the
+  desktop, where model, workspace, and access choices are explicit.
 - The mobile composer accepts the same bounded Codex picture inputs and converted
   document types as the main dashboard. It previews pending attachments locally;
   pictures remain Codex-only and attachments cannot be added to an active steer.

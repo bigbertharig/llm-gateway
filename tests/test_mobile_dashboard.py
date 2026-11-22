@@ -73,6 +73,13 @@ def test_mobile_streamed_turn_reaches_gateway_as_stream(monkeypatch):
 
 def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     page = STATIC.read_text(encoding="utf-8")
+    assert '<button id="chatTab">Chat</button>' in page
+    assert '<button id="codingTab">Coding</button>' in page
+    assert 'id="workTab"' not in page and '>Work</button>' not in page
+    assert "activeMode='chat'" in page
+    assert ".filter(row=>(row.mode||'chat')===activeMode)" in page
+    assert "name==='coding'?'Coding':'Chat'" in page
+    assert "name==='coding'?'Continue coding work':'Continue this chat'" in page
     assert ".message.assistant{color:#fff}" in page
     assert ".tool-message" in page and "color:#9eabb2" in page and "'tool-message'" in page
     assert ".tool-message summary" in page and "document.createElement('details')" in page
