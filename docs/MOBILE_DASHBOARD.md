@@ -26,8 +26,11 @@ continuation and revocation still need operator verification.
   The former Work tab was only a combined conversation list, not a separate work
   engine. Opening or continuing a conversation preserves its saved mode, workspace,
   provider, access, and reviewer settings while retaining the mobile-only HTTP and
-  tool restrictions described below. New conversations are still created on the
-  desktop, where model, workspace, and access choices are explicit.
+  tool restrictions described below. New Chat and New Coding capture and submit
+  their mode explicitly; Coding also requires a registered workspace selection.
+  A Chat assistant reply can be saved as Markdown through the validated Transfer
+  admission path, then attached to a Coding conversation. This handoff does not
+  grant Chat a general filesystem-write tool.
 - The mobile composer accepts the same bounded Codex picture inputs and converted
   document types as the main dashboard. It previews pending attachments locally;
   pictures remain Codex-only and attachments cannot be added to an active steer.

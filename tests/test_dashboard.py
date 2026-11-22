@@ -32,6 +32,7 @@ def test_page_and_rig_status(menv):  # noqa: F811
     assert 'remaining <= 10 ? "bad" : remaining <= 25 ? "warn"' in page.text
     assert 'id="chat-limit-alert"' in page.text
     assert "renderChatMarkdown" in page.text and "Attach images" in page.text and "Enter sends" in page.text
+    assert 'name === "coding" ? "Start new coding conversation" : "Start new chat"' in page.text
     # Transcript/capacity polling must not replace an in-progress composer draft.
     assert "const refreshingDisplayedChat = sameChat && displayedChatId === id" in page.text
     assert "clearChatView({preserveComposer})" in page.text

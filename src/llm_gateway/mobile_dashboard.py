@@ -49,6 +49,7 @@ def operation(method: str, path: str) -> tuple[str, str] | None:
             "/mobile/api/models": ("observe", "/dashboard/api/models"),
             "/mobile/api/conversations": ("observe", "/dashboard/api/chat/conversations"),
             "/mobile/api/options": ("observe", "/dashboard/api/chat/options"),
+            "/mobile/api/workspaces": ("workspace-read", "/dashboard/api/chat/codex/account"),
         }
         if path in static:
             return static[path]

@@ -1,5 +1,6 @@
 """The remote front door must not inherit LAN admin routes or tool grants."""
 
+import json
 import httpx
 from fastapi.testclient import TestClient
 
@@ -71,6 +72,31 @@ def test_mobile_streamed_turn_reaches_gateway_as_stream(monkeypatch):
     assert b'"stream":true' in seen[0][2]
 
 
+def test_mobile_creation_forwards_explicit_chat_and_coding_modes(monkeypatch):
+    seen = []
+    def upstream(request):
+        body = request.read()
+        seen.append((request.url.path, body))
+        payload = json.loads(body)
+        return httpx.Response(201, json={"id": "b" * 32, "mode": payload["mode"]})
+    monkeypatch.setenv("MOBILE_TAILSCALE_USER", "operator@example.invalid")
+    monkeypatch.setenv("MOBILE_TAILSCALE_HOST", "pi.example.ts.net")
+    monkeypatch.setenv("MOBILE_PROXY_TOKEN", "a" * 48)
+    headers = {"host": "pi.example.ts.net", "tailscale-user-login": "operator@example.invalid",
+               "origin": "https://pi.example.ts.net", "sec-fetch-site": "same-origin"}
+    with TestClient(create_app(httpx.MockTransport(upstream))) as client:
+        chat = client.post("/mobile/api/conversations", headers=headers,
+                           json={"model": "Codex", "mode": "chat"})
+        coding = client.post("/mobile/api/conversations", headers=headers,
+                             json={"model": "Codex", "mode": "coding", "cwd": "/repo"})
+    assert chat.status_code == coding.status_code == 201
+    assert chat.json()["mode"] == "chat"
+    assert coding.json()["mode"] == "coding"
+    assert [path for path, _body in seen] == ["/dashboard/api/chat/conversations"] * 2
+    assert b'"mode":"chat"' in seen[0][1]
+    assert b'"mode":"coding"' in seen[1][1] and b'"cwd":"/repo"' in seen[1][1]
+
+
 def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     page = STATIC.read_text(encoding="utf-8")
     assert '<button id="chatTab">Chat</button>' in page
@@ -80,6 +106,12 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert ".filter(row=>(row.mode||'chat')===activeMode)" in page
     assert "name==='coding'?'Coding':'Chat'" in page
     assert "name==='coding'?'Continue coding work':'Continue this chat'" in page
+    assert 'id="newConversation"' in page and 'id="createConversationPanel"' in page
+    assert "creationMode=activeMode" in page
+    assert "post('/mobile/api/conversations',{model,mode,cwd})" in page
+    assert "if(created.mode!==mode)" in page
+    assert "mode==='coding'&&!cwd" in page
+    assert "Save to Transfer" in page and "new File([item.content]" in page
     assert ".message.assistant{color:#fff}" in page
     assert ".tool-message" in page and "color:#9eabb2" in page and "'tool-message'" in page
     assert ".tool-message summary" in page and "document.createElement('details')" in page
@@ -124,3 +156,5 @@ def test_mobile_transfer_routes_are_exact_and_separately_permissioned():
         "transfer-read", "/dashboard/api/transfers/" + transfer_id)
     assert operation("DELETE", "/mobile/api/transfers/" + transfer_id) is None
     assert operation("GET", "/mobile/api/transfers/not-an-id") is None
+    assert operation("GET", "/mobile/api/workspaces") == (
+        "workspace-read", "/dashboard/api/chat/codex/account")

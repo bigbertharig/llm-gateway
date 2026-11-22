@@ -3085,6 +3085,8 @@ function show(name) {
   }
   shownTab = name;
   tab = name;
+  if (name === "chat" || name === "coding")
+    $("#chat-new").textContent = name === "coding" ? "Start new coding conversation" : "Start new chat";
   if (name === "coding") {
     $("#coding-models-panel").append($(".chat-sidebar"));
     $("#coding-chat-host").append($("#chat-shell"));
