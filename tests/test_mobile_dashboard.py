@@ -127,6 +127,7 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "messages.classList.toggle('hide-tools',!showTools)" in page
     assert "showTools?'Hide tools':'Show tools'" in page
     assert "visibleToolRows=80" in page and "Show earlier activity" in page
+    assert "compaction-marker" in page and "addCompaction" in page
     assert "toolRows.slice(0,hiddenCount)" in page and "visibleToolRows+=80" in page
     assert "Automatic Continue scheduled for" in page and "timeZoneName:'short'" in page
     assert ".messages .older-tool" in page
@@ -139,7 +140,7 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "if(error.status!==409)throw error" in page
     assert 'id="composerStatus"' in page
     assert "catch(error){composerError(error.message)}" in page
-    assert "kind:event.item?.type==='agentMessage'?'assistant':'activity'" in page
+    assert "event.method==='thread/compacted'?'compaction':event.item?.type==='agentMessage'?'assistant':'activity'" in page
     assert "new EventSource(`/mobile/api/conversations/${id}/agent/events`)" in page
     assert "document.addEventListener('visibilitychange',refreshVisibleConversation)" in page
     assert "timeline([...(turn.activity||[]),...liveEvents],turn.steers||[])" in page

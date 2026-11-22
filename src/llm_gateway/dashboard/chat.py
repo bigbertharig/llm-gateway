@@ -525,6 +525,14 @@ class ChatStore:
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, id);
+                CREATE TABLE IF NOT EXISTS conversation_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,
+                    type TEXT NOT NULL CHECK(type IN ('compacted')),
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS conversation_events_order
+                    ON conversation_events(conversation_id, created_at, id);
                 CREATE TABLE IF NOT EXISTS turns (
                     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
                     prompt TEXT NOT NULL, state TEXT NOT NULL
@@ -716,6 +724,9 @@ class ChatStore:
                 "SELECT source_turn_id,due_at,surface,state,created_at,updated_at,error "
                 "FROM auto_continuations WHERE conversation_id=? AND state IN ('scheduled','running') "
                 "ORDER BY due_at DESC LIMIT 1", (cid,)).fetchone()
+            conversation_events = [dict(event) for event in db.execute(
+                "SELECT id,type,created_at FROM conversation_events "
+                "WHERE conversation_id=? ORDER BY created_at,id", (cid,))]
         for message in messages:
             message["attachments"] = json.loads(message["attachments"] or "[]")
             message["activity"] = json.loads(message["activity"] or "[]")
@@ -784,8 +795,41 @@ class ChatStore:
                             and not any(later["state"] == "completed"
                                         and later["prompt"] == candidate["prompt"]
                                         for later in recent_turns[index + 1:])]
-        return {**dict(row), "messages": messages, "historical_turns": historical_turns,
+        return {**dict(row), "messages": messages, "events": conversation_events,
+                "historical_turns": historical_turns,
                 "last_turn": turn, "auto_continue": dict(auto_continue) if auto_continue else None}
+
+    def add_conversation_event(self, cid: str, event_type: str) -> dict:
+        if event_type != "compacted":
+            raise ValueError("unknown conversation event")
+        now = _now()
+        with self._db() as db:
+            if db.execute("SELECT 1 FROM conversations WHERE id=?", (cid,)).fetchone() is None:
+                raise ManagerError(404, "conversation not found")
+            db.execute("INSERT INTO conversation_events(conversation_id,type,created_at) "
+                       "VALUES (?,?,?)", (cid, event_type, now))
+            db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, cid))
+        return self.get(cid)
+
+    def add_thread_event(self, thread_id: str, event_type: str, created_at: str) -> bool:
+        if event_type != "compacted":
+            raise ValueError("unknown conversation event")
+        timestamp = datetime.fromisoformat(created_at)
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError("conversation event time must include an offset")
+        created_at = timestamp.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+        with self._db() as db:
+            row = db.execute("SELECT id FROM conversations WHERE thread_id=?", (thread_id,)).fetchone()
+            if row is None:
+                return False
+            exists = db.execute("SELECT 1 FROM conversation_events "
+                                "WHERE conversation_id=? AND type=? AND created_at=?",
+                                (row["id"], event_type, created_at)).fetchone()
+            if exists is None:
+                db.execute("INSERT INTO conversation_events(conversation_id,type,created_at) "
+                           "VALUES (?,?,?)", (row["id"], event_type, created_at))
+                db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (created_at, row["id"]))
+            return True
 
     def schedule_auto_continue(self, cid: str, source_turn_id: str, due_at: datetime,
                                surface: str) -> dict:
@@ -1055,6 +1099,14 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     codex_tasks: set[asyncio.Task] = set()
     local_tasks: set[asyncio.Task] = set()
     shared_setup = asyncio.Lock()
+
+    def persist_compaction(thread_id: str, created_at: str) -> None:
+        if get_store().add_thread_event(thread_id, "compacted", created_at):
+            return
+        if (test_root / 'conversations.sqlite3').is_file():
+            get_store(history='tests').add_thread_event(thread_id, "compacted", created_at)
+
+    codex.compaction_listener = persist_compaction
 
     def offered() -> dict[str, dict]:
         published = profiles.all()
@@ -1615,7 +1667,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 if not thread_id:
                     return []
                 try:
-                    return codex.status(thread_id).get("events") or []
+                    return [event for event in (codex.status(thread_id).get("events") or [])
+                            if event.get("method") != "thread/compacted"]
                 except Exception:
                     return []
 

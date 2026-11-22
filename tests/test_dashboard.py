@@ -24,6 +24,7 @@ def test_page_and_rig_status(menv):  # noqa: F811
     assert 'id="chat-toggle-tools"' in page.text and "desktop-show-tools" in page.text
     assert "chatToolDisclosure" in page.text and 'document.createElement("details")' in page.text
     assert "chat-tool-disclosure" in page.text and "Show earlier activity (" in page.text
+    assert "chat-compaction-marker" in page.text and 'marker.textContent = "Compacted"' in page.text
     assert "chatVisibleToolRows += 80" in page.text
     assert "deliverCodexAtNextBoundary" in page.text and "error.status = res.status" in page.text
     assert 'error.status !== 409' in page.text and 'steer = !steer' in page.text

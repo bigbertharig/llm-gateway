@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from llm_gateway.dashboard.codex_bridge import (CodexBridge, CodexBridgeError,
-                                                 CodexUsageLimitError, _delegate_receipt)
+                                                 CodexUsageLimitError, _delegate_receipt,
+                                                 _safe_app_server_log)
 from llm_gateway.dashboard.chat import ChatStore, router, usage_limit_resume_at
 from llm_gateway.manager.errors import ManagerError
 
@@ -427,6 +428,22 @@ def test_progress_messages_are_exposed_but_final_answer_is_not_duplicated():
     ]
     events = bridge.status("thread-1")["events"]
     assert [event["item"]["text"] for event in events] == ["I found the relevant path."]
+
+
+def test_completed_compaction_is_exposed_as_a_timeline_boundary():
+    bridge = CodexBridge()
+    bridge.recent["thread-1"] = [{"method": "thread/compacted", "params": {
+        "threadId": "thread-1"}, "_received_at": "2026-11-22T12:00:00+00:00"}]
+    assert bridge.status("thread-1")["events"] == [{
+        "method": "thread/compacted", "item": None, "turn": None,
+        "received_at": "2026-11-22T12:00:00+00:00"}]
+
+
+def test_app_server_diagnostics_are_bounded_and_redact_credentials():
+    line = "authorization: Bearer private-token " + "x" * 3000
+    safe = _safe_app_server_log(line)
+    assert "private-token" not in safe and "[redacted]" in safe
+    assert len(safe) == 2000
 
 
 def test_progress_messages_are_not_cut_at_the_command_preview_limit():

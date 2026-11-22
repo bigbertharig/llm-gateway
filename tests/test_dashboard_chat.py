@@ -1248,6 +1248,10 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
         assert client.post(f"/dashboard/api/chat/conversations/{first['id']}/agent/command",
                            json={"command": "compact"}).status_code == 200
         assert cloud.compacted == "thread-1"
+        cloud.compaction_listener("thread-1", "2026-11-22T12:00:00.000+00:00")
+        compacted = client.get(f"/dashboard/api/chat/conversations/{first['id']}").json()
+        assert compacted["events"][-1]["type"] == "compacted"
+        assert compacted["events"][-1]["created_at"].endswith("+00:00")
         models = client.post(f"/dashboard/api/chat/conversations/{first['id']}/agent/command",
                              json={"command": "model"}).json()
         assert "test-codex" in models["message"]

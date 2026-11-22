@@ -19,6 +19,12 @@ from . import dashboard_mcp_servers
 
 log = logging.getLogger(__name__)
 RECENT_EVENT_LIMIT = 1000
+_APP_SERVER_SECRET = re.compile(
+    r"(?i)(authorization:\s*bearer\s+|access[_-]?token[=:]\s*|api[_-]?key[=:]\s*)\S+")
+
+
+def _safe_app_server_log(line: str) -> str:
+    return _APP_SERVER_SECRET.sub(r"\1[redacted]", line.replace("\x00", ""))[:2000]
 
 
 class CodexBridgeError(RuntimeError):
@@ -83,6 +89,7 @@ class CodexBridge:
         self.command = command or os.getenv("CODEX_CHAT_COMMAND", "codex")
         self.process: asyncio.subprocess.Process | None = None
         self.reader_task: asyncio.Task | None = None
+        self.stderr_task: asyncio.Task | None = None
         self.pending: dict[int, asyncio.Future] = {}
         self.events: dict[str, asyncio.Queue] = {}
         self.active_turns: dict[str, str] = {}
@@ -98,6 +105,7 @@ class CodexBridge:
         self.approvals: dict[str, dict] = {}
         self.login_event: dict | None = None
         self.account_state: dict | None = None
+        self.compaction_listener = None
         self.next_id = 0
         self.write_lock = asyncio.Lock()
         self.start_lock = asyncio.Lock()
@@ -200,12 +208,13 @@ class CodexBridge:
                     self.command, "-c", 'default_permissions=":workspace"',
                     "-c", profile, "app-server", "--listen", "stdio://",
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
                     limit=4 * 1024 * 1024,
                 )
             except OSError as exc:
                 raise CodexBridgeError("Codex app-server is not installed on the gateway host") from exc
             self.reader_task = asyncio.create_task(self._read())
+            self.stderr_task = asyncio.create_task(self._drain_stderr())
             await self._call("initialize", {"clientInfo": {
                 "name": "llm_gateway_chat", "title": "Rig dashboard chat", "version": "0.1.0",
             }, "capabilities": {"experimentalApi": True}}, ensure_started=False)
@@ -221,7 +230,18 @@ class CodexBridge:
                 await self.process.wait()
         if self.reader_task:
             self.reader_task.cancel()
+        if self.stderr_task:
+            self.stderr_task.cancel()
         self.process = None
+
+    async def _drain_stderr(self) -> None:
+        process = self.process
+        if process is None or process.stderr is None:
+            return
+        while line := await process.stderr.readline():
+            cleaned = _safe_app_server_log(line.decode("utf-8", "replace").rstrip())
+            if cleaned:
+                log.warning("Codex app-server: %s", cleaned)
 
     async def _write(self, message: dict) -> None:
         if not self.process or not self.process.stdin:
@@ -299,11 +319,17 @@ class CodexBridge:
                             "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"}:
                         self.context_pending[thread_id] = True
                         self._skip_pending_clear.add(thread_id)
+                if thread_id and method == "thread/compacted" and self.compaction_listener:
+                    try:
+                        self.compaction_listener(thread_id, message["_received_at"])
+                    except Exception:
+                        log.exception("could not persist Codex compaction boundary")
                 if thread_id in self.events:
                     self.events[thread_id].put_nowait(message)
                 # Keep durable activity items, not token deltas. A long streamed
                 # answer otherwise evicts every tool call from the bounded deque.
-                if thread_id and method in ("item/started", "item/completed", "turn/completed"):
+                if thread_id and method in ("item/started", "item/completed", "turn/completed",
+                                             "thread/compacted"):
                     self._remember_recent(thread_id, message)
                 if "id" in message and method:
                     if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
@@ -319,7 +345,7 @@ class CodexBridge:
                     self.approvals.pop(str(params.get("requestId")), None)
                 if thread_id and method in {
                         "item/started", "item/completed", "turn/completed",
-                        "thread/tokenUsage/updated", "serverRequest/resolved"}:
+                        "thread/tokenUsage/updated", "thread/compacted", "serverRequest/resolved"}:
                     for subscriber in tuple(self.status_subscribers.get(thread_id, ())):
                         if subscriber.empty():
                             subscriber.put_nowait(method)
@@ -394,6 +420,10 @@ class CodexBridge:
         for event in list(events):
             method, params = event.get("method"), event.get("params") or {}
             item = params.get("item") or {}
+            if method == "thread/compacted":
+                public_events.append({"method": method, "item": None, "turn": None,
+                                      "received_at": event.get("_received_at")})
+                continue
             # Final answers are already rendered in the transcript.
             if method == "turn/completed" or (isinstance(item, dict) and item.get("type") == "agentMessage"
                                               and item.get("phase") in (None, "final_answer")):

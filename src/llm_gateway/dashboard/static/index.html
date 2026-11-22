@@ -253,6 +253,10 @@ textarea { width: 100%; min-height: 80px; }
 .chat-messages.hide-tools .chat-activity[data-tool-only="true"] { display: none; }
 .chat-tool-history-more { margin: 2px 0 8px; }
 .chat-tool-disclosure.older-tool { display: none; }
+.chat-compaction-marker { display: flex; align-items: center; gap: 10px; margin: 16px 0;
+  color: var(--muted); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.chat-compaction-marker::before,.chat-compaction-marker::after { content: ""; height: 1px;
+  background: var(--line); flex: 1; }
 .chat-failure-actions { display: flex; gap: 8px; margin-top: 8px; }
 .chat-live[hidden], .chat-agent-events[hidden] { display: none; }
 .chat-agent-events { padding: 4px 0; }
@@ -1462,6 +1466,11 @@ function chatToolDisclosure(event, line, detail = "") {
     (detail ? detail + "\n\nEvent details:\n" : "") + JSON.stringify(event, null, 2);
   row.append(summary, body); return row;
 }
+function chatCompactionMarker() {
+  const marker = document.createElement("div"); marker.className = "chat-compaction-marker";
+  marker.textContent = "Compacted"; marker.setAttribute("role", "separator");
+  marker.setAttribute("aria-label", "Conversation context compacted"); return marker;
+}
 function renderChatActivity(target, events, active = false, label = "") {
   const byId = new Map();
   for (const [index, event] of (events || []).entries()) {
@@ -1475,7 +1484,8 @@ function renderChatActivity(target, events, active = false, label = "") {
     byId.set(key, event);
   }
   const items = [...byId.values()], signature = JSON.stringify(items);
-  const toolOnly = items.length > 0 && items.every((event) => event.item?.type !== "agentMessage");
+  const toolOnly = items.length > 0 && items.every((event) =>
+    event.method !== "thread/compacted" && event.item?.type !== "agentMessage");
   if (target.dataset.signature === signature && target.dataset.active === String(active)) return;
   target.replaceChildren(); target.dataset.signature = signature; target.dataset.active = String(active);
   target.dataset.toolOnly = String(toolOnly);
@@ -1487,6 +1497,7 @@ function renderChatActivity(target, events, active = false, label = "") {
     (toolOnly && items.at(-1)?.elapsed_ms != null ? " · " + loadDuration(items.at(-1).elapsed_ms / 1000) + " elapsed" : "");
   target.append(summary);
   for (const event of items) {
+    if (event.method === "thread/compacted") { target.append(chatCompactionMarker()); continue; }
     if (event.type === "tool") {
       const line = String(event.name || "Tool") +
         (event.path || event.url ? " · " + String(event.path || event.url) : "") +
@@ -1530,6 +1541,7 @@ function renderChatActivity(target, events, active = false, label = "") {
   target.open = true;
 }
 function codexActivityLine(event) {
+  if (event.method === "thread/compacted") return "Compacted";
   const item = event.item || {};
   if (["reasoning", "userMessage", "agentMessage"].includes(item.type)) return "";
   if (event.type === "tool") return String(event.name || "Tool") +
@@ -1560,6 +1572,7 @@ function renderCodexTurnTimeline(target, turn, events) {
   records.sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0) || a.order - b.order);
   target.replaceChildren();
   for (const record of records) {
+    if (record.event?.method === "thread/compacted") { target.append(chatCompactionMarker()); continue; }
     if (record.kind === "user" || record.kind === "assistant") {
       const item = document.createElement("div"); item.className = "chat-message " + record.kind;
       const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = record.label;
@@ -2111,6 +2124,14 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-approvals").dataset.signature = "";
   box.replaceChildren();
   const historicalTurns = [...(c.historical_turns || [])];
+  const conversationEvents = [...(c.events || [])];
+  const flushConversationEvents = (before) => {
+    while (conversationEvents.length && (!before ||
+        (Date.parse(conversationEvents[0].created_at) || 0) <= (Date.parse(before) || 0))) {
+      const event = conversationEvents.shift();
+      if (event.type === "compacted") box.append(chatCompactionMarker());
+    }
+  };
   const renderHistoricalTurn = (turn) => {
     const prompt = document.createElement("div"); prompt.className = "chat-message user";
     const meta = document.createElement("div"); meta.className = "meta";
@@ -2135,6 +2156,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       renderHistoricalTurn(historicalTurns.shift());
   };
   for (const m of c.messages) {
+    flushConversationEvents(m.created_at);
     if (m.role === "user") flushHistoricalTurns(m.created_at);
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
@@ -2176,6 +2198,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       box.append(item);
     }
   }
+  flushConversationEvents();
   flushHistoricalTurns();
   if (c.last_turn && c.last_turn.state !== "completed") {
     const notice = document.createElement("div");
