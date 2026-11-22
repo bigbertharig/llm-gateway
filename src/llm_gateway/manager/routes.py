@@ -215,6 +215,50 @@ def router(manager: Manager, profiles: Callable[[], dict[str, dict]], model_pref
                 "default": "The manager selects a ready local model or loads one for the requested role; slot admission is authoritative at delegation time",
                 "candidates": candidates}
 
+    @r.post("/local-agent-model/swap")
+    async def swap_local_agent_model(request: Request):
+        """Explicitly replace one observed shared local-agent service with another."""
+        body = await _body(request)
+        target_id = body.get("candidate_id")
+        expected_id = body.get("expected_candidate_id")
+        expected_instance = body.get("expected_instance_id")
+        if (not isinstance(target_id, str) or not target_id
+                or (expected_id is not None and not isinstance(expected_id, str))
+                or (expected_instance is not None and not isinstance(expected_instance, str))):
+            raise ManagerError(400, "candidate_id and optional expected candidate/instance strings are required")
+        shared = _shared_candidates(models.catalog())
+        target = shared.get(target_id)
+        if target is None:
+            raise ManagerError(400, "target is not a reviewed shared local-agent candidate")
+        service = (await manager.rig.status()).get("shared_kv_service") or {}
+        current_id = next((cid for cid, entry in shared.items()
+                           if _candidate_loaded(service, entry)), None)
+        if service.get("status") == "ready" and current_id is None:
+            raise ManagerError(409, "loaded shared service is not a reviewed local-agent candidate")
+        if current_id != expected_id:
+            raise ManagerError(409, "loaded local-agent candidate changed before swap")
+        if current_id is not None and service.get("instance_id") != expected_instance:
+            raise ManagerError(409, "loaded local-agent service instance changed before swap")
+        children = [row.get("chat_id") for row in (service.get("chats") or [])
+                    if isinstance(row, dict) and str(row.get("chat_id", "")).startswith("child-")]
+        if children:
+            raise ManagerError(409, "wait for active local-agent children before swapping models")
+        if current_id == target_id:
+            return {"swapped": False, "from_candidate_id": current_id,
+                    "to_candidate_id": target_id, "service_instance_id": service.get("instance_id")}
+        if current_id is not None:
+            await manager.rig.shared_kv("stop", model=service["model"])
+        start = {"model": target["model"]}
+        if (target.get("requires") or {}).get("mode") == "gpu0-worker-pool-q4":
+            start["main_context_cap"] = 0
+        await manager.rig.shared_kv("start", **start)
+        observed = (await manager.rig.status()).get("shared_kv_service") or {}
+        if not _candidate_loaded(observed, target):
+            raise ManagerError(502, "requested local-agent model did not become ready")
+        return {"swapped": True, "from_candidate_id": current_id,
+                "to_candidate_id": target_id, "service_instance_id": observed.get("instance_id"),
+                "model": observed.get("model"), "mode": observed.get("mode")}
+
     @r.post("/agent-routes/release")
     async def release_agent_route(request: Request):
         body = await _body(request)

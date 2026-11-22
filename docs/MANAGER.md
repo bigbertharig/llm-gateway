@@ -117,6 +117,11 @@ First measure one ready route with two bounded concurrent requests, including co
 
 `POST /v1/manager/agent-routes/resolve` accepts `{"agent_type":"coding|research", "parent_route":"gpu-rig/<id>"}`. The parent route is supplied by its controller; the model-facing delegation tool takes only `agent_type` and `task`. The manager chooses a published profile by its ordered capability policy in `manager/routes.py`. It first offers a ready route on GPUs disjoint from the parent's. If none is ready, it asks the manager to fit, lease, and load a cold profile on available cards. It returns only after the route is observed ready, with route ID, model, context, and GPU IDs. A five-minute preparation deadline returns HTTP 504; no capacity or eligible route returns 503, and a load failure is reported through the manager error response. A timed-out rig plan may continue under manager ownership; operators should inspect status before retrying or unloading.
 
+`POST /v1/manager/local-agent-model/swap` is the explicit operator path for replacing one shared
+local-agent model with another. The request names the target candidate and the currently observed
+candidate/service instance. It refuses stale identity, unreviewed modes, and active child
+reservations; ordinary delegation never evicts a different loaded shared model implicitly.
+
 For a Codex dashboard parent, pass `parent_route: "cloud/codex"`. The manager uses the same reviewed
 coding/research role order and readiness checks without requiring a local parent profile or reserving
 parent GPUs. The harness MCP adapter exposes this as `delegate_task` and records a child receipt.

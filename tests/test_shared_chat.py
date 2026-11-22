@@ -199,6 +199,87 @@ def test_manager_requests_context_size_for_new_shared_child(monkeypatch):
         assert child["admission"]["served_context_tokens"] == 32768
 
 
+def test_explicit_local_agent_model_swap_is_instance_checked(monkeypatch):
+    qwen, nemo = "qwen3.6:35b-a3b-xl", "nemotron-3.5-bolt:74b-a9b"
+    catalog = {"models": {qwen: {"status": "active"}, nemo: {"status": "active"}},
+        "load_recipes": {"recipes": {"nemotron74_shared_kv_http_v1": {
+            "model": nemo, "status": "validated", "procedure": "shared_kv_http_v1"}}},
+        "subagent_catalog": {"candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat", "model": qwen,
+                "requires": {"mode": "gpu0-main-q4"}, "agent_types": ["research"],
+                "context_cap": 262144},
+            "nemotron74_shared_1060": {"provider": "rig_shared_chat", "model": nemo,
+                "requires": {"mode": "gpu0-main-f16-experts1234"},
+                "agent_types": ["research"], "context_cap": 262144}}}}
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: catalog)
+
+    class SwapRig:
+        def __init__(self):
+            self.model, self.mode, self.instance = qwen, "gpu0-main-q4", "qwen-1"
+            self.chats = [{"chat_id": "main", "gpu": 0, "context_cap": 262144}]
+            self.calls = []
+
+        async def status(self):
+            return {"shared_kv_service": {"status": "ready", "model": self.model,
+                    "mode": self.mode, "instance_id": self.instance,
+                    "chats": list(self.chats)}}
+
+        async def shared_kv(self, action, **kwargs):
+            self.calls.append((action, kwargs))
+            if action == "stop":
+                self.model = self.mode = self.instance = None
+                self.chats = []
+            elif action == "start":
+                self.model = kwargs["model"]
+                self.mode = "gpu0-main-f16-experts1234" if self.model == nemo else "gpu0-main-q4"
+                self.instance = "nemo-2" if self.model == nemo else "qwen-2"
+                self.chats = [{"chat_id": "main", "gpu": 0, "context_cap": 262144}]
+            return {"status": "ready"}
+
+    rig = SwapRig()
+    manager = type("Manager", (), {"rig": rig})()
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda _request, exc: JSONResponse(status_code=exc.status, content={"error": str(exc)}))
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        stale = client.post("/v1/manager/local-agent-model/swap", json={
+            "candidate_id": "nemotron74_shared_1060",
+            "expected_candidate_id": "qwen35_shared_1060", "expected_instance_id": "old"})
+        assert stale.status_code == 409
+        swapped = client.post("/v1/manager/local-agent-model/swap", json={
+            "candidate_id": "nemotron74_shared_1060",
+            "expected_candidate_id": "qwen35_shared_1060", "expected_instance_id": "qwen-1"})
+        assert swapped.status_code == 200, swapped.text
+        assert swapped.json() == {"swapped": True,
+            "from_candidate_id": "qwen35_shared_1060",
+            "to_candidate_id": "nemotron74_shared_1060",
+            "service_instance_id": "nemo-2", "model": nemo,
+            "mode": "gpu0-main-f16-experts1234"}
+        assert [call[0] for call in rig.calls] == ["stop", "start"]
+
+
+def test_local_agent_model_swap_refuses_active_child(monkeypatch):
+    model = "qwen3.6:35b-a3b-xl"
+    monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
+        "models": {model: {"status": "active"}}, "subagent_catalog": {"candidates": {
+            "qwen35_shared_1060": {"provider": "rig_shared_chat", "model": model,
+                "agent_types": ["research"], "context_cap": 262144}}}})
+    rig = SharedRig()
+    rig.chats.append({"chat_id": "child-busy", "gpu": 1, "context_cap": 32768})
+    manager = type("Manager", (), {"rig": rig})()
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda _request, exc: JSONResponse(status_code=exc.status, content={"error": str(exc)}))
+    app.include_router(manager_router(manager, lambda: {}, "gpu-rig"))
+    with TestClient(app) as client:
+        response = client.post("/v1/manager/local-agent-model/swap", json={
+            "candidate_id": "qwen35_shared_1060",
+            "expected_candidate_id": "qwen35_shared_1060", "expected_instance_id": "qwen-load-1"})
+    assert response.status_code == 409
+    assert "active local-agent children" in response.text
+
+
 def test_manager_rolls_back_a_malformed_shared_admission(monkeypatch):
     model = "qwen3.6:35b-a3b-xl"
     monkeypatch.setattr("llm_gateway.manager.routes.models.catalog", lambda: {
