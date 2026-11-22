@@ -2,14 +2,16 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from llm_gateway.dashboard.codex_bridge import CodexBridge, CodexBridgeError, _delegate_receipt
-from llm_gateway.dashboard.chat import ChatStore, router
+from llm_gateway.dashboard.codex_bridge import (CodexBridge, CodexBridgeError,
+                                                 CodexUsageLimitError, _delegate_receipt)
+from llm_gateway.dashboard.chat import ChatStore, router, usage_limit_resume_at
 from llm_gateway.manager.errors import ManagerError
 
 
@@ -58,6 +60,39 @@ def test_existing_codex_thread_resumes_without_experimental_capability(tmp_path)
         {"type": "text", "text": "Find the dashboard"},
         {"type": "image", "url": image["data_url"]},
     ]
+
+
+def test_usage_limit_is_a_structured_error_and_reset_time_becomes_utc(tmp_path):
+    bridge = CodexBridge()
+    bridge.workspaces = [tmp_path]
+
+    async def call(method, params):
+        if method == "thread/resume":
+            return {"thread": {"id": "saved-thread"}}
+        bridge.events["saved-thread"].put_nowait({"method": "turn/completed", "params": {
+            "turnId": "limited-turn", "turn": {"id": "limited-turn", "status": "failed",
+                "error": {"message": "You've hit your usage limit. Try again at Nov 22nd, 2026 2:22 PM.",
+                          "codexErrorInfo": "usageLimitExceeded"}}}})
+        return {"turn": {"id": "limited-turn"}}
+
+    bridge._call = call
+    with pytest.raises(CodexUsageLimitError) as caught:
+        asyncio.run(bridge.turn("saved-thread", "Continue", str(tmp_path)))
+    due = usage_limit_resume_at(
+        caught.value, now=datetime(2026, 11, 22, 18, 0, tzinfo=timezone.utc),
+        zone_name="America/Vancouver")
+    assert due == datetime(2026, 11, 22, 22, 27, tzinfo=timezone.utc)
+    assert usage_limit_resume_at(CodexBridgeError(str(caught.value))) is None
+
+    same_day = CodexUsageLimitError("You've hit your usage limit. Try again at 8:36 PM.",
+                                    {"codexErrorInfo": "usageLimitExceeded"})
+    assert usage_limit_resume_at(
+        same_day, now=datetime(2026, 11, 22, 2, 27, tzinfo=timezone.utc),
+        zone_name="America/Denver") == datetime(2026, 11, 22, 3, 41, tzinfo=timezone.utc)
+    assert usage_limit_resume_at(
+        same_day, rate_limits={"primary": {"usedPercent": 100, "resetsAt": 1800000000}},
+        now=datetime(2026, 11, 22, 2, 27, tzinfo=timezone.utc),
+        zone_name="Invalid/Unused") == datetime.fromtimestamp(1800000300, timezone.utc)
 
 
 def test_active_turn_can_be_steered_and_interrupted():

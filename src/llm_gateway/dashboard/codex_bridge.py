@@ -25,6 +25,14 @@ class CodexBridgeError(RuntimeError):
     pass
 
 
+class CodexUsageLimitError(CodexBridgeError):
+    """Structured signal emitted only for app-server's usage-limit error code."""
+
+    def __init__(self, message: str, details: dict):
+        super().__init__(message)
+        self.details = details
+
+
 class CodexTurnInterrupted(CodexBridgeError):
     pass
 
@@ -552,9 +560,12 @@ class CodexBridge:
                 if method == "turn/completed" and (params.get("turn") or {}).get("id") == current_turn_id:
                     turn = params["turn"]
                     if turn.get("status") != "completed":
-                        message = str(turn.get("error") or "Codex turn did not complete")
+                        error = turn.get("error")
+                        message = str(error or "Codex turn did not complete")
                         if turn.get("status") in ("interrupted", "cancelled", "canceled"):
                             raise CodexTurnInterrupted(message)
+                        if isinstance(error, dict) and error.get("codexErrorInfo") == "usageLimitExceeded":
+                            raise CodexUsageLimitError(str(error.get("message") or message), error)
                         raise CodexBridgeError(message)
                     final = [text for phase, text in answer if phase == "final_answer" and text.strip()]
                     content = "\n\n".join(final or [text for _, text in answer if text.strip()]).strip()

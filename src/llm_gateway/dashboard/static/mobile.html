@@ -167,6 +167,10 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
     if(turn.state==='running'&&!liveEvents.length&&!(turn.activity||[]).length)add('Working…','muted');
     if(turn.error)add(`${turn.state}: ${turn.error}`,'notice error');
   }
+  if(current.auto_continue){
+    const due=new Date(current.auto_continue.due_at);
+    add(`Automatic Continue scheduled for ${due.toLocaleString([],{timeZoneName:'short'})}. Sending a new message first cancels it.`,'notice');
+  }
   const toolRows=[...messages.querySelectorAll('.tool-message')],hiddenCount=Math.max(0,toolRows.length-visibleToolRows);
   toolRows.slice(0,hiddenCount).forEach(row=>row.classList.add('older-tool'));
   if(hiddenCount){const more=document.createElement('button');more.type='button';more.className='tool-history-more';text(more,`Show earlier activity (${hiddenCount})`);more.onclick=()=>{visibleToolRows+=80;renderMessages(current,liveEvents,false)};messages.insertBefore(more,messages.firstChild)}

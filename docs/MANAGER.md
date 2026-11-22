@@ -561,6 +561,27 @@ Ready shared chats are exposed as `gpu-rig/shared-35b-<chat_id>` through `/v1/mo
 
 See the harness [shared 35B subagent matrix](https://github.com/bigbertharig/llm-harness/blob/main/docs/research/shared35_subagent_matrix_2026-11-12.md) for scored outcomes and limitations.
 
+## Automatic Codex continuation after a usage reset
+
+Dashboard Codex turns that fail with app-server's exact
+`codexErrorInfo=usageLimitExceeded` signal are scheduled to continue once. The
+Gateway prefers app-server's epoch-based exhausted-window reset. If that is
+unavailable, it parses the explicit `try again at` value in
+`CODEX_RESET_TIME_ZONE` (defaulting to the Gateway host zone), adds a five-minute
+safety margin, and persists the resulting UTC timestamp in the chat database. A
+Gateway background task dispatches `Continue` even when no dashboard browser is
+connected. Desktop and mobile render the scheduled time in the browser's local
+zone with its offset abbreviation.
+
+The job is keyed to the failed turn. A user message before the deadline cancels
+it, and the dispatcher refuses it if the conversation has changed. On Gateway
+restart, a claimed job is retried only when its failed source is still the most
+recent turn; if a continuation had already started, the newer recovered turn
+makes the old job stale. This keeps delivery at most once at the conversation
+boundary. `CODEX_AUTO_CONTINUE_GRACE_SECONDS` and
+`CODEX_AUTO_CONTINUE_POLL_SECONDS` tune the default 300-second margin and
+15-second poll interval.
+
 ## Plan model assignments
 
 For a structured plan task that declares `executor: worker`, `task_class: llm`,

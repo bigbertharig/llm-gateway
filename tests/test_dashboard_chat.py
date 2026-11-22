@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -32,6 +33,7 @@ def test_dashboard_hides_internal_workspace_routing_from_chat_sidebars():
     assert 'data-tab="upload"' in page and 'id="tab-upload"' in page
     assert "File located here:" in page and "Copy path" in page
     assert 'timeZoneName: "short"' in page
+    assert "Automatic Continue scheduled for" in page
     assert "Agent workspace" not in page
     assert 'id="chat-workspace" aria-hidden="true" tabindex="-1" hidden' in page
     assert '<h2>Availability</h2><div id="chat-rig-summary">' in page
@@ -119,6 +121,40 @@ def test_chat_store_persists_and_checks_concurrent_turns(tmp_path):
     assert store.path.stat().st_mode & 0o777 == 0o600
 
 
+def test_auto_continue_job_is_persistent_claimed_once_and_superseded_by_user(tmp_path):
+    store = ChatStore(tmp_path / "chat")
+    conversation = store.create("Codex", provider="codex", cwd=str(tmp_path), mode="coding")
+    first = store.begin_turn(conversation["id"], 0, "Codex", "research")
+    store.set_turn_state(first, "failed", "usage limit")
+    due = datetime(2026, 11, 22, 22, 27, tzinfo=timezone.utc)
+    store.schedule_auto_continue(conversation["id"], first, due, "mobile")
+    reopened = ChatStore(tmp_path / "chat")
+    assert reopened.get(conversation["id"])["auto_continue"] == {
+        "source_turn_id": first, "due_at": "2026-11-22T22:27:00+00:00", "surface": "mobile",
+        "state": "scheduled", "created_at": reopened.get(conversation["id"])["auto_continue"]["created_at"],
+        "updated_at": reopened.get(conversation["id"])["auto_continue"]["updated_at"], "error": None}
+    assert reopened.claim_due_auto_continuations(datetime(2026, 11, 22, 22, 26, tzinfo=timezone.utc)) == []
+    claimed = reopened.claim_due_auto_continuations(due)
+    assert [(row["source_turn_id"], row["surface"]) for row in claimed] == [(first, "mobile")]
+    assert reopened.claim_due_auto_continuations(due) == []
+    same_process = ChatStore(tmp_path / "chat")
+    assert same_process.get(conversation["id"])["auto_continue"]["state"] == "running"
+    with same_process._db() as db:
+        db.execute("UPDATE auto_continuations SET runner_pid=?,runner_identity=? WHERE source_turn_id=?",
+                   (99999999, "dead-process", first))
+    recovered = ChatStore(tmp_path / "chat")
+    assert recovered.get(conversation["id"])["auto_continue"]["state"] == "scheduled"
+    assert recovered.claim_due_auto_continuations(due)[0]["source_turn_id"] == first
+    recovered.finish_auto_continuation(first, "cancelled", "test")
+    assert reopened.get(conversation["id"])["auto_continue"] is None
+
+    second = reopened.begin_turn(conversation["id"], 0, "Codex", "manual retry")
+    reopened.set_turn_state(second, "failed", "usage limit")
+    reopened.schedule_auto_continue(conversation["id"], second, due, "local")
+    reopened.begin_turn(conversation["id"], 0, "Codex", "user sent something else")
+    assert reopened.get(conversation["id"])["auto_continue"] is None
+
+
 def test_chat_image_validation_accepts_supported_data_urls():
     image = {"name": "screen.png", "type": "image/png", "data_url": "data:image/png;base64,iVBORw0KGgo="}
     assert _image_attachments([image]) == [image]
@@ -164,6 +200,54 @@ def test_agent_status_reconciles_a_saved_turn_without_a_live_runner(tmp_path, mo
             assert "runner is no longer active" in opened.json()["last_turn"]["error"]
 
     asyncio.run(check())
+
+
+def test_codex_usage_limit_failure_schedules_visible_automatic_continue(tmp_path, monkeypatch):
+    from llm_gateway.dashboard import chat as chat_module
+    from llm_gateway.dashboard.codex_bridge import CodexUsageLimitError
+
+    monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
+    due = datetime(2026, 11, 24, 12, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr(chat_module, "usage_limit_resume_at",
+                        lambda error, **kwargs: due if isinstance(error, CodexUsageLimitError) else None)
+
+    class Codex:
+        workspaces = [tmp_path]
+        def workspace(self, value): return tmp_path
+        def research_workspace(self): return tmp_path
+        async def account(self): return {"connected": True}
+        async def turn(self, thread_id, prompt, cwd, on_thread, **kwargs):
+            await on_thread(thread_id or "thread-limited")
+            raise CodexUsageLimitError("You've hit your usage limit. Try again at 4:00 AM.",
+                                       {"codexErrorInfo": "usageLimitExceeded"})
+        def status(self, thread_id): return {"events": [], "approvals": []}
+
+    class Profiles:
+        def all(self): return {}
+    class Manager:
+        async def chat_availability(self):
+            return {"busy": False, "reason": "", "ready_profiles": []}
+
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda request, exc: JSONResponse({"error": str(exc)}, status_code=exc.status))
+    app.include_router(router(Manager(), Profiles(), None, Codex()))
+    with TestClient(app) as client:
+        conversation = client.post("/dashboard/api/chat/conversations",
+                                   json={"model": "Codex", "mode": "chat"}).json()
+        response = client.post(f"/dashboard/api/chat/conversations/{conversation['id']}/turn",
+                               json={"model": "Codex", "message": "Do the research"})
+        assert response.status_code == 200
+        deadline = time.monotonic() + 3
+        while True:
+            saved = client.get(f"/dashboard/api/chat/conversations/{conversation['id']}").json()
+            if saved["last_turn"]["state"] != "running":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        assert saved["last_turn"]["state"] == "failed"
+        assert saved["auto_continue"]["due_at"] == "2026-11-24T12:05:00+00:00"
+        assert saved["auto_continue"]["surface"] == "local"
 
 
 def test_failed_local_turn_keeps_attachment_retry_requirement(tmp_path):

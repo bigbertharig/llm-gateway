@@ -128,6 +128,7 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "showTools?'Hide tools':'Show tools'" in page
     assert "visibleToolRows=80" in page and "Show earlier activity" in page
     assert "toolRows.slice(0,hiddenCount)" in page and "visibleToolRows+=80" in page
+    assert "Automatic Continue scheduled for" in page and "timeZoneName:'short'" in page
     assert ".messages .older-tool" in page
     assert 'id="attachImage"' in page and 'id="attachFile"' in page
     assert 'id="uploadTab"' in page and 'id="uploadView"' in page

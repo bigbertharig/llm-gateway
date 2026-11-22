@@ -2229,6 +2229,13 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       renderChatActivity(activity, c.last_turn.activity, c.last_turn.state === "running"); box.append(activity);
     }
   }
+  if (c.auto_continue) {
+    const scheduled = document.createElement("div"); scheduled.className = "line";
+    scheduled.textContent = "Automatic Continue scheduled for " +
+      new Date(c.auto_continue.due_at).toLocaleString([], {timeZoneName: "short"}) +
+      ". Sending a new message first cancels it.";
+    box.append(scheduled);
+  }
   box.append(live);
   syncDesktopToolVisibility();
   applyDesktopToolPagination();

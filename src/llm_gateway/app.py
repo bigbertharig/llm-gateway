@@ -106,6 +106,7 @@ def create_app(
     rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
     manager: Manager | None = None
     codex_bridge = CodexBridge()
+    chat_background = None
     if s.manager_enabled:
         manager = Manager(rig, s.start_timeout_seconds, s.controller_id, mirror_path=s.mirror_path)
 
@@ -115,7 +116,11 @@ def create_app(
         timeout = httpx.Timeout(s.request_timeout_seconds, connect=10.0)
         app.state.http = httpx.AsyncClient(timeout=timeout, transport=upstream_transport)
         reconciler = asyncio.create_task(manager.run_reconciler()) if manager and run_reconciler else None
+        auto_continue = asyncio.create_task(chat_background()) if chat_background else None
         yield
+        if auto_continue:
+            auto_continue.cancel()
+            await asyncio.gather(auto_continue, return_exceptions=True)
         if reconciler:
             reconciler.cancel()
         await codex_bridge.close()
@@ -232,8 +237,10 @@ def create_app(
                                  headers={"Cache-Control": "no-cache"})
 
     if manager is not None:
-        app.include_router(chat_router(manager, profiles, forward, codex_bridge,
-                                       shared_inference=lambda pid, body: shared_completion(pid, body)))
+        chat_routes = chat_router(manager, profiles, forward, codex_bridge,
+                                  shared_inference=lambda pid, body: shared_completion(pid, body))
+        chat_background = chat_routes.auto_continue_loop
+        app.include_router(chat_routes)
 
     @app.get("/health")
     async def health():

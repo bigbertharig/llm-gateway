@@ -7,6 +7,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
@@ -29,7 +31,8 @@ from ..manager import models as model_library
 from ..shared_chat_contract import serving_approved
 from ..rig import RigUnavailable
 from ..profiles import Profiles
-from .codex_bridge import CodexBridge, CodexBridgeError, CodexTurnInterrupted
+from .codex_bridge import (CodexBridge, CodexBridgeError, CodexTurnInterrupted,
+                           CodexUsageLimitError)
 from .claude_api import ClaudeApi, ClaudeApiError
 from .coding_workspace import list_files, read_file, read_image, search_files, save_file
 from .transfers import selected_items
@@ -46,6 +49,62 @@ FILE_DATA_URL = re.compile(r"^data:([a-zA-Z0-9.+/-]+);base64,([A-Za-z0-9+/=]+)$"
 MAX_DASHBOARD_TOOL_STEPS = 64  # Emergency ceiling; normal turns stop on failed progress.
 MAX_CONSECUTIVE_TOOL_FAILURES = 3
 MAX_READS_PER_FILE = 8
+AUTO_CONTINUE_GRACE_SECONDS = 300
+log = logging.getLogger(__name__)
+_RESET_AT = re.compile(r"\btry again at\s+(.+?)[.]?$", re.IGNORECASE)
+_ORDINAL = re.compile(r"(?<=\d)(?:st|nd|rd|th)\b", re.IGNORECASE)
+
+
+def usage_limit_resume_at(error: Exception, *, rate_limits: dict | None = None,
+                          now: datetime | None = None, zone_name: str | None = None) -> datetime | None:
+    """Resolve app-server's explicit reset time to UTC, with a safety grace period."""
+    if not isinstance(error, CodexUsageLimitError):
+        return None
+    current_utc = now or datetime.now(timezone.utc)
+    exact_resets = []
+    for window in (rate_limits or {}).values():
+        if not isinstance(window, dict):
+            continue
+        used, reset = window.get("usedPercent"), window.get("resetsAt")
+        if (isinstance(used, (int, float)) and not isinstance(used, bool) and used >= 100
+                and isinstance(reset, (int, float)) and not isinstance(reset, bool)):
+            candidate = datetime.fromtimestamp(reset, timezone.utc)
+            if candidate > current_utc:
+                exact_resets.append(candidate)
+    try:
+        grace = int(os.getenv("CODEX_AUTO_CONTINUE_GRACE_SECONDS", str(AUTO_CONTINUE_GRACE_SECONDS)))
+    except ValueError:
+        grace = AUTO_CONTINUE_GRACE_SECONDS
+    if exact_resets:
+        return max(exact_resets) + timedelta(seconds=max(0, grace))
+    match = _RESET_AT.search(str(error))
+    if not match:
+        return None
+    try:
+        zone = ZoneInfo(zone_name or os.getenv("CODEX_RESET_TIME_ZONE",
+                                               os.getenv("TZ", "America/Denver")))
+    except ZoneInfoNotFoundError:
+        return None
+    current = current_utc.astimezone(zone)
+    value = _ORDINAL.sub("", match.group(1).strip())
+    parsed = None
+    for fmt in ("%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p"):
+        try:
+            parsed = datetime.strptime(value, fmt).replace(tzinfo=zone)
+            break
+        except ValueError:
+            pass
+    if parsed is None:
+        try:
+            clock = datetime.strptime(value, "%I:%M %p").time()
+        except ValueError:
+            return None
+        parsed = datetime.combine(current.date(), clock, zone)
+        if parsed <= current:
+            parsed += timedelta(days=1)
+    if parsed <= current:
+        return None
+    return (parsed + timedelta(seconds=max(0, grace))).astimezone(timezone.utc)
 
 
 def _model_tool_result(value: object, limit: int) -> str:
@@ -475,6 +534,17 @@ class ChatStore:
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS turns_conversation ON turns(conversation_id, created_at);
+                CREATE TABLE IF NOT EXISTS auto_continuations (
+                    source_turn_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                    due_at TEXT NOT NULL, surface TEXT NOT NULL CHECK(surface IN ('local','mobile')),
+                    state TEXT NOT NULL CHECK(state IN ('scheduled','running','dispatched','cancelled','failed')),
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT,
+                    runner_pid INTEGER, runner_identity TEXT,
+                    FOREIGN KEY(source_turn_id) REFERENCES turns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS auto_continuations_due
+                    ON auto_continuations(state, due_at);
             """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(conversations)")}
             for name in ("context_length", "last_prompt_tokens", "last_completion_tokens", "last_total_tokens"):
@@ -513,6 +583,19 @@ class ChatStore:
                 db.execute("ALTER TABLE turns ADD COLUMN runner_identity TEXT")
             if "steers" not in turn_columns:
                 db.execute("ALTER TABLE turns ADD COLUMN steers TEXT NOT NULL DEFAULT '[]'")
+            auto_columns = {row["name"] for row in db.execute("PRAGMA table_info(auto_continuations)")}
+            if "runner_pid" not in auto_columns:
+                db.execute("ALTER TABLE auto_continuations ADD COLUMN runner_pid INTEGER")
+            if "runner_identity" not in auto_columns:
+                db.execute("ALTER TABLE auto_continuations ADD COLUMN runner_identity TEXT")
+            for job in db.execute(
+                    "SELECT source_turn_id,runner_pid,runner_identity FROM auto_continuations "
+                    "WHERE state='running'").fetchall():
+                if (not isinstance(job["runner_pid"], int) or not job["runner_identity"]
+                        or _process_identity(job["runner_pid"]) != job["runner_identity"]):
+                    db.execute("UPDATE auto_continuations SET state='scheduled',updated_at=?,"
+                               "runner_pid=NULL,runner_identity=NULL WHERE source_turn_id=?",
+                               (_now(), job["source_turn_id"]))
             # Only the process that began a turn owns it. Opening the same history from a
             # preview or LAN process must not interrupt work in the live gateway.
             for turn in db.execute(
@@ -629,6 +712,10 @@ class ChatStore:
             recent_turns = [dict(turn) for turn in db.execute(
                 "SELECT id,prompt,state,created_at,updated_at,duration_ms,attachments,activity,error,steers FROM turns "
                 "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100", (cid,))][::-1]
+            auto_continue = db.execute(
+                "SELECT source_turn_id,due_at,surface,state,created_at,updated_at,error "
+                "FROM auto_continuations WHERE conversation_id=? AND state IN ('scheduled','running') "
+                "ORDER BY due_at DESC LIMIT 1", (cid,)).fetchone()
         for message in messages:
             message["attachments"] = json.loads(message["attachments"] or "[]")
             message["activity"] = json.loads(message["activity"] or "[]")
@@ -698,7 +785,54 @@ class ChatStore:
                                         and later["prompt"] == candidate["prompt"]
                                         for later in recent_turns[index + 1:])]
         return {**dict(row), "messages": messages, "historical_turns": historical_turns,
-                "last_turn": turn}
+                "last_turn": turn, "auto_continue": dict(auto_continue) if auto_continue else None}
+
+    def schedule_auto_continue(self, cid: str, source_turn_id: str, due_at: datetime,
+                               surface: str) -> dict:
+        if due_at.tzinfo is None or due_at.utcoffset() is None or surface not in ("local", "mobile"):
+            raise ValueError("auto continuation requires an aware time and valid surface")
+        due = due_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+        now = _now()
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            turn = db.execute(
+                "SELECT conversation_id,state FROM turns WHERE id=?", (source_turn_id,)).fetchone()
+            if turn is None or turn["conversation_id"] != cid or turn["state"] != "failed":
+                raise ValueError("only a failed source turn can schedule continuation")
+            db.execute(
+                "INSERT INTO auto_continuations "
+                "(source_turn_id,conversation_id,due_at,surface,state,created_at,updated_at) "
+                "VALUES (?,?,?,?, 'scheduled',?,?) "
+                "ON CONFLICT(source_turn_id) DO UPDATE SET due_at=excluded.due_at,"
+                "surface=excluded.surface,state='scheduled',updated_at=excluded.updated_at,error=NULL,"
+                "runner_pid=NULL,runner_identity=NULL",
+                (source_turn_id, cid, due, surface, now, now))
+        return {"source_turn_id": source_turn_id, "conversation_id": cid,
+                "due_at": due, "surface": surface, "state": "scheduled"}
+
+    def claim_due_auto_continuations(self, at: datetime | None = None) -> list[dict]:
+        cutoff = (at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = [dict(row) for row in db.execute(
+                "SELECT source_turn_id,conversation_id,due_at,surface FROM auto_continuations "
+                "WHERE state='scheduled' AND due_at<=? ORDER BY due_at", (cutoff,))]
+            for row in rows:
+                db.execute("UPDATE auto_continuations SET state='running',updated_at=?,"
+                           "runner_pid=?,runner_identity=? "
+                           "WHERE source_turn_id=? AND state='scheduled'",
+                           (_now(), self.runner_pid, self.runner_identity, row["source_turn_id"]))
+        return rows
+
+    def finish_auto_continuation(self, source_turn_id: str, state: str,
+                                 error: str | None = None) -> None:
+        if state not in ("dispatched", "cancelled", "failed"):
+            raise ValueError("invalid auto continuation state")
+        with self._db() as db:
+            db.execute("UPDATE auto_continuations SET state=?,updated_at=?,error=?,"
+                       "runner_pid=NULL,runner_identity=NULL "
+                       "WHERE source_turn_id=? AND state='running'",
+                       (state, _now(), error[:500] if error else None, source_turn_id))
 
     def agent_state(self, cid: str) -> dict:
         with self._db() as db:
@@ -729,6 +863,9 @@ class ChatStore:
                        "VALUES (?,?,?,?,?,?,?,?,?)",
                        (turn_id, cid, prompt, "running", now, now, json.dumps(attachments or []),
                         self.runner_pid, self.runner_identity))
+            db.execute("UPDATE auto_continuations SET state='cancelled',updated_at=?,"
+                       "error='Superseded by a newer turn' WHERE conversation_id=? AND state='scheduled'",
+                       (now, cid))
             title = prompt.strip().replace("\n", " ")[:64]
             db.execute("UPDATE conversations SET updated_at=?,title=CASE WHEN title='New conversation' "
                        "THEN ? ELSE title END WHERE id=?", (now, title, cid))
@@ -1440,6 +1577,146 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         return {"profile": model, "state": prepared["state"], "context_length": prepared.get("context_length"),
                 "gpu_ids": prepared.get("gpu_ids", [])}
 
+    async def start_codex_turn(cid: str, conversation: dict, prompt: str,
+                               images: list[dict], attachment_meta: list[dict],
+                               file_context: str, surface: str) -> dict:
+        if cid in active_codex:
+            raise ManagerError(409, "This Codex conversation already has a running turn")
+        active_codex.add(cid)
+        try:
+            turn_id = await asyncio.to_thread(
+                get_store(cid).begin_turn, cid, len(conversation["messages"]),
+                "Codex", prompt, images + attachment_meta)
+        except Exception:
+            active_codex.discard(cid)
+            raise
+
+        async def run_codex_turn():
+            started = time.monotonic()
+            checkpoint_task: asyncio.Task | None = None
+
+            async def save_thread(thread_id):
+                await asyncio.to_thread(get_store(cid).set_thread, cid, thread_id)
+
+            async def checkpoint_progress():
+                while True:
+                    await asyncio.sleep(1)
+                    current = await asyncio.to_thread(get_store(cid).get, cid)
+                    thread_id = current.get("thread_id")
+                    if not thread_id:
+                        continue
+                    try:
+                        events = codex.status(thread_id).get("events") or []
+                        await asyncio.to_thread(get_store(cid).set_turn_progress, turn_id, events)
+                    except Exception:
+                        pass
+
+            def saved_activity(thread_id: str | None) -> list[dict]:
+                if not thread_id:
+                    return []
+                try:
+                    return codex.status(thread_id).get("events") or []
+                except Exception:
+                    return []
+
+            try:
+                checkpoint_task = asyncio.create_task(checkpoint_progress())
+                thread_id, answer = await codex.turn(
+                    conversation["thread_id"], prompt + ("\n\n" + file_context if file_context else ""),
+                    conversation["cwd"], save_thread, images=images,
+                    model=conversation["codex_model"], effort=conversation["codex_effort"],
+                    reviewer=conversation["codex_reviewer"], mode=conversation["mode"],
+                    access=conversation["codex_access"], conversation_id=cid,
+                    **({"surface": surface} if surface == "mobile" else {}))
+                async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
+                    status = codex.status(thread_id)
+                    context = status.get("context") or {}
+                    await asyncio.to_thread(
+                        get_store(cid).append_exchange, cid, len(conversation["messages"]),
+                        "Codex", prompt, answer, turn_id=turn_id,
+                        attachments=images + attachment_meta, activity=status["events"],
+                        context_length=context.get("context_window", conversation.get("context_length")),
+                        total_tokens=context.get("used_tokens", conversation.get("last_total_tokens")),
+                        duration_ms=round((time.monotonic() - started) * 1000))
+            except asyncio.CancelledError:
+                current = await asyncio.to_thread(get_store(cid).get, cid)
+                thread_id = current.get("thread_id")
+                events = saved_activity(thread_id)
+                async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
+                    await asyncio.to_thread(
+                        get_store(cid).set_turn_state, turn_id, "interrupted",
+                        "Gateway stopped while Codex was working; the saved Codex thread may contain additional work.",
+                        events, round((time.monotonic() - started) * 1000))
+                raise
+            except CodexTurnInterrupted as exc:
+                thread_id = (await asyncio.to_thread(get_store(cid).get, cid))["thread_id"]
+                activity = saved_activity(thread_id)
+                async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
+                    await asyncio.to_thread(
+                        get_store(cid).set_turn_state, turn_id, "interrupted",
+                        str(exc) or "Stopped by user", activity,
+                        round((time.monotonic() - started) * 1000))
+            except Exception as exc:
+                thread_id = (await asyncio.to_thread(get_store(cid).get, cid))["thread_id"]
+                activity = saved_activity(thread_id)
+                async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
+                    await asyncio.to_thread(
+                        get_store(cid).set_turn_state, turn_id, "failed", str(exc), activity,
+                        round((time.monotonic() - started) * 1000))
+                    due_at = usage_limit_resume_at(exc, rate_limits=getattr(codex, "rate_limits", None))
+                    if due_at is not None:
+                        try:
+                            await asyncio.to_thread(
+                                get_store(cid).schedule_auto_continue, cid, turn_id, due_at, surface)
+                        except Exception:
+                            log.exception("could not persist automatic continuation for %s", cid)
+            finally:
+                if checkpoint_task is not None:
+                    checkpoint_task.cancel()
+                    await asyncio.gather(checkpoint_task, return_exceptions=True)
+                active_codex.discard(cid)
+
+        task = asyncio.create_task(run_codex_turn())
+        codex_tasks.add(task)
+        task.add_done_callback(codex_tasks.discard)
+        return {"turn_id": turn_id, "conversation": await asyncio.to_thread(get_store(cid).get, cid)}
+
+    async def auto_continue_once(job: dict) -> None:
+        store_for_chat = get_store(job["conversation_id"])
+        try:
+            conversation = await asyncio.to_thread(store_for_chat.get, job["conversation_id"])
+            last = conversation.get("last_turn") or {}
+            if (conversation.get("provider") != "codex"
+                    or last.get("id") != job["source_turn_id"] or last.get("state") != "failed"
+                    or job["conversation_id"] in active_codex):
+                await asyncio.to_thread(store_for_chat.finish_auto_continuation,
+                                        job["source_turn_id"], "cancelled",
+                                        "Conversation changed before automatic continuation")
+                return
+            await start_codex_turn(job["conversation_id"], conversation, "Continue", [], [], "",
+                                   job["surface"])
+            await asyncio.to_thread(store_for_chat.finish_auto_continuation,
+                                    job["source_turn_id"], "dispatched")
+        except Exception as exc:
+            await asyncio.to_thread(store_for_chat.finish_auto_continuation,
+                                    job["source_turn_id"], "failed", str(exc))
+
+    async def auto_continue_loop() -> None:
+        while True:
+            try:
+                jobs = await asyncio.to_thread(get_store().claim_due_auto_continuations)
+                for job in jobs:
+                    await auto_continue_once(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("automatic Codex continuation scheduler failed")
+            await asyncio.sleep(float(os.getenv("CODEX_AUTO_CONTINUE_POLL_SECONDS", "15")))
+
+    # The application lifespan owns this coroutine so persisted jobs survive
+    # browser disconnects and Gateway restarts.
+    r.auto_continue_loop = auto_continue_loop  # type: ignore[attr-defined]
+
     async def turn_impl(cid: str, request: Request, on_delta=None, on_progress=None):
         body = await _json_body(request)
         surface = getattr(request.state, "surface", "local")
@@ -1488,91 +1765,13 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             if not isinstance(prompt, str) or len(prompt) > MAX_MESSAGE or (not prompt.strip() and not images and not files):
                 raise ManagerError(400, f"provide a message of up to {MAX_MESSAGE} characters or an attachment")
             prompt = prompt.strip() or "Please analyze the attached file."
-            if cid in active_codex:
-                raise ManagerError(409, "This Codex conversation already has a running turn")
-            active_codex.add(cid)
-            try:
-                if files:
-                    files = await asyncio.to_thread(
-                        _materialize_codex_attachments, raw_files, files, conversation, cid, codex)
-                    file_context = _file_context(files)
-                    attachment_meta = _attachment_metadata(files)
-                turn_id = await asyncio.to_thread(
-                    get_store(cid).begin_turn, cid, len(conversation["messages"]),
-                    "Codex", prompt, images + attachment_meta)
-            except Exception:
-                active_codex.discard(cid)
-                raise
-            async def run_codex_turn():
-                started = time.monotonic()
-                checkpoint_task: asyncio.Task | None = None
-                async def save_thread(thread_id):
-                    await asyncio.to_thread(get_store(cid).set_thread, cid, thread_id)
-                async def checkpoint_progress():
-                    while True:
-                        await asyncio.sleep(1)
-                        current = await asyncio.to_thread(get_store(cid).get, cid)
-                        thread_id = current.get("thread_id")
-                        if not thread_id:
-                            continue
-                        try:
-                            events = codex.status(thread_id).get("events") or []
-                            await asyncio.to_thread(get_store(cid).set_turn_progress, turn_id, events)
-                        except Exception:
-                            # Checkpointing is recovery metadata; the Codex turn remains authoritative.
-                            pass
-                try:
-                    checkpoint_task = asyncio.create_task(checkpoint_progress())
-                    thread_id, answer = await codex.turn(conversation["thread_id"], prompt + ("\n\n" + file_context if files else ""),
-                                                 conversation["cwd"], save_thread, images=images,
-                                                 model=conversation["codex_model"],
-                                                 effort=conversation["codex_effort"],
-                                                 reviewer=conversation["codex_reviewer"],
-                                                 mode=conversation["mode"], access=conversation["codex_access"],
-                                                 conversation_id=cid,
-                                                 **({"surface": surface} if surface == "mobile" else {}))
-                    async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
-                        status = codex.status(thread_id)
-                        context = status.get("context") or {}
-                        await asyncio.to_thread(get_store(cid).append_exchange, cid, len(conversation["messages"]),
-                                                "Codex", prompt, answer, turn_id=turn_id,
-                                                attachments=images + attachment_meta,
-                                                activity=status["events"],
-                                                context_length=context.get("context_window", conversation.get("context_length")),
-                                                total_tokens=context.get("used_tokens", conversation.get("last_total_tokens")),
-                                                duration_ms=round((time.monotonic() - started) * 1000))
-                except asyncio.CancelledError:
-                    current = await asyncio.to_thread(get_store(cid).get, cid)
-                    thread_id = current.get("thread_id")
-                    events = codex.status(thread_id).get("events") or [] if thread_id else []
-                    async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
-                        await asyncio.to_thread(
-                            get_store(cid).set_turn_state, turn_id, "interrupted",
-                            "Gateway stopped while Codex was working; the saved Codex thread may contain additional work.",
-                            events, round((time.monotonic() - started) * 1000))
-                    raise
-                except CodexTurnInterrupted as exc:
-                    thread_id = (await asyncio.to_thread(get_store(cid).get, cid))["thread_id"]
-                    activity = codex.status(thread_id)["events"] if thread_id else []
-                    async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
-                        await asyncio.to_thread(
-                            get_store(cid).set_turn_state, turn_id, "interrupted",
-                            str(exc) or "Stopped by user", activity,
-                            round((time.monotonic() - started) * 1000))
-                except Exception as exc:
-                    thread_id = (await asyncio.to_thread(get_store(cid).get, cid))["thread_id"]
-                    activity = codex.status(thread_id)["events"] if thread_id else []
-                    async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
-                        await asyncio.to_thread(get_store(cid).set_turn_state, turn_id, "failed", str(exc), activity)
-                finally:
-                    if checkpoint_task is not None:
-                        checkpoint_task.cancel()
-                        await asyncio.gather(checkpoint_task, return_exceptions=True)
-                    active_codex.discard(cid)
-            task = asyncio.create_task(run_codex_turn())
-            codex_tasks.add(task)
-            task.add_done_callback(codex_tasks.discard)
-            return {"turn_id": turn_id, "conversation": await asyncio.to_thread(get_store(cid).get, cid)}
+            if files:
+                files = await asyncio.to_thread(
+                    _materialize_codex_attachments, raw_files, files, conversation, cid, codex)
+                file_context = _file_context(files)
+                attachment_meta = _attachment_metadata(files)
+            return await start_codex_turn(
+                cid, conversation, prompt, images, attachment_meta, file_context, surface)
         if images:
             raise ManagerError(400, "image attachments are currently available only for Codex conversations")
         choices = offered()
