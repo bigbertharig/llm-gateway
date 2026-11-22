@@ -155,7 +155,10 @@ function renderMessages(current,liveEvents=[],forceBottom=false){
     const key=event.item?.id?`${event.item.id}:${event.method||''}:${event.item.status||''}`:`${event.method||event.type}:${event.received_at||''}:${index}`;
     if(seen.has(key))continue;seen.add(key);const value=activityText(event);if(value)records.push({kind:event.item?.type==='agentMessage'?'assistant':'activity',at:event.received_at||'',order:100+index,text:value.slice(0,1200),event});
   }for(const [index,steer] of steers.entries())records.push({kind:'user',at:steer.created_at||'',order:1000+index,text:steer.content||''});records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)||a.order-b.order);for(const record of records){if(record.kind==='activity')addTool(record.text,record.event);else add(record.text,`message ${record.kind}`)}};
-  let pendingUsers=[];for(const item of current.messages||[]){if(item.role==='user'){pendingUsers.push(item);continue}if(pendingUsers.length)addMessage(pendingUsers.shift());timeline([...(item.reused_activity||[]),...(item.activity||[])],pendingUsers);pendingUsers=[];addMessage(item)}for(const item of pendingUsers)addMessage(item);
+  const historical=[...(current.historical_turns||[])];
+  const addHistorical=turn=>{add(turn.prompt||'(request not completed)','message user');attachments(turn.attachments);timeline(turn.activity||[],turn.steers||[]);add(`${turn.state}: ${turn.error||'No final answer was saved. Continue this conversation to resume.'}`,'notice error')};
+  const flushHistorical=before=>{while(historical.length&&(!before||(Date.parse(historical[0].created_at)||0)<=(Date.parse(before)||0)))addHistorical(historical.shift())};
+  let pendingUsers=[];for(const item of current.messages||[]){if(item.role==='user')flushHistorical(item.created_at);if(item.role==='user'){pendingUsers.push(item);continue}if(pendingUsers.length)addMessage(pendingUsers.shift());timeline([...(item.reused_activity||[]),...(item.activity||[])],pendingUsers);pendingUsers=[];addMessage(item)}for(const item of pendingUsers)addMessage(item);flushHistorical();
   const turn=current.last_turn;
   if(turn&&turn.state!=='completed'){
     add(turn.prompt||'(request in progress)','message user');

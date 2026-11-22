@@ -2110,7 +2110,32 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   $("#chat-approvals").hidden = true;
   $("#chat-approvals").dataset.signature = "";
   box.replaceChildren();
+  const historicalTurns = [...(c.historical_turns || [])];
+  const renderHistoricalTurn = (turn) => {
+    const prompt = document.createElement("div"); prompt.className = "chat-message user";
+    const meta = document.createElement("div"); meta.className = "meta";
+    meta.textContent = turn.state + " request · " + turn.created_at;
+    const body = document.createElement("div"); body.className = "chat-body";
+    renderChatMarkdown(body, turn.prompt || "(request not completed)"); prompt.append(meta, body);
+    if ((turn.attachments || []).length) { const attachments = document.createElement("div");
+      attachments.className = "chat-attachments"; renderChatImages(attachments, turn.attachments); prompt.append(attachments); }
+    box.append(prompt);
+    for (const steer of turn.steers || []) { const guidance = document.createElement("div");
+      guidance.className = "chat-message user"; const guidanceBody = document.createElement("div");
+      guidanceBody.className = "chat-body"; renderChatMarkdown(guidanceBody, "Steered while working:\n" + steer.content);
+      guidance.append(guidanceBody); box.append(guidance); }
+    if ((turn.activity || []).length) { const activity = document.createElement("details");
+      activity.className = "chat-activity"; renderChatActivity(activity, turn.activity, false); box.append(activity); }
+    const notice = document.createElement("div"); notice.className = "line bad"; notice.setAttribute("role", "alert");
+    notice.textContent = turn.state + ": " + (turn.error || "No final answer was saved. Continue this conversation to resume.");
+    box.append(notice);
+  };
+  const flushHistoricalTurns = (before) => {
+    while (historicalTurns.length && (!before || (Date.parse(historicalTurns[0].created_at) || 0) <= (Date.parse(before) || 0)))
+      renderHistoricalTurn(historicalTurns.shift());
+  };
   for (const m of c.messages) {
+    if (m.role === "user") flushHistoricalTurns(m.created_at);
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
     const meta = document.createElement("div");
@@ -2151,6 +2176,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       box.append(item);
     }
   }
+  flushHistoricalTurns();
   if (c.last_turn && c.last_turn.state !== "completed") {
     const notice = document.createElement("div");
     notice.className = "line" + (["failed", "interrupted"].includes(c.last_turn.state) ? " bad" : "");

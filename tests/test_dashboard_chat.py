@@ -196,6 +196,24 @@ def test_completed_retry_shows_prior_tool_history_and_timing(tmp_path):
     assert answer["timing"]["attempts"] == 2
     assert answer["timing"]["measured_tool_ms"] == 2900
     assert answer["timing"]["answer_ms"] == 1500
+    assert store.get(cid)["historical_turns"] == []
+
+
+def test_failed_request_stays_in_history_after_different_followup_completes(tmp_path):
+    store = ChatStore(tmp_path / "chat")
+    cid = store.create("Codex", mode="chat")["id"]
+    failed_id = store.begin_turn(cid, 0, "Codex", "Research harness design")
+    activity = [{"type": "tool", "name": "read_document", "result": "partial"}]
+    store.set_turn_state(failed_id, "failed", "usage limit reached", activity, 5000)
+    continue_id = store.begin_turn(cid, 0, "Codex", "continue")
+    saved = store.append_exchange(cid, 0, "Codex", "continue", "Research saved to Transfer.",
+                                  turn_id=continue_id)
+
+    assert saved["last_turn"]["state"] == "completed"
+    assert [turn["prompt"] for turn in saved["historical_turns"]] == ["Research harness design"]
+    assert saved["historical_turns"][0]["error"] == "usage limit reached"
+    assert saved["historical_turns"][0]["activity"] == activity
+    assert saved["historical_turns"][0]["attachments"] == []
 
 
 def test_explicit_page_url_detection():

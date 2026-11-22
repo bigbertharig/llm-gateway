@@ -627,12 +627,13 @@ class ChatStore:
             last_turn = db.execute("SELECT id,prompt,state,created_at,updated_at,attachments,activity,error,duration_ms,steers FROM turns "
                                    "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (cid,)).fetchone()
             recent_turns = [dict(turn) for turn in db.execute(
-                "SELECT id,prompt,state,created_at,updated_at,duration_ms,activity,steers FROM turns "
+                "SELECT id,prompt,state,created_at,updated_at,duration_ms,attachments,activity,error,steers FROM turns "
                 "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100", (cid,))][::-1]
         for message in messages:
             message["attachments"] = json.loads(message["attachments"] or "[]")
             message["activity"] = json.loads(message["activity"] or "[]")
         for turn_row in recent_turns:
+            turn_row["attachments"] = json.loads(turn_row["attachments"] or "[]")
             turn_row["activity"] = json.loads(turn_row["activity"] or "[]")
             turn_row["steers"] = json.loads(turn_row["steers"] or "[]")
         previous_answer_at = ""
@@ -686,7 +687,18 @@ class ChatStore:
             turn["attachments"] = json.loads(turn["attachments"] or "[]")
             turn["activity"] = json.loads(turn["activity"] or "[]")
             turn["steers"] = json.loads(turn["steers"] or "[]")
-        return {**dict(row), "messages": messages, "last_turn": turn}
+        # A failed request is not a message exchange, so it otherwise vanishes as
+        # soon as a later turn completes. Keep unresolved attempts in transcript
+        # history; a same-prompt completed retry is already represented by the
+        # saved exchange and its reused tool history above.
+        historical_turns = [candidate for index, candidate in enumerate(recent_turns)
+                            if candidate["state"] in ("failed", "interrupted")
+                            and (turn is None or candidate["id"] != turn["id"])
+                            and not any(later["state"] == "completed"
+                                        and later["prompt"] == candidate["prompt"]
+                                        for later in recent_turns[index + 1:])]
+        return {**dict(row), "messages": messages, "historical_turns": historical_turns,
+                "last_turn": turn}
 
     def agent_state(self, cid: str) -> dict:
         with self._db() as db:
