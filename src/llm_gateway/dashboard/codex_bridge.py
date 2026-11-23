@@ -43,6 +43,12 @@ class CodexTurnInterrupted(CodexBridgeError):
     pass
 
 
+class CodexAppServerExited(CodexBridgeError):
+    """The supervised stdio child vanished while a turn was active."""
+
+    pass
+
+
 _ACTIVE_TURN_MISMATCH = re.compile(
     r"expected active turn id\s+[`'\"]?([0-9a-f-]+)[`'\"]?\s+"
     r"but found\s+[`'\"]?([0-9a-f-]+)[`'\"]?",
@@ -109,6 +115,7 @@ class CodexBridge:
         self.next_id = 0
         self.write_lock = asyncio.Lock()
         self.start_lock = asyncio.Lock()
+        self._closing = False
         self.workspaces = [Path(p).resolve() for p in os.getenv(
             "CODEX_CHAT_WORKSPACES", "/home/bryan/llm-gateway:/home/bryan/llm_orchestration:/home/bryan/llm-harness"
         ).split(":") if p]
@@ -199,6 +206,7 @@ class CodexBridge:
         async with self.start_lock:
             if self.process and self.process.returncode is None:
                 return
+            self._closing = False
             try:
                 research_root = self.research_workspace()
                 # A named profile is required by current app-server for restricted reads.
@@ -221,13 +229,15 @@ class CodexBridge:
             await self._write({"method": "initialized", "params": {}})
 
     async def close(self) -> None:
-        if self.process and self.process.returncode is None:
-            self.process.terminate()
+        self._closing = True
+        process = self.process
+        if process and process.returncode is None:
+            process.terminate()
             try:
-                await asyncio.wait_for(self.process.wait(), 5)
+                await asyncio.wait_for(process.wait(), 5)
             except asyncio.TimeoutError:
-                self.process.kill()
-                await self.process.wait()
+                process.kill()
+                await process.wait()
         if self.reader_task:
             self.reader_task.cancel()
         if self.stderr_task:
@@ -271,8 +281,9 @@ class CodexBridge:
 
     async def _read(self) -> None:
         assert self.process and self.process.stdout
+        process = self.process
         try:
-            while line := await self.process.stdout.readline():
+            while line := await process.stdout.readline():
                 try:
                     message = json.loads(line)
                 except ValueError:
@@ -350,6 +361,21 @@ class CodexBridge:
                         if subscriber.empty():
                             subscriber.put_nowait(method)
         finally:
+            if getattr(process, "returncode", 0) is None and hasattr(process, "wait"):
+                try:
+                    await asyncio.wait_for(process.wait(), 0.5)
+                except asyncio.TimeoutError:
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), 1)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.wait()
+            if self.process is process:
+                self.process = None
+            if not self._closing:
+                log.error("Codex app-server exited unexpectedly with status %s",
+                          getattr(process, "returncode", "unknown"))
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(CodexBridgeError("Codex app-server exited"))
@@ -576,7 +602,7 @@ class CodexBridge:
                     raise CodexBridgeError("Codex turn had no activity for one hour") from exc
                 method, params = event.get("method"), event.get("params") or {}
                 if method == "bridge/exited":
-                    raise CodexBridgeError("Codex app-server exited during the turn")
+                    raise CodexAppServerExited("Codex app-server exited during the turn")
                 # A concurrent steer may discover that app-server has already
                 # advanced this thread to another turn. Follow the corrected
                 # ID so its final answer is not silently discarded.

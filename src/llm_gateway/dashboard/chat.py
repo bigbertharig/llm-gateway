@@ -31,7 +31,7 @@ from ..manager import models as model_library
 from ..shared_chat_contract import serving_approved
 from ..rig import RigUnavailable
 from ..profiles import Profiles
-from .codex_bridge import (CodexBridge, CodexBridgeError, CodexTurnInterrupted,
+from .codex_bridge import (CodexAppServerExited, CodexBridge, CodexBridgeError, CodexTurnInterrupted,
                            CodexUsageLimitError)
 from .claude_api import ClaudeApi, ClaudeApiError
 from .coding_workspace import list_files, read_file, read_image, search_files, save_file
@@ -487,6 +487,13 @@ SHARED_PROFILES = {
         "description": "Shared-weight 35B: one main chat plus attached GPU chats."},
 }
 
+APP_SERVER_RECOVERY_PROMPT = (
+    "Continue after the Codex app-server process exited unexpectedly. Resume from the durable "
+    "thread state and finish the user's current request. Do not repeat an external mutation, "
+    "destructive action, or other non-idempotent tool call whose outcome is uncertain; inspect "
+    "or reconcile its state first. Briefly report anything that cannot be recovered safely."
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -548,6 +555,7 @@ class ChatStore:
                     state TEXT NOT NULL CHECK(state IN ('scheduled','running','dispatched','cancelled','failed')),
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT,
                     runner_pid INTEGER, runner_identity TEXT,
+                    kind TEXT NOT NULL DEFAULT 'usage_limit',
                     FOREIGN KEY(source_turn_id) REFERENCES turns(id) ON DELETE CASCADE,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
@@ -591,11 +599,15 @@ class ChatStore:
                 db.execute("ALTER TABLE turns ADD COLUMN runner_identity TEXT")
             if "steers" not in turn_columns:
                 db.execute("ALTER TABLE turns ADD COLUMN steers TEXT NOT NULL DEFAULT '[]'")
+            if "surface" not in turn_columns:
+                db.execute("ALTER TABLE turns ADD COLUMN surface TEXT")
             auto_columns = {row["name"] for row in db.execute("PRAGMA table_info(auto_continuations)")}
             if "runner_pid" not in auto_columns:
                 db.execute("ALTER TABLE auto_continuations ADD COLUMN runner_pid INTEGER")
             if "runner_identity" not in auto_columns:
                 db.execute("ALTER TABLE auto_continuations ADD COLUMN runner_identity TEXT")
+            if "kind" not in auto_columns:
+                db.execute("ALTER TABLE auto_continuations ADD COLUMN kind TEXT NOT NULL DEFAULT 'usage_limit'")
             for job in db.execute(
                     "SELECT source_turn_id,runner_pid,runner_identity FROM auto_continuations "
                     "WHERE state='running'").fetchall():
@@ -607,15 +619,29 @@ class ChatStore:
             # Only the process that began a turn owns it. Opening the same history from a
             # preview or LAN process must not interrupt work in the live gateway.
             for turn in db.execute(
-                    "SELECT id,runner_pid,runner_identity FROM turns WHERE state='running'").fetchall():
+                    "SELECT turns.id,turns.conversation_id,turns.prompt,turns.surface,"
+                    "turns.runner_pid,turns.runner_identity,conversations.provider "
+                    "FROM turns JOIN conversations ON conversations.id=turns.conversation_id "
+                    "WHERE turns.state='running'").fetchall():
                 pid, identity = turn["runner_pid"], turn["runner_identity"]
                 if (not isinstance(pid, int) or not identity
                         or _process_identity(pid) != identity):
+                    now = _now()
                     db.execute(
                         "UPDATE turns SET state='interrupted',updated_at=?,error=? "
                         "WHERE id=? AND state='running'",
-                        (_now(), "The gateway process that owned this turn stopped before saving a final answer.",
+                        (now, "The gateway process that owned this turn stopped before saving a final answer.",
                          turn["id"]))
+                    # Only new turns have a trustworthy surface. Never guess a
+                    # desktop surface for an older mobile turn, and never loop
+                    # if the single recovery attempt itself was interrupted.
+                    if (turn["provider"] == "codex" and turn["surface"] in ("local", "mobile")
+                            and turn["prompt"] != APP_SERVER_RECOVERY_PROMPT):
+                        db.execute(
+                            "INSERT OR IGNORE INTO auto_continuations "
+                            "(source_turn_id,conversation_id,due_at,surface,state,created_at,updated_at,kind) "
+                            "VALUES (?,?,?,?, 'scheduled',?,?,'app_server_exit')",
+                            (turn["id"], turn["conversation_id"], now, turn["surface"], now, now))
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -721,7 +747,7 @@ class ChatStore:
                 "SELECT id,prompt,state,created_at,updated_at,duration_ms,attachments,activity,error,steers FROM turns "
                 "WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100", (cid,))][::-1]
             auto_continue = db.execute(
-                "SELECT source_turn_id,due_at,surface,state,created_at,updated_at,error "
+                "SELECT source_turn_id,due_at,surface,state,created_at,updated_at,error,kind "
                 "FROM auto_continuations WHERE conversation_id=? AND state IN ('scheduled','running') "
                 "ORDER BY due_at DESC LIMIT 1", (cid,)).fetchone()
             conversation_events = [dict(event) for event in db.execute(
@@ -832,34 +858,37 @@ class ChatStore:
             return True
 
     def schedule_auto_continue(self, cid: str, source_turn_id: str, due_at: datetime,
-                               surface: str) -> dict:
+                               surface: str, kind: str = "usage_limit") -> dict:
         if due_at.tzinfo is None or due_at.utcoffset() is None or surface not in ("local", "mobile"):
             raise ValueError("auto continuation requires an aware time and valid surface")
+        if kind not in ("usage_limit", "app_server_exit"):
+            raise ValueError("invalid automatic continuation kind")
         due = due_at.astimezone(timezone.utc).isoformat(timespec="seconds")
         now = _now()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             turn = db.execute(
                 "SELECT conversation_id,state FROM turns WHERE id=?", (source_turn_id,)).fetchone()
-            if turn is None or turn["conversation_id"] != cid or turn["state"] != "failed":
-                raise ValueError("only a failed source turn can schedule continuation")
+            allowed_states = ("failed",) if kind == "usage_limit" else ("failed", "interrupted")
+            if turn is None or turn["conversation_id"] != cid or turn["state"] not in allowed_states:
+                raise ValueError("source turn cannot schedule this continuation")
             db.execute(
                 "INSERT INTO auto_continuations "
-                "(source_turn_id,conversation_id,due_at,surface,state,created_at,updated_at) "
-                "VALUES (?,?,?,?, 'scheduled',?,?) "
+                "(source_turn_id,conversation_id,due_at,surface,state,created_at,updated_at,kind) "
+                "VALUES (?,?,?,?, 'scheduled',?,?,?) "
                 "ON CONFLICT(source_turn_id) DO UPDATE SET due_at=excluded.due_at,"
                 "surface=excluded.surface,state='scheduled',updated_at=excluded.updated_at,error=NULL,"
-                "runner_pid=NULL,runner_identity=NULL",
-                (source_turn_id, cid, due, surface, now, now))
+                "runner_pid=NULL,runner_identity=NULL,kind=excluded.kind",
+                (source_turn_id, cid, due, surface, now, now, kind))
         return {"source_turn_id": source_turn_id, "conversation_id": cid,
-                "due_at": due, "surface": surface, "state": "scheduled"}
+                "due_at": due, "surface": surface, "state": "scheduled", "kind": kind}
 
     def claim_due_auto_continuations(self, at: datetime | None = None) -> list[dict]:
         cutoff = (at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = [dict(row) for row in db.execute(
-                "SELECT source_turn_id,conversation_id,due_at,surface FROM auto_continuations "
+                "SELECT source_turn_id,conversation_id,due_at,surface,kind FROM auto_continuations "
                 "WHERE state='scheduled' AND due_at<=? ORDER BY due_at", (cutoff,))]
             for row in rows:
                 db.execute("UPDATE auto_continuations SET state='running',updated_at=?,"
@@ -888,7 +917,9 @@ class ChatStore:
         return {**dict(row), "last_turn": dict(turn) if turn else None}
 
     def begin_turn(self, cid: str, expected_count: int, model: str, prompt: str,
-                   attachments: list[dict] | None = None) -> str:
+                   attachments: list[dict] | None = None, surface: str | None = None) -> str:
+        if surface is not None and surface not in ("local", "mobile"):
+            raise ValueError("invalid turn surface")
         turn_id, now = uuid.uuid4().hex, _now()
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -903,10 +934,10 @@ class ChatStore:
             if db.execute("SELECT 1 FROM turns WHERE conversation_id=? AND state='running'", (cid,)).fetchone():
                 raise ManagerError(409, "This conversation already has a running turn")
             db.execute("INSERT INTO turns "
-                       "(id,conversation_id,prompt,state,created_at,updated_at,attachments,runner_pid,runner_identity) "
-                       "VALUES (?,?,?,?,?,?,?,?,?)",
+                       "(id,conversation_id,prompt,state,created_at,updated_at,attachments,runner_pid,runner_identity,surface) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?)",
                        (turn_id, cid, prompt, "running", now, now, json.dumps(attachments or []),
-                        self.runner_pid, self.runner_identity))
+                        self.runner_pid, self.runner_identity, surface))
             db.execute("UPDATE auto_continuations SET state='cancelled',updated_at=?,"
                        "error='Superseded by a newer turn' WHERE conversation_id=? AND state='scheduled'",
                        (now, cid))
@@ -1099,6 +1130,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     codex_tasks: set[asyncio.Task] = set()
     local_tasks: set[asyncio.Task] = set()
     shared_setup = asyncio.Lock()
+    auto_continue_wake = asyncio.Event()
 
     def persist_compaction(thread_id: str, created_at: str) -> None:
         if get_store().add_thread_event(thread_id, "compacted", created_at):
@@ -1638,7 +1670,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         try:
             turn_id = await asyncio.to_thread(
                 get_store(cid).begin_turn, cid, len(conversation["messages"]),
-                "Codex", prompt, images + attachment_meta)
+                "Codex", prompt, images + attachment_meta, surface)
         except Exception:
             active_codex.discard(cid)
             raise
@@ -1723,6 +1755,15 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                                 get_store(cid).schedule_auto_continue, cid, turn_id, due_at, surface)
                         except Exception:
                             log.exception("could not persist automatic continuation for %s", cid)
+                    elif (isinstance(exc, CodexAppServerExited)
+                          and prompt != APP_SERVER_RECOVERY_PROMPT):
+                        try:
+                            await asyncio.to_thread(
+                                get_store(cid).schedule_auto_continue, cid, turn_id,
+                                datetime.now(timezone.utc), surface, "app_server_exit")
+                            auto_continue_wake.set()
+                        except Exception:
+                            log.exception("could not persist app-server recovery for %s", cid)
             finally:
                 if checkpoint_task is not None:
                     checkpoint_task.cancel()
@@ -1739,14 +1780,17 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         try:
             conversation = await asyncio.to_thread(store_for_chat.get, job["conversation_id"])
             last = conversation.get("last_turn") or {}
+            expected_states = ("failed", "interrupted") if job.get("kind") == "app_server_exit" else ("failed",)
             if (conversation.get("provider") != "codex"
-                    or last.get("id") != job["source_turn_id"] or last.get("state") != "failed"
+                    or last.get("id") != job["source_turn_id"] or last.get("state") not in expected_states
                     or job["conversation_id"] in active_codex):
                 await asyncio.to_thread(store_for_chat.finish_auto_continuation,
                                         job["source_turn_id"], "cancelled",
                                         "Conversation changed before automatic continuation")
                 return
-            await start_codex_turn(job["conversation_id"], conversation, "Continue", [], [], "",
+            prompt = (APP_SERVER_RECOVERY_PROMPT
+                      if job.get("kind") == "app_server_exit" else "Continue")
+            await start_codex_turn(job["conversation_id"], conversation, prompt, [], [], "",
                                    job["surface"])
             await asyncio.to_thread(store_for_chat.finish_auto_continuation,
                                     job["source_turn_id"], "dispatched")
@@ -1764,7 +1808,12 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 raise
             except Exception:
                 log.exception("automatic Codex continuation scheduler failed")
-            await asyncio.sleep(float(os.getenv("CODEX_AUTO_CONTINUE_POLL_SECONDS", "15")))
+            try:
+                await asyncio.wait_for(auto_continue_wake.wait(),
+                                       float(os.getenv("CODEX_AUTO_CONTINUE_POLL_SECONDS", "15")))
+                auto_continue_wake.clear()
+            except asyncio.TimeoutError:
+                pass
 
     # The application lifespan owns this coroutine so persisted jobs survive
     # browser disconnects and Gateway restarts.

@@ -482,6 +482,7 @@ def test_status_subscriber_is_signalled_by_live_activity():
                                                    "text": "Still working."}}}) + "\n").encode())
         reader.feed_eof()
         await bridge._read()
+        assert bridge.process is None
         assert await queue.get() == "item/completed"
         bridge.unsubscribe("thread-1", queue)
         assert "thread-1" not in bridge.status_subscribers

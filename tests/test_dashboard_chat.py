@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from llm_gateway.dashboard.chat import (ChatStore, _collect_stream, _compact_tool_history,
+from llm_gateway.dashboard.chat import (APP_SERVER_RECOVERY_PROMPT, ChatStore, _collect_stream, _compact_tool_history,
                                         _model_tool_result, _image_attachments, _file_context,
                                         _materialize_codex_attachments, _remove_codex_attachments,
                                         context_history, shared_history_handoff, requested_page_url,
@@ -132,7 +132,8 @@ def test_auto_continue_job_is_persistent_claimed_once_and_superseded_by_user(tmp
     assert reopened.get(conversation["id"])["auto_continue"] == {
         "source_turn_id": first, "due_at": "2026-11-22T22:27:00+00:00", "surface": "mobile",
         "state": "scheduled", "created_at": reopened.get(conversation["id"])["auto_continue"]["created_at"],
-        "updated_at": reopened.get(conversation["id"])["auto_continue"]["updated_at"], "error": None}
+        "updated_at": reopened.get(conversation["id"])["auto_continue"]["updated_at"], "error": None,
+        "kind": "usage_limit"}
     assert reopened.claim_due_auto_continuations(datetime(2026, 11, 22, 22, 26, tzinfo=timezone.utc)) == []
     claimed = reopened.claim_due_auto_continuations(due)
     assert [(row["source_turn_id"], row["surface"]) for row in claimed] == [(first, "mobile")]
@@ -248,6 +249,50 @@ def test_codex_usage_limit_failure_schedules_visible_automatic_continue(tmp_path
         assert saved["last_turn"]["state"] == "failed"
         assert saved["auto_continue"]["due_at"] == "2026-11-24T12:05:00+00:00"
         assert saved["auto_continue"]["surface"] == "local"
+
+
+def test_codex_app_server_exit_schedules_immediate_safe_recovery(tmp_path, monkeypatch):
+    from llm_gateway.dashboard.codex_bridge import CodexAppServerExited
+    monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
+
+    class Codex:
+        workspaces = [tmp_path]
+        rate_limits = {}
+        def workspace(self, value): return tmp_path
+        def research_workspace(self): return tmp_path
+        async def account(self): return {"connected": True}
+        async def turn(self, thread_id, prompt, cwd, on_thread, **kwargs):
+            await on_thread(thread_id or "thread-crashed")
+            raise CodexAppServerExited("Codex app-server exited during the turn")
+        def status(self, thread_id): return {"events": [], "approvals": []}
+
+    class Profiles:
+        def all(self): return {}
+    class Manager:
+        async def chat_availability(self):
+            return {"busy": False, "reason": "", "ready_profiles": []}
+
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda request, exc: JSONResponse({"error": str(exc)}, status_code=exc.status))
+    app.include_router(router(Manager(), Profiles(), None, Codex()))
+    with TestClient(app) as client:
+        conversation = client.post("/dashboard/api/chat/conversations",
+                                   json={"model": "Codex", "mode": "chat"}).json()
+        response = client.post(f"/dashboard/api/chat/conversations/{conversation['id']}/turn",
+                               json={"model": "Codex", "message": "Keep working"})
+        assert response.status_code == 200
+        deadline = time.monotonic() + 3
+        while True:
+            saved = client.get(f"/dashboard/api/chat/conversations/{conversation['id']}").json()
+            if saved["last_turn"]["state"] != "running":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        assert saved["last_turn"]["state"] == "failed"
+        assert saved["auto_continue"]["kind"] == "app_server_exit"
+        assert saved["auto_continue"]["surface"] == "local"
+        assert datetime.fromisoformat(saved["auto_continue"]["due_at"]) <= datetime.now(timezone.utc)
 
 
 def test_failed_local_turn_keeps_attachment_retry_requirement(tmp_path):
@@ -653,6 +698,33 @@ def test_codex_prompt_is_not_interrupted_by_a_second_gateway_process(tmp_path):
     assert saved["last_turn"]["state"] == "completed"
     assert [m["content"] for m in saved["messages"]] == ["follow up", "done"]
     assert reopened.get(cid)["last_turn"]["id"] != pending
+
+
+def test_dead_gateway_codex_turn_schedules_one_surface_preserving_recovery(tmp_path):
+    root = tmp_path / "chat"
+    store = ChatStore(root)
+    cid = store.create("Codex", "codex", str(tmp_path))["id"]
+    pending = store.begin_turn(cid, 0, "Codex", "finish the task", surface="mobile")
+    with store._db() as db:
+        db.execute("UPDATE turns SET runner_pid=?,runner_identity=? WHERE id=?",
+                   (999_999_999, "dead-process", pending))
+    recovered = ChatStore(root)
+    job = recovered.get(cid)["auto_continue"]
+    assert job["kind"] == "app_server_exit"
+    assert job["surface"] == "mobile"
+    assert job["state"] == "scheduled"
+    assert recovered.get(cid)["last_turn"]["state"] == "interrupted"
+
+    # A failed recovery is a circuit breaker, not an infinite retry loop.
+    recovered.finish_auto_continuation(
+        recovered.claim_due_auto_continuations()[0]["source_turn_id"], "dispatched")
+    retry = recovered.begin_turn(cid, 0, "Codex", APP_SERVER_RECOVERY_PROMPT, surface="mobile")
+    with recovered._db() as db:
+        db.execute("UPDATE turns SET runner_pid=?,runner_identity=? WHERE id=?",
+                   (999_999_999, "dead-process", retry))
+    reopened = ChatStore(root)
+    assert reopened.get(cid)["last_turn"]["state"] == "interrupted"
+    assert reopened.get(cid)["auto_continue"] is None
 
 
 def test_all_saved_conversations_remain_in_sidebar_list(tmp_path):
