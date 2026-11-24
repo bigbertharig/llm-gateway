@@ -1,6 +1,6 @@
 {
   "_comment": "Imported by tools/generate_profiles.py from the benchmarking model library. Do not edit; the gateway reads models only from here. Re-run the importer to take in new lessons.",
-  "source_sha256": "94da02206aa0a431b53680cedfcf62e15e18259688c0cdc8d303e18fcc16645b",
+  "source_sha256": "d205830d0fe1e8f1929872ef0cca0777f6a374a909e96ad56b0c32e733ddc419",
   "registry_updated": "2026-11-06",
   "roles_updated": "2026-10-15",
   "image": "llama-runtime:b11669",
@@ -2624,15 +2624,16 @@
       }
     },
     "qwen3.8:27b": {
-      "status": "active",
+      "status": "candidate",
+      "in_testing": true,
       "loading_stage": {
-        "state": "ready_for_benchmark",
+        "state": "in_progress",
         "runtime": "llama.cpp/b11669",
         "recipe": "GPU 0, full GPU offload, one slot",
         "default_context": 16384,
         "context_limit": 190720,
-        "context_basis": "Single-GPU capacity receipt qwen3_8_27b__compact passed at the measured 190720-position memory limit; the separate three-GPU trained-ceiling run reached 262144.",
-        "limits": "The routine single-GPU profile is capped at 190720. Thinking-on reasoning can be roughly 3x slower than thinking-off and may exhaust the 8192-token output budget."
+        "context_basis": "Provisional legacy evidence only: single-GPU receipt qwen3_8_27b__compact reached 190720 positions and the three-GPU trained-ceiling run reached 262144. Refresh with the current Phase 2 and Phase 8 runners before promotion.",
+        "limits": "Modern min/max loads, 10%/90% recall, speed, and practical chat-capacity checks are in progress. Thinking-on reasoning can be roughly 3x slower than thinking-off and may exhaust the 8192-token output budget."
       },
       "aliases": [],
       "gguf_path": "/mnt/shared/models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf",
@@ -2642,6 +2643,7 @@
       "strata": null,
       "profiles": {
         "default": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "single_gpu",
@@ -2679,6 +2681,7 @@
           }
         },
         "interactive": {
+          "in_testing": true,
           "schedule": {
             "tier": 3,
             "placement": "single_gpu",
@@ -4939,73 +4942,6 @@
         }
       },
       {
-        "model": "qwen3.8:27b",
-        "status": "active",
-        "placement": "single_gpu",
-        "tier": 3,
-        "profiles": [
-          "default",
-          "interactive"
-        ],
-        "roles": [],
-        "source_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf",
-        "superseded_by": null,
-        "scores": {
-          "bbh": {
-            "score": 0.9103703703703704,
-            "run_class": "validated",
-            "n": 1350,
-            "at": "2026-10-17",
-            "unreadable": 53
-          },
-          "gsm8k": {
-            "score": 0.94,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-17",
-            "unreadable": null
-          },
-          "drop": {
-            "score": 0.96,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-17",
-            "unreadable": 0
-          },
-          "ifeval": {
-            "score": 0.92,
-            "run_class": "validated",
-            "n": 50,
-            "at": "2026-10-17",
-            "unreadable": null
-          },
-          "mmlu-pro": {
-            "score": 0.7785714285714286,
-            "run_class": "smoke",
-            "n": 140,
-            "at": "2026-10-17",
-            "unreadable": 6
-          },
-          "humaneval+": {
-            "score": 0.9024390243902439,
-            "run_class": "full",
-            "n": 164,
-            "at": "2026-10-16",
-            "unreadable": null
-          },
-          "mbpp+": {
-            "score": 0.7751322751322751,
-            "run_class": "full",
-            "n": 378,
-            "at": "2026-10-16",
-            "unreadable": null
-          }
-        },
-        "pipeline": 0.846,
-        "pipeline_tests": 6,
-        "runtime": null
-      },
-      {
         "model": "smollm3:3b",
         "status": "active",
         "placement": "single_gpu",
@@ -5445,6 +5381,73 @@
         "scores": {},
         "pipeline": null,
         "pipeline_tests": 0,
+        "runtime": null
+      },
+      {
+        "model": "qwen3.8:27b",
+        "status": "candidate",
+        "placement": "single_gpu",
+        "tier": 3,
+        "profiles": [
+          "default",
+          "interactive"
+        ],
+        "roles": [],
+        "source_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "superseded_by": null,
+        "scores": {
+          "bbh": {
+            "score": 0.9103703703703704,
+            "run_class": "validated",
+            "n": 1350,
+            "at": "2026-10-17",
+            "unreadable": 53
+          },
+          "gsm8k": {
+            "score": 0.94,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-10-17",
+            "unreadable": null
+          },
+          "drop": {
+            "score": 0.96,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-10-17",
+            "unreadable": 0
+          },
+          "ifeval": {
+            "score": 0.92,
+            "run_class": "validated",
+            "n": 50,
+            "at": "2026-10-17",
+            "unreadable": null
+          },
+          "mmlu-pro": {
+            "score": 0.7785714285714286,
+            "run_class": "smoke",
+            "n": 140,
+            "at": "2026-10-17",
+            "unreadable": 6
+          },
+          "humaneval+": {
+            "score": 0.9024390243902439,
+            "run_class": "full",
+            "n": 164,
+            "at": "2026-10-16",
+            "unreadable": null
+          },
+          "mbpp+": {
+            "score": 0.7751322751322751,
+            "run_class": "full",
+            "n": 378,
+            "at": "2026-10-16",
+            "unreadable": null
+          }
+        },
+        "pipeline": 0.846,
+        "pipeline_tests": 6,
         "runtime": null
       },
       {
