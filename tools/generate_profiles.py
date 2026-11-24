@@ -75,7 +75,7 @@ OFFER: list[dict[str, Any]] = [
      "description": "Alternate 14B parent route for harness tool comparisons."},
     {"id": "harness-74b", "model": "nemotron-3.5-bolt:74b-a9b", "profile": "default", "default": False,
      "description": "74B parent route for harness size comparisons."},
-    {"id": "harness-qwen38-27b", "model": "qwen3.8:27b", "profile": "default", "default": False,
+    {"id": "harness-qwen38-27b", "model": "qwen3.8:27b", "profile": "interactive", "default": False,
      "use": "worker", "description": "Experimental dense 27B route for bounded Harness trials."},
 ]
 
