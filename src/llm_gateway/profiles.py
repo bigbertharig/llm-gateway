@@ -16,7 +16,8 @@ class Profiles:
     gguf_path and launch settings, so the gateway never imports the benchmarking repo.
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, enabled: bool = True):
+        self.enabled = enabled
         self.path = path
         self._lock = threading.Lock()
         self._stamp: float | None = None
@@ -29,6 +30,8 @@ class Profiles:
         return {str(p["id"]): p for p in items}
 
     def all(self) -> dict[str, dict]:
+        if not self.enabled:
+            return {}
         with self._lock:
             try:
                 stamp = self.path.stat().st_mtime

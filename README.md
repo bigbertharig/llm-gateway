@@ -171,10 +171,6 @@ load continues on the rig; the next request finds it ready.
 | `tools/generate_profiles.py` | the offer -> `remote_profiles.json` |
 | `tools/model_check.py` | exercise each profile the way a harness would: load time, context, thinking leak, streaming, tool calls, tokenize, prompt speed, overflow error. Reports in `results/` (gitignored) |
 | `tools/role_model.py` | resolve a benchmarking role to a model |
-| `tools/rig_stress.py` | power and thermal stress test: one model per card, ramp, hold, optional reload spikes (`--spikes`), factory limits until the next boot (`--uncap`); per-card temperature, fan, power, clock by GPU UUID, `--compare` against an earlier run |
-| `tools/power_cap_sweep.py` | speed and power of one card across a series of power caps (decode and prompt tok/s, J per token) |
-| `tools/split_sweep.py`, `tools/pcie_split_test.py` | split-load speed across cards and PCIe link settings |
-| `tools/multi_rig_tests.py`, `tools/dual_rig_bench.sh` | the tests in `docs/multi_rig_tests.md` |
 
 What these tools have found, where their results are kept and which question each answers: benchmarking `RIG_PERFORMANCE.md`; the measurements: benchmarking `results/RUNTIME_REFERENCE.md`.
 
@@ -188,10 +184,9 @@ What these tools have found, where their results are kept and which question eac
 
 ## Implementation status
 
-The following cleanup is Planned until its tests and receipts are recorded:
-
-- Separate cloud dashboard/conversation startup from Rig Manager.
-- Configure optional tool providers through installed entry points or services.
-- Consume the Harness run/event/receipt interface without sharing mutable stores.
-- Move hardware-fit decisions and comparative experiments to their owning products.
-- Test cloud coding with fake providers and no sibling checkout or hardware service.
+Implemented and tested: cloud-only dashboard/conversations, optional installed MCP tools,
+Gateway-owned authenticated restart receipts, the optional Harness run client and versioned
+rig CLI transport. The full registered suites pass 299 tests. Coding conversation regression
+runs without a Rig Manager; native provider sessions keep their own session transport.
+Runtime producer deployment and live accounts/GPU trials are separate from these fake-provider
+checks. See [standalone operations](docs/STANDALONE.md).

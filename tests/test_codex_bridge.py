@@ -1,3 +1,4 @@
+from pathlib import Path
 """Codex app-server request compatibility without an account or GPU."""
 
 import asyncio
@@ -364,7 +365,7 @@ def test_saved_codex_conversation_gets_narrow_reset_tool(tmp_path, monkeypatch):
         workspace=tmp_path, mode="coding", conversation_id="abc123")
     server = config["mcp_servers"]["gateway_reset"]
     assert server["args"] == [str(script), "--conversation-id", "abc123",
-                              "--data-root", str(history)]
+                              "--gateway", "http://127.0.0.1:8080"]
     assert server["enabled_tools"] == ["restart_gateway_and_resume"]
 
 
@@ -688,3 +689,11 @@ def test_dashboard_codex_model_effort_and_reviewer_settings(tmp_path, monkeypatc
                                       "reviewer": "auto_review", "access": "workspace"})
     assert response.status_code == 200, response.text
     assert response.json()["codex_access"] == "workspace"
+
+
+import pytest
+@pytest.fixture(autouse=True)
+def configured_optional_tools(monkeypatch):
+    root = Path(__file__).parent / 'fixtures'
+    monkeypatch.setenv('CODEX_WORKSPACE_GIT_MCP_SCRIPT', str(root / 'catalog_mcp.py'))
+    monkeypatch.setenv('GITHUB_PUBLIC_MCP_SCRIPT', str(root / 'github_catalog_mcp.py'))

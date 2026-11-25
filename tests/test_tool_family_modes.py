@@ -43,3 +43,11 @@ def test_public_github_tools_are_shared_chat_tools():
         'inspect_github_repo', 'list_github_directory', 'find_github_files', 'read_github_file',
         'get_github_commit', 'compare_github_revisions', 'get_github_file_history'}
     assert set(dispatch) == {row['function']['name'] for row in advertised}
+
+
+import pytest
+@pytest.fixture(autouse=True)
+def configured_optional_tools(monkeypatch):
+    root = Path(__file__).parent / 'fixtures'
+    monkeypatch.setenv('CODEX_WORKSPACE_GIT_MCP_SCRIPT', str(root / 'catalog_mcp.py'))
+    monkeypatch.setenv('GITHUB_PUBLIC_MCP_SCRIPT', str(root / 'github_catalog_mcp.py'))

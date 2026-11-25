@@ -45,6 +45,12 @@ def _unavailable(exc: Exception) -> JSONResponse:
                         status_code=503)
 
 
+def require_manager(manager):
+    if manager is None:
+        raise ManagerError(503, 'Local runtime integration is unavailable')
+    return manager
+
+
 def router(manager: Manager) -> APIRouter:
     r = APIRouter(prefix="/dashboard")
 
@@ -54,18 +60,19 @@ def router(manager: Manager) -> APIRouter:
 
     @r.get("/", response_class=HTMLResponse)
     async def page():
-        return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"),
+        return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8").replace(
+                                "<body>", '<body data-runtime-enabled="' + ("true" if manager is not None else "false") + '">'),
                             headers={"Cache-Control": "no-store"})
 
     # ---------------------------------------------------------------- rig (the manager)
 
     @r.get("/api/rig")
     async def rig():
-        status = await manager.status()
+        status = await require_manager(manager).status()
         # Shared-weight runtimes are owned by orchestration and do not appear in
         # the manager's ordinary profile list. Include their read-only status.
         try:
-            service = (await manager.rig.status()).get("shared_kv_service")
+            service = (await require_manager(manager).rig.status()).get("shared_kv_service")
         except Exception:
             service = None
         return {**status, "shared_model_service": service}
@@ -73,21 +80,21 @@ def router(manager: Manager) -> APIRouter:
     @r.post("/api/rig/kill")
     async def kill(request: Request):
         b = await _body(request)
-        return await manager.kill(_gpus(b.get("gpu_ids")), str(b.get("reason") or "dashboard"))
+        return await require_manager(manager).kill(_gpus(b.get("gpu_ids")), str(b.get("reason") or "dashboard"))
 
     @r.post("/api/rig/unload")
     async def unload(request: Request):
         b = await _body(request)
         if not b.get("profile"):
             raise ManagerError(400, "give a profile")
-        return await manager.unload_profile(str(b["profile"]))
+        return await require_manager(manager).unload_profile(str(b["profile"]))
 
     @r.post("/api/rig/unclaim")
     async def unclaim(request: Request):
         b = await _body(request)
         if not b.get("name"):
             raise ManagerError(400, "give a claim name")
-        return {"released": await manager.remove_claim(str(b["name"]))}
+        return {"released": await require_manager(manager).remove_claim(str(b["name"]))}
 
     @r.post("/api/rig/run/{action}")
     async def run_action(action: str, request: Request):
@@ -97,11 +104,11 @@ def router(manager: Manager) -> APIRouter:
             raise ManagerError(400, "give a run id")
         run = str(b["run"])
         if action == "recover":
-            return await manager.recover_run(run)
+            return await require_manager(manager).recover_run(run)
         if action == "dismiss":
-            return await manager.dismiss_run(run, "dashboard")
+            return await require_manager(manager).dismiss_run(run, "dashboard")
         if action == "stop":
-            return await manager.stop_run(run, "dashboard")
+            return await require_manager(manager).stop_run(run, "dashboard")
         raise ManagerError(404, f"no run action {action}")
 
     @r.post("/api/rig/cancel")
@@ -109,7 +116,7 @@ def router(manager: Manager) -> APIRouter:
         b = await _body(request)
         if not b.get("item"):
             raise ManagerError(400, "give a plan item id")
-        return {"item": await manager.cancel_item(str(b["item"]))}
+        return {"item": await require_manager(manager).cancel_item(str(b["item"]))}
 
     @r.post("/api/rig/load")
     async def load(request: Request):
@@ -117,7 +124,7 @@ def router(manager: Manager) -> APIRouter:
         if not b.get("model"):
             raise ManagerError(400, "give a model")
         gpu_ids = _gpus(b["gpu_ids"]) if b.get("gpu_ids") else None
-        return await manager.load_model(
+        return await require_manager(manager).load_model(
             str(b["model"]), gpu_ids=gpu_ids, cards=int(b["cards"]) if b.get("cards") and not gpu_ids else None,
             use=str(b.get("use") or "chat"), extra_args=shlex.split(str(b.get("args") or "")),
             wait_s=float(b.get("wait_s") or 0), force=bool(b.get("force")))

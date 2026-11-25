@@ -1,0 +1,10 @@
+{
+  "schema": "harness-control/1",
+  "request_id": "fixture-run-1",
+  "prompt": "Read the configured project",
+  "agent_type": "coding",
+  "tool_profile": "none",
+  "max_tokens": 128,
+  "timeout_s": 30,
+  "max_tool_calls": 1
+}

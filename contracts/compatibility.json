@@ -1,0 +1,15 @@
+{
+  "schema": "product-compatibility/1",
+  "standalone_requires_other_products": false,
+  "provides": [
+    "gateway-capabilities/1",
+    "gateway-reset/1",
+    "OpenAI-compatible chat completions"
+  ],
+  "optional_consumes": [
+    "harness-control/1",
+    "harness-event/v1",
+    "rig-cli/1",
+    "stdio MCP"
+  ]
+}

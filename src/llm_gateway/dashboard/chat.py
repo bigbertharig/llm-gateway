@@ -1120,6 +1120,12 @@ def _image_attachments(value: object) -> list[dict[str, str]]:
     return result
 
 
+def require_manager(manager):
+    if manager is None:
+        raise ManagerError(503, 'Local runtime integration is unavailable')
+    return manager
+
+
 def router(manager: Manager, profiles: Profiles, forward_inference,
            codex: CodexBridge | None = None, shared_inference=None,
            cloud_settings: CloudSettings | None = None,
@@ -1180,6 +1186,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         return conversation.get("provider") in ("codex", "codex_api")
 
     def offered() -> dict[str, dict]:
+        if manager is None:
+            return {}
         published = profiles.all()
         choices = {pid: spec for pid, spec in published.items()
                 if spec.get("dashboard_chat", "chatbot" in spec.get("good_for", []))
@@ -1202,12 +1210,12 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         shared = SHARED_PROFILES[profile_id]
         model_id = shared["model"]
         async with shared_setup:
-            service = (await manager.rig.status()).get("shared_kv_service") or {}
+            service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
             if service.get("status") != "ready" or service.get("model") != model_id:
                 if service.get("status") == "ready":
                     raise ManagerError(409, "Another shared model is loaded; switch rig models explicitly")
-                await manager.rig.shared_kv("start", model=model_id)
-                service = (await manager.rig.status()).get("shared_kv_service") or {}
+                await require_manager(manager).rig.shared_kv("start", model=model_id)
+                service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
             if service.get("status") != "ready" or service.get("model") != model_id:
                 raise ManagerError(503, "Shared chat did not become ready")
             instance = service.get("instance_id")
@@ -1228,7 +1236,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 else:
                     chat_id = "dash-" + cid[:24]
                     try:
-                        await manager.rig.shared_kv("attach", model=model_id, chat_id=chat_id)
+                        await require_manager(manager).rig.shared_kv("attach", model=model_id, chat_id=chat_id)
                     except RigUnavailable as exc:
                         if ("no eligible free GPU" in str(exc) or "no free GPU" in str(exc)
                                 or "no admissible placement" in str(exc)):
@@ -1237,7 +1245,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                                 f"The {len(chats)} existing live chat(s) can continue; "
                                 "park an idle attached chat or free a suitable GPU before retrying.") from exc
                         raise
-                    service = (await manager.rig.status()).get("shared_kv_service") or {}
+                    service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
                     chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
                 await asyncio.to_thread(get_store(cid).bind_shared, cid, chat_id, instance)
             row = chats.get(chat_id)
@@ -1252,7 +1260,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.get("/options")
     async def options():
         try:
-            availability = await manager.chat_availability()
+            availability = await require_manager(manager).chat_availability()
             rig_available = True
         except (ManagerError, RigUnavailable):
             availability, rig_available = {"busy": True, "reason": "rig unavailable", "ready_profiles": []}, False
@@ -1263,7 +1271,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         rig_status = {}
         if rig_available and getattr(manager, "rig", None) is not None:
             try:
-                rig_status = await manager.rig.status()
+                rig_status = await require_manager(manager).rig.status()
                 shared = rig_status.get("shared_kv_service") or {}
                 shared_profile = next((pid for pid, spec in SHARED_PROFILES.items()
                                        if spec["model"] == shared.get("model") and pid in choices), None)
@@ -1575,10 +1583,10 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 raise ManagerError(502, str(exc)) from exc
         shared_spec = SHARED_PROFILES.get(conversation["model"])
         if shared_spec and (conversation.get("shared_chat_id") or "").startswith("dash-"):
-            service = (await manager.rig.status()).get("shared_kv_service") or {}
+            service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
             if (service.get("model") == shared_spec["model"]
                     and service.get("instance_id") == conversation.get("shared_instance_id")):
-                await manager.rig.shared_kv("detach", model=shared_spec["model"],
+                await require_manager(manager).rig.shared_kv("detach", model=shared_spec["model"],
                                             chat_id=conversation["shared_chat_id"])
         if is_codex(conversation):
             await asyncio.to_thread(_remove_codex_attachments, conversation, cid,
@@ -1610,10 +1618,10 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                     raise ManagerError(409, "This runtime chat cannot be parked from the dashboard")
                 if body.get("expected_instance_id") != instance or body.get("expected_chat_id") != chat_id:
                     raise ManagerError(409, "Chat placement changed; refresh before parking")
-                service = (await manager.rig.status()).get("shared_kv_service") or {}
+                service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
                 if service.get("model") == spec["model"] and service.get("instance_id") == instance:
                     if any(row.get("chat_id") == chat_id for row in service.get("chats", [])):
-                        await manager.rig.shared_kv("detach", model=spec["model"], chat_id=chat_id)
+                        await require_manager(manager).rig.shared_kv("detach", model=spec["model"], chat_id=chat_id)
                 await asyncio.to_thread(get_store(cid).unbind_shared, cid, chat_id, instance)
                 return {"state": "cold", "conversation_id": cid}
         finally:
@@ -1636,10 +1644,10 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         if current["model"] == model:
             return current
         reset_loaded = body.get("reset_loaded") is True
-        service = (await manager.rig.status()).get("shared_kv_service") or {}
+        service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
         loaded_model = service.get("model") if service.get("status") == "ready" else None
         target_model = SHARED_PROFILES.get(model, {}).get("model")
-        availability = await manager.chat_availability()
+        availability = await require_manager(manager).chat_availability()
         other_profiles = [pid for pid in availability.get("ready_profiles", []) if pid != model]
         if other_profiles and (not reset_loaded or any(pid not in choices for pid in other_profiles)):
             raise ManagerError(409, "Other manager profiles are loaded; reset listed chat models explicitly")
@@ -1652,17 +1660,17 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 raise ManagerError(409, "The loaded shared model is not a dashboard chat model")
             if active_local or active_codex:
                 raise ManagerError(409, "Wait for all active local chat turns before resetting the loaded model")
-            await manager.rig.shared_kv("stop", model=loaded_model)
+            await require_manager(manager).rig.shared_kv("stop", model=loaded_model)
         elif (current["model"] in SHARED_PROFILES and
               (current.get("shared_chat_id") or "").startswith("dash-")):
-            service = (await manager.rig.status()).get("shared_kv_service") or {}
+            service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
             current_model = SHARED_PROFILES[current["model"]]["model"]
             if (service.get("model") == current_model
                     and service.get("instance_id") == current.get("shared_instance_id")):
-                await manager.rig.shared_kv("detach", model=current_model,
+                await require_manager(manager).rig.shared_kv("detach", model=current_model,
                                             chat_id=current["shared_chat_id"])
         for profile_id in other_profiles:
-            await manager.unload_profile(profile_id)
+            await require_manager(manager).unload_profile(profile_id)
         return await asyncio.to_thread(get_store(cid).switch_model, cid, expected, model)
 
     @r.post("/loaded-model/reset")
@@ -1674,9 +1682,9 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(400, "choose a listed target and provide expected loaded models")
         if active_local or active_codex:
             raise ManagerError(409, "Wait for active chat turns before resetting loaded models")
-        availability = await manager.chat_availability()
+        availability = await require_manager(manager).chat_availability()
         profiles = availability.get("ready_profiles", [])
-        service = (await manager.rig.status()).get("shared_kv_service") or {}
+        service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
         shared_profile = next((pid for pid, spec in SHARED_PROFILES.items()
                                if spec["model"] == service.get("model") and service.get("status") == "ready"), None)
         loaded = [*profiles, *([shared_profile] if shared_profile else [])]
@@ -1687,9 +1695,9 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         if target in loaded:
             return {"reset": [], "target": target}
         if shared_profile:
-            await manager.rig.shared_kv("stop", model=SHARED_PROFILES[shared_profile]["model"])
+            await require_manager(manager).rig.shared_kv("stop", model=SHARED_PROFILES[shared_profile]["model"])
         for profile_id in profiles:
-            await manager.unload_profile(profile_id)
+            await require_manager(manager).unload_profile(profile_id)
         return {"reset": loaded, "target": target}
 
     @r.post("/loaded-model/unload")
@@ -1707,9 +1715,9 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         # with delegated local children.
         if active_local:
             raise ManagerError(409, "Wait for active local chat turns before unloading a model")
-        availability = await manager.chat_availability()
+        availability = await require_manager(manager).chat_availability()
         profiles = availability.get("ready_profiles", [])
-        service = (await manager.rig.status()).get("shared_kv_service") or {}
+        service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
         shared_profile = next((pid for pid, spec in SHARED_PROFILES.items()
                                if spec["model"] == service.get("model")
                                and service.get("status") == "ready"), None)
@@ -1721,9 +1729,9 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         if target == shared_profile:
             if not expected_instance or expected_instance != service.get("instance_id"):
                 raise ManagerError(409, "Shared model instance changed; refresh before unloading")
-            await manager.rig.shared_kv("stop", model=service["model"])
+            await require_manager(manager).rig.shared_kv("stop", model=service["model"])
         else:
-            await manager.unload_profile(target)
+            await require_manager(manager).unload_profile(target)
         return {"unloaded": target, "remaining": [item for item in loaded if item != target]}
 
     @r.post("/conversations/{cid}/prepare")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 from pathlib import Path
 from . import dashboard_mcp_servers
@@ -55,11 +56,15 @@ def available(parent_route: str, allowed_servers: frozenset[str] | None = None,
         schemas = {tool["name"]: tool for tool in live.get("tools", [])}
         for row in entry["tools"]:
             name = row["name"]
-            if row["approval"] != "automatic":
+            if not dashboard_mcp_servers.tool_enabled(server, row):
                 continue
             if name not in schemas or name in dispatch:
                 raise DashboardToolError(f"Catalog and MCP tools disagree on {server}.{name}")
             schema = schemas[name]
+            digest = hashlib.sha256(json.dumps(schema.get('inputSchema'),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            expected = row.get('input_schema_sha256')
+            if not expected or expected != digest:
+                raise DashboardToolError(f'Reviewed and live MCP schemas disagree on {server}.{name}; refresh the reviewed catalog')
             advertised.append({"type": "function", "function": {
                 "name": name, "description": schema.get("description", ""),
                 "parameters": schema["inputSchema"]}})

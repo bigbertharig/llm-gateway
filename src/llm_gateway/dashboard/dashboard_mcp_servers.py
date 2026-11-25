@@ -11,8 +11,18 @@ from urllib.parse import urlsplit
 TOOL_CATALOG = Path(__file__).with_name("tool_catalog.json")
 def harness_tool_script(override: str, filename: str) -> Path:
     """Resolve a Harness server without binding Gateway to one user's home."""
-    root = Path(os.getenv("HARNESS_TOOLS_DIR") or (Path.home() / "llm-harness" / "tools"))
-    return Path(os.getenv(override) or (root / filename)).resolve()
+    configured = os.getenv(override)
+    if configured:
+        return Path(configured).resolve()
+    root = os.getenv('HARNESS_TOOLS_DIR')
+    if root:
+        return (Path(root) / filename).resolve()
+    try:
+        from llm_harness.tools import script
+        return script(filename.removesuffix('.py'))
+    except (ImportError, ValueError):
+        return None
+
 
 
 MODE_SERVERS = {
@@ -95,16 +105,22 @@ def launch(server: str, parent_route: str | None = None, *, cloud: bool = False,
         if os.getenv("GOOGLE_WORKSPACE_ENABLED") != "1":
             return None
         script = harness_tool_script("GOOGLE_WORKSPACE_MCP_SCRIPT", "google_workspace_mcp.py")
+        if script is None:
+            return None
         if not script.is_file():
             raise ValueError("Google Workspace MCP script is unavailable")
         return [sys.executable, str(script)]
     if server == "github_public":
         script = harness_tool_script("GITHUB_PUBLIC_MCP_SCRIPT", "github_public_mcp.py")
+        if script is None:
+            return None
         if not script.is_file():
             raise ValueError("Public GitHub MCP script is unavailable")
         return [sys.executable, str(script)]
     if server in ("local_control", "private_control"):
         script = harness_tool_script("CODEX_HOST_CONTROL_MCP_SCRIPT", "host_control_mcp.py")
+        if script is None:
+            return None
         if not script.is_file():
             raise ValueError("Host control MCP script is unavailable")
         return [sys.executable, str(script), "--scope",
@@ -116,9 +132,10 @@ def launch(server: str, parent_route: str | None = None, *, cloud: bool = False,
         if not configured and os.getenv("CODEX_LOCAL_AGENT_MCP_SCRIPT"):
             sibling = Path(os.environ["CODEX_LOCAL_AGENT_MCP_SCRIPT"]).with_name("workspace_read_mcp.py")
             configured = str(sibling) if sibling.is_file() else None
-        if not configured:
+        script = (Path(configured).resolve() if configured else
+                  harness_tool_script('CODEX_WORKSPACE_READ_MCP_SCRIPT', 'workspace_read_mcp.py'))
+        if script is None:
             return None
-        script = Path(configured).resolve()
         if not script.is_file():
             raise ValueError("Workspace read MCP script is unavailable")
         return [sys.executable, str(script), "--root", str(workspace)]
@@ -126,6 +143,8 @@ def launch(server: str, parent_route: str | None = None, *, cloud: bool = False,
         if workspace is None:
             return None
         script = harness_tool_script("CODEX_WORKSPACE_GIT_MCP_SCRIPT", "workspace_git_mcp.py")
+        if script is None:
+            return None
         if not script.is_file():
             raise ValueError("Workspace Git MCP script is unavailable")
         return [sys.executable, str(script), "--root", str(workspace)]
@@ -133,13 +152,23 @@ def launch(server: str, parent_route: str | None = None, *, cloud: bool = False,
         if not cloud or not conversation_id or not conversation_id.isalnum():
             return None
         script = harness_tool_script("CODEX_GATEWAY_RESET_MCP_SCRIPT", "gateway_reset_mcp.py")
+        if script is None:
+            return None
         if not script.is_file():
             raise ValueError("Gateway reset MCP script is unavailable")
-        data_root = Path(os.getenv("CHAT_DATA_ROOT") or
-                         (Path.home() / ".local/share/llm-gateway/chat")).resolve()
-        return [sys.executable, str(script), "--conversation-id", conversation_id,
-                "--data-root", str(data_root)]
+        return [sys.executable, str(script), '--conversation-id', conversation_id,
+                '--gateway', os.getenv('LLM_GATEWAY_URL', 'http://127.0.0.1:8080')]
+
     return None
+
+
+def tool_enabled(server: str, tool: dict) -> bool:
+    """An imported artifact cannot silently widen the deployment's existing grants."""
+    if tool.get('approval') != 'automatic':
+        return False
+    if server == 'local_agents' and tool.get('name') == 'swap_local_agent_model':
+        return os.getenv('GATEWAY_ALLOW_AGENT_MODEL_SWAP') == '1'
+    return True
 
 
 def cloud_config(workspace: Path | None = None, *, mode: str = 'coding',
@@ -152,7 +181,7 @@ def cloud_config(workspace: Path | None = None, *, mode: str = 'coding',
         command = launch(name, cloud=True, workspace=workspace, conversation_id=conversation_id)
         if command is None:
             continue
-        enabled = [row["name"] for row in entry["tools"] if row["approval"] == "automatic"]
+        enabled = [row["name"] for row in entry["tools"] if tool_enabled(name, row)]
         servers[name] = {"command": command[0], "args": command[1:],
                          "enabled_tools": enabled,
                          "tool_timeout_sec": 480 if name == "local_agents" else 60 if name == "rig_search" else 30}

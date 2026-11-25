@@ -4,7 +4,10 @@
     "tests": [
       "tests/test_gateway.py",
       "tests/test_claude_api.py",
-      "tests/test_cloud_settings.py"
+      "tests/test_cloud_settings.py",
+      "tests/test_cloud_only.py",
+      "tests/test_reset_operation.py",
+      "tests/test_rig_wire.py"
     ]
   },
   "model_planning": {
@@ -48,7 +51,8 @@
     "tests": [
       "tests/test_tool_catalog_sync.py",
       "tests/test_tool_family_modes.py",
-      "tests/test_dashboard_tool_runtime.py"
+      "tests/test_dashboard_tool_runtime.py",
+      "tests/test_harness_client.py"
     ]
   },
   "google_workspace": {

@@ -105,15 +105,15 @@ def create_app(
     run_reconciler: bool = True,
 ) -> FastAPI:
     s = settings or Settings.from_env()
-    profiles = Profiles(s.profiles_path)
-    rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
+    profiles = Profiles(s.profiles_path, enabled=s.runtime_enabled)
+    rig = rig or Rig(s.rig_command, s.start_timeout_seconds, wire_version=s.rig_wire_version)
     manager: Manager | None = None
     codex_bridge = CodexBridge()
     cloud_settings = CloudSettings()
     codex_api_bridge = CodexBridge(auth_home=cloud_settings.root / "codex-api")
     claude_code_bridge = ClaudeCodeBridge()
     chat_background = None
-    if s.manager_enabled:
+    if s.manager_enabled and s.runtime_enabled:
         manager = Manager(rig, s.start_timeout_seconds, s.controller_id, mirror_path=s.mirror_path)
 
     @asynccontextmanager
@@ -138,11 +138,11 @@ def create_app(
     app.state.manager = manager
     if manager is not None:
         app.include_router(manager_router(manager, profiles.all, s.model_prefix))
-        app.include_router(dashboard_router(manager))
-        app.include_router(google_workspace_router)
-        app.include_router(transfers_router)
-        app.include_router(cloud_router(cloud_settings, codex_bridge, claude_code_bridge,
-                                        codex_api_bridge))
+    app.include_router(dashboard_router(manager))
+    app.include_router(google_workspace_router)
+    app.include_router(transfers_router)
+    app.include_router(cloud_router(cloud_settings, codex_bridge, claude_code_bridge,
+                                    codex_api_bridge))
 
     @app.exception_handler(ManagerError)
     async def _manager_error(_req, exc: ManagerError):
@@ -283,13 +283,74 @@ def create_app(
         return StreamingResponse(relay(), response.status_code, media_type=content_type,
                                  headers={"Cache-Control": "no-cache"})
 
-    if manager is not None:
-        chat_routes = chat_router(manager, profiles, forward, codex_bridge,
-                                  shared_inference=lambda pid, body: shared_completion(pid, body),
-                                  cloud_settings=cloud_settings, claude_code=claude_code_bridge,
-                                  codex_api=codex_api_bridge)
-        chat_background = chat_routes.auto_continue_loop
-        app.include_router(chat_routes)
+    chat_routes = chat_router(manager, profiles, forward, codex_bridge,
+                              shared_inference=lambda pid, body: shared_completion(pid, body),
+                              cloud_settings=cloud_settings, claude_code=claude_code_bridge,
+                              codex_api=codex_api_bridge)
+    chat_background = chat_routes.auto_continue_loop
+    app.include_router(chat_routes)
+
+    @app.middleware("http")
+    async def optional_runtime(request, call_next):
+        if not s.runtime_enabled and (request.url.path.startswith('/v1/rig/') or
+                                     request.url.path.startswith('/dashboard/api/rig/')):
+            return error_response(503, 'Local runtime integration is disabled', 'capability_unavailable')
+        return await call_next(request)
+
+    @app.get('/v1/capabilities')
+    async def capabilities():
+        return {'schema': 'gateway-capabilities/1', 'cloud': True,
+                'runtime': s.runtime_enabled, 'manager': manager is not None}
+
+    @app.api_route('/v1/harness/{path:path}', methods=['GET', 'POST'])
+    async def harness_proxy(path: str, request: Request):
+        endpoint = os.getenv('HARNESS_SERVICE_URL')
+        token = os.getenv('HARNESS_SERVICE_TOKEN')
+        if not endpoint or not token:
+            return error_response(503, 'Harness service is not configured', 'capability_unavailable')
+        # Explicit service configuration owns credentials, provider selection and tool grants.
+        if not re.fullmatch(r'(capabilities|runs(?:/[A-Za-z0-9_.-]+(?:/(events|input|cancel|resume))?)?)', path):
+            return error_response(404, 'Unknown Harness operation', 'not_found')
+        from .harness_client import HarnessClient
+        body = await request.json() if request.method == 'POST' else None
+        target = '/v1/' + path
+        if request.url.query:
+            target += '?' + request.url.query
+        try:
+            status, value = await HarnessClient(endpoint, token).request(request.method, target, body)
+            return JSONResponse(value, status_code=status)
+        except (httpx.HTTPError, ValueError):
+            return error_response(502, 'Harness request failed; reconcile by request ID before retrying', 'upstream_uncertain')
+
+    @app.post('/v1/operations/restart')
+    async def restart_operation(request: Request):
+        # Even loopback callers need an explicit configured bearer key for this operation.
+        supplied = request.headers.get('authorization', '').removeprefix('Bearer ')
+        if not s.api_keys or not any(hmac.compare_digest(supplied, key) for key in s.api_keys):
+            return error_response(401, 'Restart requires a configured bearer key', 'unauthorized')
+        if os.getenv('GATEWAY_RESTART_ENABLED') != '1':
+            return error_response(503, 'Restart operation is not configured', 'capability_unavailable')
+        body = await request.json()
+        if not isinstance(body, dict) or body.get('schema') != 'gateway-reset/1':
+            return error_response(400, 'Unsupported restart schema', 'invalid_request')
+        from .reset_operation import schedule
+        from argparse import Namespace
+        from pathlib import Path
+        import fcntl
+        root = Path(os.getenv('CHAT_DATA_ROOT') or Path.home() / '.local/share/llm-gateway/chat')
+        args = Namespace(data_root=str(root), conversation_id=body.get('conversation_id', ''),
+                         request_id=body.get('request_id'), wait_seconds=180)
+        if not args.request_id or not isinstance(args.conversation_id, str):
+            return error_response(400, 'request_id and conversation_id are required', 'invalid_request')
+        def locked_schedule():
+            root.mkdir(parents=True, exist_ok=True)
+            with (root / 'reset-operation.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                return schedule(args, body)
+        try:
+            return await asyncio.to_thread(locked_schedule)
+        except (ValueError, RuntimeError) as exc:
+            return error_response(409, str(exc), 'operation_refused')
 
     @app.get("/health")
     async def health():
@@ -585,7 +646,7 @@ def create_app(
             for pid, p in profiles.all().items()
         ]
         try:
-            status = await rig.status()
+            status = await rig.status() if s.runtime_enabled else {}
         except RigUnavailable:
             status = {}
         for loaded in dynamic_strata_ready(status):
@@ -715,6 +776,8 @@ def create_app(
         raw, body = await read_json(request)
         if isinstance(body.get("model"), str) and body["model"].startswith("openrouter/"):
             return await forward_openrouter(request, body)
+        if not s.runtime_enabled:
+            raise GatewayError(503, 'Local runtime integration is disabled', 'capability_unavailable')
         pid = resolve_profile(body.get("model"))
         if pid.startswith(tuple(shared_routes.values())):
             if request.url.path == "/v1/chat/completions":
@@ -735,6 +798,8 @@ def create_app(
     async def tokenize(request: Request):
         """llama-server tokenizer, routed by `model`. Exact token counts for compaction decisions."""
         raw, body = await read_json(request)
+        if not s.runtime_enabled:
+            raise GatewayError(503, 'Local runtime integration is disabled', 'capability_unavailable')
         pid = resolve_profile(body.get("model"))
         if pid not in profiles.all():
             raise GatewayError(501, "Strata does not expose the gateway tokenizer endpoint", "unsupported")

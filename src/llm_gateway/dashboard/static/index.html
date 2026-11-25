@@ -3636,6 +3636,13 @@ async function refresh(now) {
   }
 }
 $("#dashboard-refresh").onclick = () => refresh(true);
+if (document.body?.dataset?.runtimeEnabled === "false") {
+  for (const name of ["rig", "models", "benchmarks"]) {
+    const button = document.querySelector(`[data-tab="${name}"]`);
+    if (button) button.hidden = true;
+  }
+  if (["rig", "models", "benchmarks"].includes(tab)) tab = "cloud";
+}
 show(tab);
 setInterval(() => refresh(false), 2500);
 </script>

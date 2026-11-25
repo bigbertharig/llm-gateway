@@ -29,3 +29,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.setuptools.package-data]
+llm_gateway = ["dashboard/static/*.html", "dashboard/static/*.js", "dashboard/static/*.css", "dashboard/*.json"]

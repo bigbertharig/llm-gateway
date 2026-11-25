@@ -19,6 +19,13 @@ else:
     result = {'structuredContent': {'answer': '42'}}
 print(json.dumps({'jsonrpc': '2.0', 'id': 1, 'result': result}))
 """)
+    import json
+    from pathlib import Path
+    published = json.loads((Path(__file__).parents[1] / 'src/llm_gateway/dashboard/tool_catalog.json').read_text())
+    schemas = {row['name']: row['input_schema'] for row in published['servers']['local_agents']['tools']}
+    source = script.read_text()
+    source = source.replace("print(json.dumps", "if request['method'] == 'tools/list':\n    result['tools'] = [{'name': name, 'inputSchema': schema} for name, schema in " + repr(schemas) + ".items()]\nprint(json.dumps")
+    script.write_text(source)
     monkeypatch.setenv("CODEX_LOCAL_AGENT_MCP_SCRIPT", str(script))
     monkeypatch.setenv("CODEX_LOCAL_AGENT_RECEIPTS", str(tmp_path / "receipts"))
     monkeypatch.delenv("CODEX_SEARCH_MCP_SCRIPT", raising=False)
@@ -103,7 +110,7 @@ def test_cloud_and_local_dashboard_use_same_catalog_and_servers(tmp_path, monkey
         cloud = chat_cloud if server == "rig_search" else coding_cloud
         assert local[:2] == [cloud[server]["command"], cloud[server]["args"][0]]
         assert cloud[server]["enabled_tools"] == [row["name"] for row in catalog[server]["tools"]
-                                                   if row["approval"] == "automatic"]
+                                                   if row["approval"] == "automatic" and row["name"] != "swap_local_agent_model"]
     assert "rig_search" not in coding_cloud
     assert "rig_info" in chat_cloud
 
@@ -115,3 +122,10 @@ def test_harness_script_root_is_configurable(tmp_path, monkeypatch):
     monkeypatch.delenv("GITHUB_PUBLIC_MCP_SCRIPT", raising=False)
     assert dashboard_mcp_servers.launch("github_public") == [
         __import__("sys").executable, str(script)]
+
+
+def test_live_schema_drift_is_refused(monkeypatch):
+    monkeypatch.setattr(tool_runtime, '_launch', lambda *args: ['fixture'])
+    monkeypatch.setattr(tool_runtime, '_request', lambda *args: {'tools': [{'name':'list_workspace_files','inputSchema':{'type':'object','properties':{'unsafe':{}}}}]})
+    with pytest.raises(tool_runtime.DashboardToolError, match='schemas disagree'):
+        tool_runtime.available('route', frozenset({'workspace_read'}))

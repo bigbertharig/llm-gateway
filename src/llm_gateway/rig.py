@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import time
+from uuid import uuid4
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
@@ -37,7 +38,10 @@ class Rig:
     start is never killed: past its deadline the gateway stops waiting and lets it finish.
     """
 
-    def __init__(self, command: tuple[str, ...], start_timeout_seconds: float):
+    def __init__(self, command: tuple[str, ...], start_timeout_seconds: float, *, wire_version: str | None = None):
+        self.wire_version = wire_version
+        if wire_version not in (None, "rig-cli/1"):
+            raise ValueError("unsupported rig wire version")
         self.command = command
         self.start_timeout_seconds = start_timeout_seconds
         self._inflight: dict[str, asyncio.Task] = {}
@@ -53,9 +57,17 @@ class Rig:
         return [*self.command, *(shlex.quote(a) for a in args)] if self._over_ssh else [*self.command, *args]
 
     async def _run(self, *args: str, timeout: float, kill_on_timeout: bool = True) -> tuple[int, str]:
+        wire_request = None
+        dispatched = args
+        if self.wire_version:
+            wire_request = {'schema': self.wire_version, 'request_id': uuid4().hex, 'arguments': list(args)}
+            dispatched = ('wire', '--request', json.dumps(wire_request))
+            # Never kill a remotely dispatched write merely because the caller stopped waiting.
+            if args and args[0] not in ('status','observe','model-fit','schedule-preview','inspect'):
+                kill_on_timeout = False
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self.argv(*args),
+                *self.argv(*dispatched),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
         except OSError as exc:
@@ -70,10 +82,25 @@ class Rig:
             else:
                 self._orphans.add(done)  # keep a reference until it exits; output is dropped
                 done.add_done_callback(self._orphans.discard)
-            raise RigUnavailable(504, f"rig {' '.join(args)} timed out after {timeout:.0f}s") from exc
+            raise RigUnavailable(504, f"rig {args[0] if args else 'operation'} timed out after {timeout:.0f}s" +
+                                 (f"; reconcile request_id={wire_request['request_id']}" if wire_request else "")) from exc
         text = out.decode("utf-8", "replace").strip()
         if proc.returncode == SSH_UNREACHABLE:
             raise RigUnavailable(502, f"rig unreachable over ssh: {text[-500:] or 'no output'}")
+        if wire_request:
+            try:
+                packet = json.loads(text)
+            except ValueError as exc:
+                raise RigUnavailable(502, 'Runtime has no compatible rig-cli/1 response; upgrade the configured runtime') from exc
+            if (not isinstance(packet, dict) or packet.get('schema') != self.wire_version
+                    or packet.get('request_id') != wire_request['request_id']
+                    or packet.get('arguments') != list(args)):
+                raise RigUnavailable(502, 'Runtime wire version or request identity mismatch')
+            if type(packet.get('exit_code')) is not int or not isinstance(packet.get('output'), str):
+                raise RigUnavailable(409, 'Runtime dispatch is unresolved: ' + str(packet.get('kind', 'invalid_receipt')))
+            if packet.get('ok') is not (packet['exit_code'] == 0) or proc.returncode != packet['exit_code']:
+                raise RigUnavailable(502, 'Runtime returned inconsistent exit evidence')
+            return packet['exit_code'], packet['output'].strip()
         return proc.returncode, text
 
     async def shared_kv(self, action: str, *, model: str | None = None, chat_id: str | None = None,

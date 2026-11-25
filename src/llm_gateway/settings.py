@@ -64,6 +64,8 @@ class Settings:
     # Bearer keys clients must send. Empty means no auth, which is only allowed on a loopback bind.
     api_keys: tuple[str, ...] = ()
     # Rig manager (docs/MANAGER.md). Off: cold loads are a plain `rig start remote <id>`.
+    rig_wire_version: str | None = None
+    runtime_enabled: bool = True
     manager_enabled: bool = False
     # This controller's id on the rig (one active controller at a time), e.g. pi or desktop.
     controller_id: str = "controller"
@@ -82,6 +84,8 @@ class Settings:
             start_timeout_seconds=float(os.getenv("START_TIMEOUT_SECONDS", "900")),
             request_timeout_seconds=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900")),
             api_keys=read_api_keys(Path(os.getenv("GATEWAY_API_KEYS_FILE", str(DEFAULT_API_KEYS_FILE)))),
+            rig_wire_version=os.getenv("RIG_WIRE_VERSION", "rig-cli/1"),
+            runtime_enabled=os.getenv("GATEWAY_MODE", "integrated") != "cloud",
             manager_enabled=os.getenv("RIG_MANAGER", "off").lower() in ("on", "1", "true", "yes"),
             controller_id=os.getenv("RIG_CONTROLLER_ID") or socket.gethostname().lower(),
             mirror_path=Path(os.getenv("RIG_MIRROR_PATH") or
@@ -89,9 +93,9 @@ class Settings:
         )
 
     def validate(self) -> None:
-        if not self.rig_command:
+        if self.runtime_enabled and not self.rig_command:
             raise RuntimeError("RIG_COMMAND is empty")
-        if not self.profiles_path.is_file():
+        if self.runtime_enabled and not self.profiles_path.is_file():
             raise RuntimeError(f"PROFILES_PATH not found: {self.profiles_path}")
         if self.start_timeout_seconds <= 0 or self.request_timeout_seconds <= 0:
             raise RuntimeError("timeouts must be positive")

@@ -682,7 +682,7 @@ def test_codex_prompt_is_not_interrupted_by_a_second_gateway_process(tmp_path):
         sys.executable, "-c",
         "from pathlib import Path; from llm_gateway.dashboard.chat import ChatStore; ChatStore(Path(__import__('sys').argv[1]))",
         str(root),
-    ], check=True)
+    ], check=True, env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")})
     assert store.get(cid)["last_turn"]["state"] == "running"
     with store._db() as db:
         db.execute("UPDATE turns SET runner_pid=?,runner_identity=? WHERE id=?",
@@ -1239,7 +1239,7 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
     app = FastAPI()
     app.add_exception_handler(ManagerError,
         lambda request, exc: JSONResponse({"error": str(exc)}, status_code=exc.status))
-    app.include_router(router(Manager(), Profiles(), None, cloud))
+    app.include_router(router(None, Profiles(), None, cloud))
     with TestClient(app) as client:
         assert client.get("/dashboard/api/chat/codex/account").json()["connected"]
         research = client.post("/dashboard/api/chat/conversations", json={"model": "Codex"}).json()

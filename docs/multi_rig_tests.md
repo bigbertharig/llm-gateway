@@ -6,6 +6,8 @@ rig". The first two-rig setup is the GPU rig plus the Windows desktop worker (GT
 
 ## Runnable now (before the gateway is multi-rig)
 
+**Historical deployment-specific regression.** Benchmark measurement campaigns moved to Benchmarking; this driver retains network fault/recovery behavior.
+
 `tools/multi_rig_tests.py` drives both rigs directly: the GPU rig through the harness, the desktop
 through `ssh desktop-rig` and a tunnel. Same model on both, ctx 8192: the benchmarking role
 `single_1060` by default (`tools/role_model.py`, which reads model_roles.json; ornith-1.5:9b since
@@ -17,7 +19,7 @@ results below used qwen2.5-coder:7b.
 python3 tools/multi_rig_tests.py setup          # load on rig GPU 1 and the desktop, open the tunnel
 python3 tools/multi_rig_tests.py disconnect     # 7 min; prompts when to unplug and replug the desktop
 python3 tools/multi_rig_tests.py concurrency    # 1/2/4/8 streams per rig, 60 s each
-tools/dual_rig_bench.sh                         # six custom benchmark tests on both rigs at once
+# Dual-endpoint measurements now use Benchmarking scripts/experiments/run_endpoint_suite.py.
 python3 tools/multi_rig_tests.py teardown
 ```
 

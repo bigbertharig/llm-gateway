@@ -1,0 +1,69 @@
+# Standalone Gateway
+
+Set `GATEWAY_MODE=cloud` to serve dashboard, saved conversations, cloud accounts and configured
+provider connectors with no local runtime profiles, Rig Manager, SSH target or model-library
+requirement. Runtime routes explicitly report unavailable. `/v1/capabilities` reports the mode.
+The same bearer-key middleware protects these routes; a non-loopback bind still requires keys.
+Install and run using the normal package entry point and configure accounts through Cloud.
+
+Optional tools come from an installed Harness package or explicit per-server script settings.
+`HARNESS_TOOLS_DIR` is an explicit compatibility setting; there is no automatic sibling checkout
+lookup for the reusable installed tools. An absent optional package removes that tool capability.
+Install Harness with `python -m pip install /path/to/llm_harness.whl` in the Gateway interpreter
+when using these in-process launch descriptors. Provider-native Codex/Claude Code sessions retain
+their native session semantics and use independently callable MCP tools.
+
+## Optional Harness run connection
+
+Configure `HARNESS_SERVICE_URL` and `HARNESS_SERVICE_TOKEN`. Authenticated callers can use
+`/v1/harness/runs` and its status/events/input/cancel/resume paths. Gateway transports the
+`harness-control/1` envelope; Harness owns tool grants, engine execution and private journals.
+A failed transport reports an uncertain result: reconcile by the original request ID before
+submitting again. Unknown versions, event gaps and duplicated reconnect events have explicit
+consumer checks. The connection is not required for cloud dashboard conversations.
+
+`POST /v1/operations/restart` implements `gateway-reset/1` with `request_id`, `conversation_id`,
+`confirmation` and `recovery_note`. It requires an explicit configured bearer key even on
+loopback, plus `GATEWAY_RESTART_ENABLED=1`. The owner verifies the saved provider thread and
+writes the durable receipt before launching the external recovery worker. Duplicate IDs with
+changed arguments are refused; an interrupted scheduling attempt remains `dispatching` and
+is not falsely reported as scheduled. Configure `GATEWAY_SERVICE_UNIT` and `GATEWAY_LOCAL_URL`
+for the local service; the existing Pi default remains for compatibility. Harness only calls
+this API and knows neither the conversation database nor the service-control implementation.
+
+## Optional runtime connection
+
+Integrated mode uses configured `RIG_COMMAND` or `RIG_SSH_TARGET`. Environment startup selects
+`RIG_WIRE_VERSION=rig-cli/1`. Upgrade the runtime producer before restarting Gateway with this
+adapter. Unknown/old responses fail explicitly; there is no fallback that silently bypasses
+version checks. The wrapper preserves existing manager admission, plan, lease and load behavior.
+A timed-out write is allowed to finish remotely and must be reconciled, not blindly replayed.
+Direct constructor callers can still explicitly select the legacy adapter for an older deployment;
+that compatibility path is not a validated versioned integration.
+
+Correctness suites remain here: gateway_api, manager, dashboard_ui, conversations, tool_policy,
+google_workspace, model_planning and test_infrastructure. Cloud-only startup is tested without
+profiles or a runtime command; coding conversation regressions also run with no Manager.
+Fake MCP transport fixtures are owned here, so unit tests do not require a Harness checkout.
+The two HTTP API adapters retain provider-specific message/tool-result normalization; they are
+not claimed as interchangeable native sessions. Hardware measurements moved to Benchmarking;
+the network fault/recovery regression driver remains Gateway-owned.
+
+Reviewed MCP schemas are frozen in the Harness artifact with normalized SHA-256 digests.
+Gateway's MCP dispatcher checks the discovered input schema against the imported digest before advertising a
+tool. Unknown or changed schemas fail closed until the producer snapshot is reviewed and
+imported again. Both artifact importers validate the digest before replacing their last valid
+snapshot. Legacy name-only artifacts can be read for migration, but cannot authorize live
+Gateway tool dispatch without a schema digest. Harness checks all ten owned MCP surfaces
+using discovery-only requests (`tools/mcp_schema_snapshot.py check`).
+
+The refreshed artifact also includes Harness's model-swap tool. Existing Gateway grants do
+not gain it merely by importing that artifact: `GATEWAY_ALLOW_AGENT_MODEL_SWAP=1` is an
+explicit deployment opt-in. Native external coding engines own their own MCP sessions and
+must apply their own schema-version checks; dispatcher checks do not claim native-engine
+substitution conformance.
+
+For installed cloud-only acceptance, build a wheel and run
+`tools/verify_install.py --wheel FILE --receipt OUTPUT`. This uses a fresh virtual
+environment and HOME, a fake cloud coding bridge, packaged dashboard assets, and
+saved-history recovery after an application restart. No live provider account is used.
