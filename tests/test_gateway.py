@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_gateway.app import create_app, translate_upstream_error
+from llm_gateway.dashboard.cloud_settings import CloudSettings
 from llm_gateway.manager.routes import _agent_profile_order
 from llm_gateway.rig import Rig, RigUnavailable
 from llm_gateway.settings import Settings, read_api_keys
@@ -117,6 +118,27 @@ def test_models_follow_library_edits(client, env):
     env["lib"].write_text(json.dumps(lib))
     os.utime(env["lib"], (time.time() + 5, time.time() + 5))
     assert "gpu-rig/new-one" in [m["id"] for m in client.get("/v1/models").json()["data"]]
+
+
+def test_openrouter_model_is_listed_and_forwarded(env):
+    cloud = CloudSettings()
+    cloud.set_secret("openrouter", "or-secret")
+    cloud.set_openrouter_models(["qwen/qwen4-max"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer or-secret"
+        body = json.loads(request.content)
+        assert body["model"] == "qwen/qwen4-max"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "cloud"}}]})
+
+    app = create_app(env["settings"], upstream_transport=httpx.MockTransport(handler))
+    with TestClient(app) as test_client:
+        models = [row["id"] for row in test_client.get("/v1/models").json()["data"]]
+        response = test_client.post("/v1/chat/completions", json={
+            "model": "openrouter/qwen/qwen4-max", "messages": [{"role": "user", "content": "hi"}]})
+    assert "openrouter/qwen/qwen4-max" in models
+    assert response.status_code == 200 and response.json()["choices"][0]["message"]["content"] == "cloud"
 
 
 def test_unknown_model_404_lists_published(client):

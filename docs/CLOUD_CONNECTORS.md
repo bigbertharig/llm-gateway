@@ -1,5 +1,22 @@
 # Cloud account connectors for dashboard chat
 
+## Desktop Cloud settings
+
+The desktop dashboard's **Cloud** tab owns direct API-provider configuration. It stores provider
+keys under `~/.config/llm-gateway/cloud/` by default, with a private directory and `0600` key files.
+The browser may replace or remove a key, but Gateway never returns a stored key. Set
+`CLOUD_SETTINGS_ROOT` only when the service needs a different private location.
+
+OpenRouter model discovery reads the provider's live model catalog after a key is saved. The
+operator selects the models Gateway publishes; unselected models remain unavailable in dashboard
+chat and the OpenAI-compatible `/v1/models` route. Published IDs use
+`openrouter/<provider>/<model>`. OpenRouter conversations use the reviewed Harness tool catalog and
+do not consume rig GPUs. The initial provider path supports text and extracted documents through
+Chat Completions. Native image input and the Responses API remain outside this contract.
+
+Cloud configuration is available only through the certificate-protected desktop dashboard. The
+mobile dashboard has no credential-management routes or forms.
+
 ## Google Workspace
 
 Configure a dedicated Google account for the rig; the account address belongs in private service configuration. Gateway owns OAuth. Harness provides one model-independent MCP surface to all Chat models and eligible delegated children through the shared tool catalog. Qwen, Nemotron, small local models, Codex, and configured API providers receive the same schemas; model routing never owns Google access. No Google credential is sent to a model or stored in Harness receipts. The old rig helper's token is expired and is not used by this connector.
@@ -26,11 +43,33 @@ Run the focused Gateway contracts with `.venv/bin/python tools/run_test_suite.py
 
 Current limitation: Gateway and Harness still run as the same Unix user. The model-facing tool interface does not expose the token, delegated Google children receive no shell or filesystem tools, and Coding mode does not receive the Google surface. A separate service identity with narrow local IPC remains the stronger production boundary. The dedicated account contains only rig data, which bounds the current personal deployment's account-level blast radius.
 
-## Claude
+## Claude and Codex authentication
 
-The dashboard's Claude option uses the Anthropic Messages API. It is configured only with a private API key file and an explicit model ID (`CLAUDE_API_KEY_FILE` and `CLAUDE_API_MODEL`). It appears in the model picker only when both are present; it never consumes rig GPUs. Chat and Coding turns use the same reviewed Harness MCP catalog and mode-specific tool grants as local models. The initial implementation supports text and extracted document attachments. API response text currently appears when the answer completes; incremental streaming and image input remain to be added.
+All interactive credential management and setup guidance lives in the desktop **Cloud** tab, not
+the Chat or Coding sidebars. Claude exposes two separate model surfaces because its subscription
+and API products have different credentials:
 
-The Pi's existing Claude Code CLI login is separate. A Claude.ai subscription session is not used as a dashboard API credential. Create an API key in the Anthropic Console, provision it in a Pi-only file with mode `0600`, configure the two environment variables, and restart Gateway. Do not paste the key into chat or commit it. The Gateway never returns the key to the browser.
+- **Claude (API)** uses the Anthropic Messages API, the stored API key, and an explicit model ID.
+- **Claude Code (subscription)** uses the gateway host's Claude Code login and a persistent CLI
+  session. The Cloud tab relays Claude Code's browser authorization URL and one-time-code prompt,
+  so sign-in and sign-out are managed without moving back to the Chat sidebar or an SSH terminal.
+  Dashboard sessions start Claude Code in safe, restricted mode rooted at the selected workspace.
+
+Existing deployments using `CLAUDE_API_KEY_FILE` and `CLAUDE_API_MODEL` continue to work as a
+migration fallback until the Cloud tab stores a replacement. Neither Claude path consumes rig GPUs.
+Chat and Coding turns use the same reviewed Harness MCP catalog and mode-specific tool grants as
+local models. The initial implementation supports text and extracted document attachments. API
+response text currently appears when the answer completes; incremental streaming and image input
+remain to be added.
+
+A Claude.ai subscription session is never treated as an Anthropic API credential. The two paths
+remain independent, so both can be configured at once.
+
+Codex exposes independent **Codex (Subscription)** and **Codex (API)** model entries. The Cloud tab
+starts the ChatGPT device flow for the subscription instance and hands a pasted OpenAI key to a
+second Codex app-server instance with an isolated private `CODEX_HOME`. Either or both can be
+configured, and signing out of one does not affect the other. The Gateway never returns a stored
+provider key to the browser.
 
 As with the Google token, a same-user Pi process with unrestricted filesystem access can still read this file. Moving credentialed connectors to a separate service identity is required for a stronger OS boundary.
 

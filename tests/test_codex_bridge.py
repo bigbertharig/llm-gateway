@@ -258,6 +258,24 @@ def test_account_state_is_cached_after_first_read():
     assert calls == ["account/read", "account/rateLimits/read"]
 
 
+def test_api_key_login_uses_supported_app_server_account_type():
+    bridge = CodexBridge()
+    calls = []
+
+    async def call(method, params):
+        calls.append((method, params))
+        if method == "account/read":
+            return {"account": {"type": "apiKey"}}
+        return {}
+
+    bridge._call = call
+    state = asyncio.run(bridge.login_api_key("sk-test-secret"))
+    assert state == {"connected": True, "auth_method": "apiKey", "email": None,
+                     "plan": None, "login": None}
+    assert calls[0] == ("account/login/start", {"type": "apiKey", "apiKey": "sk-test-secret"})
+    assert calls[1] == ("account/read", {"refreshToken": False})
+
+
 def test_new_codex_thread_uses_local_full_access_without_sandbox_prompts(tmp_path):
     bridge = CodexBridge()
     bridge.workspaces = [tmp_path]
@@ -372,6 +390,21 @@ def test_search_elicitation_is_allowlisted():
 
     asyncio.run(check())
     assert writes == [{"id": 9, "result": {"action": "accept", "content": {}}}]
+
+
+def test_app_server_reader_accepts_large_saved_thread_messages():
+    bridge = CodexBridge()
+
+    async def check():
+        reader = asyncio.StreamReader(limit=bridge.line_limit)
+        bridge.process = SimpleNamespace(stdout=reader)
+        payload = json.dumps({"id": 999, "result": {"thread": {"summary": "x" * (5 * 1024 * 1024)}}})
+        reader.feed_data((payload + "\n").encode())
+        reader.feed_eof()
+        await bridge._read()
+
+    asyncio.run(check())
+    assert bridge.line_limit >= 64 * 1024 * 1024
 
 
 @pytest.mark.parametrize("tool_name", ["list_local_agents", "delegate_task"])

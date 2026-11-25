@@ -11,4 +11,5 @@ from llm_gateway.manager import observations
 def observation_log(tmp_path, monkeypatch):
     path = tmp_path / "load_observations.jsonl"
     monkeypatch.setattr(observations, "PATH", str(path))
+    monkeypatch.setenv("CLOUD_SETTINGS_ROOT", str(tmp_path / "cloud"))
     return path

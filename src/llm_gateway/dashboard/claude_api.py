@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 
 from . import dashboard_mcp_servers, tool_runtime
+from .cloud_settings import CloudSettings, CloudSettingsError
 
 
 class ClaudeApiError(RuntimeError):
@@ -23,17 +24,14 @@ class ClaudeApiError(RuntimeError):
 class ClaudeApi:
     URL = "https://api.anthropic.com/v1/messages"
 
+    def __init__(self, settings: CloudSettings | None = None):
+        self.settings = settings or CloudSettings()
+
     def configuration(self) -> tuple[str, str]:
-        path = Path(os.getenv("CLAUDE_API_KEY_FILE", ""))
-        model = os.getenv("CLAUDE_API_MODEL", "").strip()
-        if not path.is_absolute() or not path.is_file() or path.is_symlink() or not model:
-            raise ClaudeApiError("Claude API is not configured; add a private API key and model on the Pi")
-        if path.stat().st_mode & 0o077:
-            raise ClaudeApiError("Claude API key permissions are too broad")
-        key = path.read_text(encoding="utf-8").strip()
-        if not key or "\n" in key:
-            raise ClaudeApiError("Claude API key file is invalid")
-        return key, model
+        try:
+            return self.settings.claude_configuration()
+        except CloudSettingsError as exc:
+            raise ClaudeApiError(str(exc)) from exc
 
     def available(self) -> bool:
         try:

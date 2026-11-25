@@ -34,6 +34,9 @@ from ..profiles import Profiles
 from .codex_bridge import (CodexAppServerExited, CodexBridge, CodexBridgeError, CodexTurnInterrupted,
                            CodexUsageLimitError)
 from .claude_api import ClaudeApi, ClaudeApiError
+from .claude_code import ClaudeCodeBridge, ClaudeCodeError
+from .cloud_settings import CloudSettings
+from .openrouter_api import OpenRouterApi, OpenRouterApiError
 from .coding_workspace import list_files, read_file, read_image, search_files, save_file
 from .transfers import selected_items
 from . import dashboard_mcp_servers, tool_runtime
@@ -635,7 +638,7 @@ class ChatStore:
                     # Only new turns have a trustworthy surface. Never guess a
                     # desktop surface for an older mobile turn, and never loop
                     # if the single recovery attempt itself was interrupted.
-                    if (turn["provider"] == "codex" and turn["surface"] in ("local", "mobile")
+                    if (turn["provider"] in ("codex", "codex_api") and turn["surface"] in ("local", "mobile")
                             and turn["prompt"] != APP_SERVER_RECOVERY_PROMPT):
                         db.execute(
                             "INSERT OR IGNORE INTO auto_continuations "
@@ -723,14 +726,14 @@ class ChatStore:
     def set_codex_model(self, cid: str, model: str) -> None:
         with self._db() as db:
             db.execute("UPDATE conversations SET codex_model=?,codex_effort=NULL,updated_at=? "
-                       "WHERE id=? AND provider='codex'",
+                       "WHERE id=? AND provider IN ('codex','codex_api')",
                        (model, _now(), cid))
 
     def set_codex_settings(self, cid: str, model: str | None, effort: str | None,
                            reviewer: str, access: str = "local") -> dict:
         with self._db() as db:
             db.execute("UPDATE conversations SET codex_model=?,codex_effort=?,codex_reviewer=?,codex_access=?,updated_at=? "
-                       "WHERE id=? AND provider='codex'", (model, effort, reviewer, access, _now(), cid))
+                       "WHERE id=? AND provider IN ('codex','codex_api')", (model, effort, reviewer, access, _now(), cid))
         return self.get(cid)
 
     def get(self, cid: str) -> dict:
@@ -1096,7 +1099,10 @@ def _image_attachments(value: object) -> list[dict[str, str]]:
 
 
 def router(manager: Manager, profiles: Profiles, forward_inference,
-           codex: CodexBridge | None = None, shared_inference=None) -> APIRouter:
+           codex: CodexBridge | None = None, shared_inference=None,
+           cloud_settings: CloudSettings | None = None,
+           claude_code: ClaudeCodeBridge | None = None,
+           codex_api: CodexBridge | None = None) -> APIRouter:
     root = Path(os.getenv("CHAT_DATA_ROOT") or (Path.home() / ".local/share/llm-gateway/chat"))
     store: ChatStore | None = None
     test_store: ChatStore | None = None
@@ -1122,7 +1128,11 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
 
     r = APIRouter(prefix="/dashboard/api/chat")
     codex = codex or CodexBridge()
-    claude = ClaudeApi()
+    cloud_settings = cloud_settings or CloudSettings()
+    codex_api = codex_api or codex
+    claude = ClaudeApi(cloud_settings)
+    claude_code = claude_code or ClaudeCodeBridge()
+    openrouter = OpenRouterApi(cloud_settings)
     active_codex: set[str] = set()
     codex_turn_locks: dict[str, asyncio.Lock] = {}
     active_local: set[str] = set()
@@ -1139,6 +1149,13 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             get_store(history='tests').add_thread_event(thread_id, "compacted", created_at)
 
     codex.compaction_listener = persist_compaction
+    codex_api.compaction_listener = persist_compaction
+
+    def conversation_codex(conversation: dict) -> CodexBridge:
+        return codex_api if conversation.get("provider") == "codex_api" else codex
+
+    def is_codex(conversation: dict) -> bool:
+        return conversation.get("provider") in ("codex", "codex_api")
 
     def offered() -> dict[str, dict]:
         published = profiles.all()
@@ -1293,8 +1310,23 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                               "working": (bool(cid in active_local or owner.get("last_turn_state") == "running")
                                           if owner else None),
                               "parkable": bool(cid and place["chat_id"].startswith("dash-"))})
+        claude_code_account = await claude_code.account()
+        try:
+            codex_subscription_account = await codex.account()
+        except (CodexBridgeError, AttributeError):
+            codex_subscription_account = {"connected": False}
+        try:
+            codex_api_account = await codex_api.account()
+        except (CodexBridgeError, AttributeError):
+            codex_api_account = {"connected": False}
         return {"rig_available": rig_available, "rig_busy": availability["busy"],
                 "claude_api_available": claude.available(),
+                "claude_code_available": claude_code_account.get("connected") is True,
+                "codex_subscription_available": codex_subscription_account.get("connected") is True,
+                "codex_api_available": codex_api_account.get("connected") is True,
+                "cloud_models": [{"id": "openrouter/" + model, "model": model,
+                                  "provider": "openrouter", "description": "OpenRouter cloud model"}
+                                 for model in openrouter.models()],
                 "codex_attachment_capabilities": {"native_inputs": ["text", "image/png", "image/jpeg", "image/webp"],
                     "converted_inputs": ["pdf", "text_file"]},
                 "chat_placements": chat_placements,
@@ -1320,9 +1352,10 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             return {"connected": False, "error": str(exc), "workspaces": []}
 
     @r.get("/codex/models")
-    async def codex_models():
+    async def codex_models(auth: str = "subscription"):
         try:
-            return {"models": await codex.models()}
+            bridge = codex_api if auth == "api" else codex
+            return {"models": await bridge.models()}
         except CodexBridgeError as exc:
             raise ManagerError(502, str(exc)) from exc
 
@@ -1358,10 +1391,19 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             try:
                 cwd = str(codex.workspace(cwd) if mode == 'coding' else codex.research_workspace())
                 if not (await codex.account())["connected"]:
-                    raise CodexBridgeError("Connect a ChatGPT account first")
+                    raise CodexBridgeError("Connect Codex in the Cloud tab first")
             except (CodexBridgeError, TypeError, ValueError, OSError) as exc:
                 raise ManagerError(400, str(exc)) from exc
             return await asyncio.to_thread(target.create, "Codex", "codex", cwd, mode)
+        if model == "Codex API":
+            cwd = body.get("cwd")
+            try:
+                cwd = str(codex_api.workspace(cwd) if mode == 'coding' else codex_api.research_workspace())
+                if not (await codex_api.account())["connected"]:
+                    raise CodexBridgeError("Add an OpenAI API key for Codex in Cloud first")
+            except (CodexBridgeError, TypeError, ValueError, OSError) as exc:
+                raise ManagerError(400, str(exc)) from exc
+            return await asyncio.to_thread(target.create, "Codex API", "codex_api", cwd, mode)
         if model == "Claude":
             if not claude.available():
                 raise ManagerError(503, "Claude API is not configured on the Pi")
@@ -1372,6 +1414,25 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 except (CodexBridgeError, TypeError, ValueError) as exc:
                     raise ManagerError(400, str(exc)) from exc
             return await asyncio.to_thread(target.create, "Claude", "claude", cwd, mode)
+        if model == "Claude Code":
+            account = await claude_code.account()
+            if not account.get("connected"):
+                raise ManagerError(503, "Connect a Claude subscription in Cloud first")
+            try:
+                cwd = str(codex.workspace(body.get("cwd")) if mode == "coding" else codex.research_workspace())
+            except (CodexBridgeError, TypeError, ValueError, OSError) as exc:
+                raise ManagerError(400, str(exc)) from exc
+            return await asyncio.to_thread(target.create, "Claude Code", "claude_code", cwd, mode)
+        if isinstance(model, str) and model.startswith("openrouter/"):
+            if model.removeprefix("openrouter/") not in openrouter.models():
+                raise ManagerError(503, "OpenRouter model is not enabled in Cloud")
+            cwd = None
+            if mode == "coding":
+                try:
+                    cwd = str(codex.workspace(body.get("cwd")))
+                except (CodexBridgeError, TypeError, ValueError) as exc:
+                    raise ManagerError(400, str(exc)) from exc
+            return await asyncio.to_thread(target.create, model, "openrouter", cwd, mode)
         if model not in offered():
             raise ManagerError(400, "choose a listed chat model")
         cwd = None
@@ -1452,7 +1513,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.post("/conversations/{cid}/codex/settings")
     async def codex_settings(cid: str, request: Request):
         conversation = await asyncio.to_thread(get_store(cid).get, cid)
-        if conversation["provider"] != "codex":
+        if not is_codex(conversation):
             raise ManagerError(400, "Settings are available only in Codex conversations")
         body = await _json_body(request)
         model, effort, reviewer = body.get("model"), body.get("effort"), body.get("reviewer")
@@ -1466,7 +1527,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         if effort is not None and (not isinstance(effort, str) or not effort):
             raise ManagerError(400, "Choose a reasoning effort")
         try:
-            models = await codex.models()
+            models = await conversation_codex(conversation).models()
         except CodexBridgeError as exc:
             raise ManagerError(502, str(exc)) from exc
         selected = next((item for item in models if item.get("model") == model), None) if model else next(
@@ -1485,9 +1546,9 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(409, "Wait for the running turn before deleting this conversation")
         if conversation["last_turn"] and conversation["last_turn"]["state"] == "running":
             raise ManagerError(409, "Wait for the running turn before deleting this conversation")
-        if conversation["provider"] == "codex" and conversation["thread_id"]:
+        if is_codex(conversation) and conversation["thread_id"]:
             try:
-                await codex.delete_thread(conversation["thread_id"])
+                await conversation_codex(conversation).delete_thread(conversation["thread_id"])
             except CodexBridgeError as exc:
                 raise ManagerError(502, str(exc)) from exc
         shared_spec = SHARED_PROFILES.get(conversation["model"])
@@ -1497,8 +1558,9 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                     and service.get("instance_id") == conversation.get("shared_instance_id")):
                 await manager.rig.shared_kv("detach", model=shared_spec["model"],
                                             chat_id=conversation["shared_chat_id"])
-        if conversation["provider"] == "codex":
-            await asyncio.to_thread(_remove_codex_attachments, conversation, cid, codex)
+        if is_codex(conversation):
+            await asyncio.to_thread(_remove_codex_attachments, conversation, cid,
+                                    conversation_codex(conversation))
         await asyncio.to_thread(get_store(cid).delete, cid)
         return {"deleted": cid}
 
@@ -1542,7 +1604,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         if cid in active_local:
             raise ManagerError(409, "Wait for the running turn before switching models")
         current = await asyncio.to_thread(get_store(cid).get, cid)
-        if current["provider"] == "codex":
+        if is_codex(current):
             raise ManagerError(409, "Codex conversations use their own agent thread")
         choices = offered()
         if model not in choices or not isinstance(expected, str):
@@ -1649,7 +1711,17 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             if not claude.available():
                 raise ManagerError(503, "Claude API is not configured on the Pi")
             return {"state": "ready", "profile": "Claude", "context_length": None, "gpu_ids": []}
-        if conversation["provider"] == "codex":
+        if conversation["provider"] == "claude_code":
+            if not (await claude_code.account()).get("connected"):
+                raise ManagerError(503, "Claude Code is not signed in")
+            return {"state": "ready", "profile": "Claude Code", "context_length": None, "gpu_ids": []}
+        if conversation["provider"] == "openrouter":
+            model = conversation["model"].removeprefix("openrouter/")
+            if model not in openrouter.models():
+                raise ManagerError(503, "OpenRouter model is no longer enabled in Cloud")
+            return {"state": "ready", "profile": conversation["model"],
+                    "context_length": None, "gpu_ids": []}
+        if is_codex(conversation):
             raise ManagerError(400, "Codex sessions do not load rig models")
         model = conversation["model"]
         spec = offered().get(model)
@@ -1664,13 +1736,15 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     async def start_codex_turn(cid: str, conversation: dict, prompt: str,
                                images: list[dict], attachment_meta: list[dict],
                                file_context: str, surface: str) -> dict:
+        codex_bridge = conversation_codex(conversation)
+        codex_model_name = "Codex API" if conversation["provider"] == "codex_api" else "Codex"
         if cid in active_codex:
             raise ManagerError(409, "This Codex conversation already has a running turn")
         active_codex.add(cid)
         try:
             turn_id = await asyncio.to_thread(
                 get_store(cid).begin_turn, cid, len(conversation["messages"]),
-                "Codex", prompt, images + attachment_meta, surface)
+                codex_model_name, prompt, images + attachment_meta, surface)
         except Exception:
             active_codex.discard(cid)
             raise
@@ -1690,7 +1764,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                     if not thread_id:
                         continue
                     try:
-                        events = codex.status(thread_id).get("events") or []
+                        events = codex_bridge.status(thread_id).get("events") or []
                         await asyncio.to_thread(get_store(cid).set_turn_progress, turn_id, events)
                     except Exception:
                         pass
@@ -1699,14 +1773,14 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 if not thread_id:
                     return []
                 try:
-                    return [event for event in (codex.status(thread_id).get("events") or [])
+                    return [event for event in (codex_bridge.status(thread_id).get("events") or [])
                             if event.get("method") != "thread/compacted"]
                 except Exception:
                     return []
 
             try:
                 checkpoint_task = asyncio.create_task(checkpoint_progress())
-                thread_id, answer = await codex.turn(
+                thread_id, answer = await codex_bridge.turn(
                     conversation["thread_id"], prompt + ("\n\n" + file_context if file_context else ""),
                     conversation["cwd"], save_thread, images=images,
                     model=conversation["codex_model"], effort=conversation["codex_effort"],
@@ -1714,11 +1788,11 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                     access=conversation["codex_access"], conversation_id=cid,
                     **({"surface": surface} if surface == "mobile" else {}))
                 async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
-                    status = codex.status(thread_id)
+                    status = codex_bridge.status(thread_id)
                     context = status.get("context") or {}
                     await asyncio.to_thread(
                         get_store(cid).append_exchange, cid, len(conversation["messages"]),
-                        "Codex", prompt, answer, turn_id=turn_id,
+                        codex_model_name, prompt, answer, turn_id=turn_id,
                         attachments=images + attachment_meta, activity=status["events"],
                         context_length=context.get("context_window", conversation.get("context_length")),
                         total_tokens=context.get("used_tokens", conversation.get("last_total_tokens")),
@@ -1781,7 +1855,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             conversation = await asyncio.to_thread(store_for_chat.get, job["conversation_id"])
             last = conversation.get("last_turn") or {}
             expected_states = ("failed", "interrupted") if job.get("kind") == "app_server_exit" else ("failed",)
-            if (conversation.get("provider") != "codex"
+            if (not is_codex(conversation)
                     or last.get("id") != job["source_turn_id"] or last.get("state") not in expected_states
                     or job["conversation_id"] in active_codex):
                 await asyncio.to_thread(store_for_chat.finish_auto_continuation,
@@ -1833,6 +1907,34 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             converted["transfer_id"] = source["transfer_id"]
         file_context = _file_context(files)
         attachment_meta = _attachment_metadata(files)
+        if conversation["provider"] == "claude_code":
+            if model != "Claude Code":
+                raise ManagerError(409, "This conversation uses Claude Code")
+            if images:
+                raise ManagerError(400, "Claude Code dashboard images are not wired yet")
+            if not isinstance(prompt, str) or len(prompt) > MAX_MESSAGE or (not prompt.strip() and not files):
+                raise ManagerError(400, f"provide a message of up to {MAX_MESSAGE} characters or an attachment")
+            prompt = prompt.strip() or "Please analyze the attached file."
+            started = time.monotonic()
+            try:
+                result = await claude_code.turn(
+                    conversation.get("thread_id"),
+                    prompt + ("\n\n" + file_context if files else ""),
+                    workspace=Path(conversation["cwd"]), mode=conversation["mode"], surface=surface)
+            except ClaudeCodeError as exc:
+                raise ManagerError(503, str(exc)) from exc
+            if not conversation.get("thread_id"):
+                await asyncio.to_thread(get_store(cid).set_thread, cid, result["session_id"])
+            usage = result["usage"]
+            if on_delta:
+                await on_delta(result["answer"])
+            await asyncio.to_thread(
+                get_store(cid).append_exchange, cid, len(conversation["messages"]),
+                "Claude Code", prompt, result["answer"],
+                turn_id=getattr(request.state, "local_turn_id", None), attachments=attachment_meta,
+                prompt_tokens=usage.get("input_tokens"), completion_tokens=usage.get("output_tokens"),
+                duration_ms=round((time.monotonic() - started) * 1000))
+            return {"answer": result["answer"], "model": "Claude Code"}
         if conversation["provider"] == "claude":
             if model != "Claude":
                 raise ManagerError(409, "This conversation uses Claude")
@@ -1861,15 +1963,47 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                                     completion_tokens=usage.get("output_tokens"),
                                     duration_ms=round((time.monotonic() - started) * 1000))
             return {"answer": result["answer"], "model": "Claude"}
-        if conversation["provider"] == "codex":
-            if model != "Codex":
+        if conversation["provider"] == "openrouter":
+            if model != conversation["model"]:
+                raise ManagerError(409, "This conversation uses another OpenRouter model")
+            if images:
+                raise ManagerError(400, "OpenRouter dashboard images are not wired yet")
+            if not isinstance(prompt, str) or len(prompt) > MAX_MESSAGE or (not prompt.strip() and not files):
+                raise ManagerError(400, f"provide a message of up to {MAX_MESSAGE} characters or an attachment")
+            prompt = prompt.strip() or "Please analyze the attached file."
+            started = time.monotonic()
+            try:
+                result = await openrouter.turn(
+                    conversation["model"].removeprefix("openrouter/"),
+                    [{"role": m["role"], "content": _message_content(m)}
+                     for m in conversation["messages"]],
+                    prompt + ("\n\n" + file_context if files else ""),
+                    mode=conversation["mode"],
+                    workspace=Path(conversation["cwd"]) if conversation["cwd"] else None,
+                    surface=surface, on_delta=on_delta, on_progress=on_progress)
+            except OpenRouterApiError as exc:
+                raise ManagerError(503, str(exc)) from exc
+            request.state.local_tool_activity = result["activity"]
+            usage = result["usage"]
+            await asyncio.to_thread(
+                get_store(cid).append_exchange, cid, len(conversation["messages"]),
+                conversation["model"], prompt, result["answer"],
+                turn_id=getattr(request.state, "local_turn_id", None),
+                attachments=attachment_meta, activity=result["activity"],
+                prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
+                duration_ms=round((time.monotonic() - started) * 1000))
+            return {"answer": result["answer"], "model": conversation["model"]}
+        if is_codex(conversation):
+            expected_codex_model = "Codex API" if conversation["provider"] == "codex_api" else "Codex"
+            if model != expected_codex_model:
                 raise ManagerError(409, "This conversation uses Codex")
             if not isinstance(prompt, str) or len(prompt) > MAX_MESSAGE or (not prompt.strip() and not images and not files):
                 raise ManagerError(400, f"provide a message of up to {MAX_MESSAGE} characters or an attachment")
             prompt = prompt.strip() or "Please analyze the attached file."
             if files:
                 files = await asyncio.to_thread(
-                    _materialize_codex_attachments, raw_files, files, conversation, cid, codex)
+                    _materialize_codex_attachments, raw_files, files, conversation, cid,
+                    conversation_codex(conversation))
                 file_context = _file_context(files)
                 attachment_meta = _attachment_metadata(files)
             return await start_codex_turn(
@@ -2291,7 +2425,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         body = await _json_body(request)
         conversation = await asyncio.to_thread(get_store(cid).get, cid)
         request.state.previous_local_turn = conversation.get("last_turn")
-        if conversation["provider"] in ("local", "claude") and isinstance(body.get("model"), str) and isinstance(body.get("message"), str):
+        if conversation["provider"] in ("local", "claude", "claude_code", "openrouter") and isinstance(body.get("model"), str) and isinstance(body.get("message"), str):
             request.state.local_turn_started = time.monotonic()
             request.state.local_turn_id = await asyncio.to_thread(
                 get_store(cid).begin_turn, cid, len(conversation["messages"]),
@@ -2301,7 +2435,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                  for item in (body.get("files") or []) if isinstance(item, dict)])
         async def remember_local_turn(result=None, error: str | None = None):
             model, prompt = body.get("model"), body.get("message")
-            if not isinstance(model, str) or model == "Codex" or not isinstance(prompt, str):
+            if not isinstance(model, str) or model in ("Codex", "Codex API") or not isinstance(prompt, str):
                 return
             if isinstance(result, Response):
                 try:
@@ -2318,7 +2452,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                                         round((time.monotonic() - request.state.local_turn_started) * 1000))
         if body.get("stream"):
             conversation = await asyncio.to_thread(get_store(cid).get, cid)
-            if conversation["provider"] not in ("local", "claude"):
+            if conversation["provider"] not in ("local", "claude", "claude_code", "openrouter"):
                 raise ManagerError(400, "This route does not support streamed turns")
             async def events():
                 queue = asyncio.Queue()
@@ -2386,7 +2520,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                                         round((time.monotonic() - request.state.local_turn_started) * 1000))
                 raise
             await remember_local_turn(result)
-            if isinstance(result, dict) and body.get("model") != "Codex":
+            if isinstance(result, dict) and body.get("model") not in ("Codex", "Codex API"):
                 result["conversation"] = await asyncio.to_thread(get_store(cid).get, cid)
             return result
         finally:
@@ -2395,10 +2529,11 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.get("/conversations/{cid}/agent")
     async def agent_status(cid: str):
         conversation = await asyncio.to_thread(get_store(cid).agent_state, cid)
-        if conversation["provider"] != "codex":
+        if not is_codex(conversation):
             raise ManagerError(400, "Not a Codex conversation")
         thread_id = conversation["thread_id"]
-        state = codex.status(thread_id) if thread_id else {"events": [], "approvals": [], "active": False}
+        bridge = conversation_codex(conversation)
+        state = bridge.status(thread_id) if thread_id else {"events": [], "approvals": [], "active": False}
         live = cid in active_codex or bool(state.get("active"))
         saved_turn = conversation.get("last_turn") or {}
         if saved_turn.get("state") == "running" and not live:
@@ -2412,10 +2547,11 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.get("/conversations/{cid}/agent/events")
     async def agent_events(cid: str):
         conversation = await asyncio.to_thread(get_store(cid).agent_state, cid)
-        if conversation["provider"] != "codex" or not conversation["thread_id"]:
+        if not is_codex(conversation) or not conversation["thread_id"]:
             raise ManagerError(400, "Not a started Codex conversation")
         thread_id = conversation["thread_id"]
-        queue = codex.subscribe(thread_id)
+        bridge = conversation_codex(conversation)
+        queue = bridge.subscribe(thread_id)
 
         async def events():
             try:
@@ -2427,7 +2563,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
             finally:
-                codex.unsubscribe(thread_id, queue)
+                bridge.unsubscribe(thread_id, queue)
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -2435,7 +2571,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.post("/conversations/{cid}/agent/steer")
     async def agent_steer(cid: str, request: Request):
         conversation = await asyncio.to_thread(get_store(cid).get, cid)
-        if conversation["provider"] != "codex" or not conversation["thread_id"]:
+        if not is_codex(conversation) or not conversation["thread_id"]:
             raise ManagerError(400, "Not an active Codex conversation")
         body = await _json_body(request)
         prompt = body.get("message")
@@ -2445,7 +2581,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(409, "This Codex conversation no longer has a running turn")
         async with codex_turn_locks.setdefault(cid, asyncio.Lock()):
             try:
-                codex_turn_id = await codex.steer(conversation["thread_id"], prompt.strip())
+                codex_turn_id = await conversation_codex(conversation).steer(
+                    conversation["thread_id"], prompt.strip())
             except CodexBridgeError as exc:
                 raise ManagerError(409, str(exc)) from exc
             saved = await asyncio.to_thread(get_store(cid).add_turn_steer, cid, prompt.strip())
@@ -2454,12 +2591,12 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.post("/conversations/{cid}/agent/interrupt")
     async def agent_interrupt(cid: str):
         conversation = await asyncio.to_thread(get_store(cid).get, cid)
-        if conversation["provider"] != "codex" or not conversation["thread_id"]:
+        if not is_codex(conversation) or not conversation["thread_id"]:
             raise ManagerError(400, "Not an active Codex conversation")
         if cid not in active_codex:
             raise ManagerError(409, "This Codex conversation no longer has a running turn")
         try:
-            turn_id = await codex.interrupt(conversation["thread_id"])
+            turn_id = await conversation_codex(conversation).interrupt(conversation["thread_id"])
         except CodexBridgeError as exc:
             raise ManagerError(409, str(exc)) from exc
         return {"stopping": True, "codex_turn_id": turn_id}
@@ -2471,13 +2608,13 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         command = body.get("command")
         if command not in ("compact", "diff", "model"):
             raise ManagerError(400, "Unsupported Codex command")
-        if command != 'diff' and conversation["provider"] != "codex":
+        if command != 'diff' and not is_codex(conversation):
             raise ManagerError(400, "This command requires a Codex conversation")
         if command == 'diff' and conversation['mode'] != 'coding':
             raise ManagerError(400, 'Choose a Coding conversation for workspace diff')
         if command == "model":
             try:
-                models = await codex.models()
+                models = await conversation_codex(conversation).models()
             except CodexBridgeError as exc:
                 raise ManagerError(502, str(exc)) from exc
             value = body.get("value")
@@ -2496,11 +2633,11 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             if not conversation["thread_id"]:
                 raise ManagerError(409, "Send a message before compacting this conversation")
             try:
-                await codex.compact(conversation["thread_id"])
+                await conversation_codex(conversation).compact(conversation["thread_id"])
             except CodexBridgeError as exc:
                 raise ManagerError(502, str(exc)) from exc
             return {"message": "Codex context compaction started."}
-        cwd = str(codex.workspace(conversation["cwd"]))
+        cwd = str(conversation_codex(conversation).workspace(conversation["cwd"]))
         def git_diff():
             status = subprocess.run(["git", "-C", cwd, "status", "--short"],
                                     capture_output=True, text=True, timeout=10, check=True)
@@ -2516,11 +2653,12 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     @r.post("/conversations/{cid}/agent/approval")
     async def agent_approval(cid: str, request: Request):
         conversation = await asyncio.to_thread(get_store(cid).get, cid)
-        if conversation["provider"] != "codex" or not conversation["thread_id"]:
+        if not is_codex(conversation) or not conversation["thread_id"]:
             raise ManagerError(400, "Not an active Codex conversation")
         body = await _json_body(request)
         try:
-            await codex.decide(conversation["thread_id"], str(body.get("request_id")), str(body.get("decision")))
+            await conversation_codex(conversation).decide(
+                conversation["thread_id"], str(body.get("request_id")), str(body.get("decision")))
         except CodexBridgeError as exc:
             raise ManagerError(409, str(exc)) from exc
         return {"resolved": True}

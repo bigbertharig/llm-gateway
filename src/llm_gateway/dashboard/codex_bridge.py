@@ -91,8 +91,14 @@ def _delegate_receipt(value: object) -> dict | None:
 
 
 class CodexBridge:
-    def __init__(self, command: str | None = None):
+    def __init__(self, command: str | None = None, auth_home: Path | None = None):
         self.command = command or os.getenv("CODEX_CHAT_COMMAND", "codex")
+        self.auth_home = auth_home
+        try:
+            line_limit_mib = int(os.getenv("CODEX_APP_SERVER_LINE_LIMIT_MIB", "64"))
+        except ValueError:
+            line_limit_mib = 64
+        self.line_limit = max(8, min(128, line_limit_mib)) * 1024 * 1024
         self.process: asyncio.subprocess.Process | None = None
         self.reader_task: asyncio.Task | None = None
         self.stderr_task: asyncio.Task | None = None
@@ -208,6 +214,11 @@ class CodexBridge:
                 return
             self._closing = False
             try:
+                child_env = None
+                if self.auth_home is not None:
+                    self.auth_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    os.chmod(self.auth_home, 0o700)
+                    child_env = {**os.environ, "CODEX_HOME": str(self.auth_home)}
                 research_root = self.research_workspace()
                 # A named profile is required by current app-server for restricted reads.
                 profile = ('permissions.gateway_chat={filesystem={":minimal"="read",' +
@@ -217,7 +228,8 @@ class CodexBridge:
                     "-c", profile, "app-server", "--listen", "stdio://",
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    limit=4 * 1024 * 1024,
+                    limit=self.line_limit,
+                    env=child_env,
                 )
             except OSError as exc:
                 raise CodexBridgeError("Codex app-server is not installed on the gateway host") from exc
@@ -387,9 +399,11 @@ class CodexBridge:
             return {**self.account_state, "login": self.login_event}
         result = await self._call("account/read", {"refreshToken": False})
         account = result.get("account") or {}
-        self.account_state = {"connected": account.get("type") == "chatgpt",
+        account_type = account.get("type")
+        self.account_state = {"connected": account_type in ("chatgpt", "apiKey"),
+                              "auth_method": account_type,
                               "email": account.get("email"), "plan": account.get("planType")}
-        if self.account_state["connected"]:
+        if account_type == "chatgpt":
             try:
                 limits = await self._call("account/rateLimits/read", {})
                 snapshot = limits.get("rateLimits") or {}
@@ -402,10 +416,20 @@ class CodexBridge:
 
     async def start_login(self) -> dict:
         self.login_event = None
+        self.account_state = None
         result = await self._call("account/login/start", {"type": "chatgptDeviceCode"})
         return {"login_id": result.get("loginId"),
                 "verification_url": result.get("verificationUrl"),
                 "user_code": result.get("userCode")}
+
+    async def login_api_key(self, api_key: str) -> dict:
+        api_key = api_key.strip()
+        if not api_key or "\n" in api_key or len(api_key) > 4096:
+            raise CodexBridgeError("OpenAI API key must be one nonempty line")
+        self.login_event = None
+        self.account_state = None
+        await self._call("account/login/start", {"type": "apiKey", "apiKey": api_key})
+        return await self.account()
 
     async def logout(self) -> None:
         await self._call("account/logout")

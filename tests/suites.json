@@ -3,7 +3,8 @@
     "purpose": "OpenAI and Claude-compatible HTTP APIs, authentication, streaming, and upstream failures",
     "tests": [
       "tests/test_gateway.py",
-      "tests/test_claude_api.py"
+      "tests/test_claude_api.py",
+      "tests/test_cloud_settings.py"
     ]
   },
   "model_planning": {
@@ -38,6 +39,7 @@
     "tests": [
       "tests/test_dashboard_chat.py",
       "tests/test_codex_bridge.py",
+      "tests/test_claude_code.py",
       "tests/test_shared_chat.py"
     ]
   },

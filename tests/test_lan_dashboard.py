@@ -20,20 +20,39 @@ def test_only_dashboard_routes_are_forwarded(monkeypatch):
         assert client.get("/gpurig", headers=headers).status_code == 200
         assert client.get("/v1/manager/status", headers=headers).status_code == 404
         assert client.get("/v1/manager/local-agent-capabilities", headers=headers).status_code == 200
+        assert client.get("/dashboard/api/cloud/settings", headers=headers).status_code == 200
+        assert client.get("/dashboard/api/cloud/openrouter/models", headers=headers).status_code == 200
         assert client.get("/health", headers=headers).status_code == 404
         assert client.get("/dashboard/%2e%2e/v1/manager/status", headers=headers).status_code == 404
         post_headers = {**headers, "origin": "https://raspberrypi.local",
                         "content-type": "application/json", "sec-fetch-site": "same-origin"}
         assert client.post("/dashboard/api/rig/kill", headers=post_headers, json={"gpu_ids": []}).status_code == 200
         assert client.post("/v1/manager/agent-routes/release", headers=post_headers, json={}).status_code == 200
+        assert client.post("/dashboard/api/cloud/openrouter", headers=post_headers, json={}).status_code == 200
+        assert client.post("/dashboard/api/cloud/claude", headers=post_headers, json={}).status_code == 200
+        for route in ("codex/api-key", "codex/login", "codex/logout", "codex/api-logout",
+                      "claude-code/logout", "claude-code/login", "claude-code/login/complete"):
+            assert client.post("/dashboard/api/cloud/" + route,
+                               headers=post_headers, json={}).status_code == 200
         assert client.post("/dashboard/api/rig/kill", headers={**post_headers, "origin": "https://evil.test"}, json={}).status_code == 403
         assert client.post("/dashboard/api/rig/kill", headers={**post_headers, "sec-fetch-site": "cross-site"}, json={}).status_code == 403
         assert client.post("/dashboard/api/rig/rm_rf", headers=post_headers, json={}).status_code == 404
         assert client.post("/dashboard/api/rig/kill", headers=post_headers,
                            content=b"x" * (MAX_BODY + 1)).status_code == 413
         assert calls == [("GET", "/dashboard/"), ("GET", "/v1/manager/local-agent-capabilities"),
+                         ("GET", "/dashboard/api/cloud/settings"),
+                         ("GET", "/dashboard/api/cloud/openrouter/models"),
                          ("POST", "/dashboard/api/rig/kill"),
-                         ("POST", "/v1/manager/agent-routes/release")]
+                         ("POST", "/v1/manager/agent-routes/release"),
+                         ("POST", "/dashboard/api/cloud/openrouter"),
+                         ("POST", "/dashboard/api/cloud/claude"),
+                         ("POST", "/dashboard/api/cloud/codex/api-key"),
+                         ("POST", "/dashboard/api/cloud/codex/login"),
+                         ("POST", "/dashboard/api/cloud/codex/logout"),
+                         ("POST", "/dashboard/api/cloud/codex/api-logout"),
+                         ("POST", "/dashboard/api/cloud/claude-code/logout"),
+                         ("POST", "/dashboard/api/cloud/claude-code/login"),
+                         ("POST", "/dashboard/api/cloud/claude-code/login/complete")]
 
 
 def test_chat_stream_passes_through_lan_front_door(monkeypatch):

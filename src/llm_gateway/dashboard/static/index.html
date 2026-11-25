@@ -182,6 +182,16 @@ textarea { width: 100%; min-height: 80px; }
 }
 .chat-sidebar, .chat-main { background: #0b263ce8; border: 1px solid var(--line); border-radius: 3px; padding: 14px; min-width: 0;
   box-shadow: inset 0 1px #72d3ff0b; }
+#tab-chat { --panel: #211631; --panel2: #2c1d43; --line: #644586; --muted: #bba8cf;
+  --cool: #bd82ff; --claim: #d3a8ff; --surface-deep: #170f24; --surface-hover: #40285e; --glow: #bd82ff24; }
+nav button[data-tab="chat"][aria-selected="true"] { border-bottom-color: #bd82ff;
+  background: linear-gradient(#38204f40, #4b2c6970); box-shadow: inset 0 -8px 18px #bd82ff18; }
+#tab-chat .chat-sidebar, #tab-chat .chat-main { background: #211631ed; box-shadow: inset 0 1px #d3a8ff12; }
+#tab-chat .chat-conversation { background: #2c1d43c9; }
+#tab-chat .chat-body th { background: #35224e; }
+#tab-chat .chat-body tr:nth-child(even), #tab-chat .chat-body pre, #tab-chat .chat-body code { background: #170f24; }
+#tab-chat .chat-placement { background: #2a2035; }
+#tab-chat #chat-form { background: #170f24; }
 .chat-sidebar label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
 .chat-sidebar select { width: 100%; }
 .chat-sidebar .act { margin-top: 10px; }
@@ -233,7 +243,7 @@ textarea { width: 100%; min-height: 80px; }
 .chat-messages { flex: 1; min-height: 260px; max-height: 60vh; overflow: auto; padding: 8px 0; }
 .chat-message { max-width: 100%; margin: 8px 0 14px; padding: 4px 2px; border: 0; border-radius: 0;
   background: transparent; overflow-wrap: anywhere; }
-.chat-message.assistant { max-width: 100%; margin-left: 0; }
+.chat-message.assistant { max-width: 100%; margin-left: 0; color: #fff; }
 .chat-message.user { max-width: min(82%, 900px); margin-left: auto; padding-right: 10px; border-right: 2px solid var(--cool);
   text-align: right; }
 .chat-message .meta { color: var(--muted); font: 11px var(--mono); margin-bottom: 6px; }
@@ -253,10 +263,9 @@ textarea { width: 100%; min-height: 80px; }
 .chat-messages.hide-tools .chat-activity[data-tool-only="true"] { display: none; }
 .chat-tool-history-more { margin: 2px 0 8px; }
 .chat-tool-disclosure.older-tool { display: none; }
-.chat-compaction-marker { display: flex; align-items: center; gap: 10px; margin: 16px 0;
-  color: var(--muted); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
-.chat-compaction-marker::before,.chat-compaction-marker::after { content: ""; height: 1px;
-  background: var(--line); flex: 1; }
+.chat-compaction-marker { display: grid; grid-template-columns: 1fr; gap: 6px; margin: 22px 0;
+  color: var(--warm); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.chat-compaction-marker .compaction-rule { height: 1px; background: var(--warm); width: 100%; }
 .chat-failure-actions { display: flex; gap: 8px; margin-top: 8px; }
 .chat-live[hidden], .chat-agent-events[hidden] { display: none; }
 .chat-agent-events { padding: 4px 0; }
@@ -328,6 +337,29 @@ textarea { width: 100%; min-height: 80px; }
 @keyframes chat-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #chat-progress::before { animation: none; } }
 @media (max-width: 760px) { .chat-layout { grid-template-columns: 1fr; } .chat-messages { max-height: 50vh; } }
+.cloud-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.cloud-card { background: #0b263ce8; border: 1px solid var(--line); border-radius: 3px; padding: 16px; }
+.cloud-card-full { grid-column: 1 / -1; }
+.cloud-card h2 { margin-top: 0; }
+.cloud-form { display: grid; gap: 12px; }
+.cloud-form label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.cloud-secret { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.cloud-secret .act { min-width: 42px; padding-inline: 10px; font-size: 16px; }
+.cloud-model-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cloud-model-list { max-height: 520px; overflow: auto; border: 1px solid var(--line); background: var(--bg); }
+.cloud-model-table { width: 100%; min-width: 860px; border-collapse: collapse; font-size: 12px; }
+.cloud-model-table th { position: sticky; top: 0; z-index: 1; padding: 0; background: #12324a;
+  border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.cloud-model-table th:first-child, .cloud-model-table td:first-child { width: 34px; padding-inline: 10px 2px; }
+.cloud-model-table th button { width: 100%; padding: 9px 8px; border: 0; background: none; color: var(--muted);
+  font: 11px var(--mono); text-align: left; cursor: pointer; }
+.cloud-model-table th button:hover { color: var(--text); background: #ffffff0a; }
+.cloud-model-table td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cloud-model-table tr:last-child td { border-bottom: 0; }
+.cloud-model-table td:not(:nth-child(2)) { white-space: nowrap; font-family: var(--mono); }
+.cloud-model-table b, .cloud-model-table small { display: block; overflow-wrap: anywhere; }
+.cloud-model-table small { color: var(--muted); font: 10px var(--mono); }
+@media (max-width: 900px) { .cloud-grid { grid-template-columns: 1fr; } }
 
 /* Rig overview uses manager and rig status through gateway APIs. */
 .rig-overview { display: grid; grid-template-columns: minmax(240px, 1.5fr) repeat(4, minmax(130px, 1fr)); gap: 10px; }
@@ -396,6 +428,7 @@ a { color: var(--cool); }
   <button role="tab" data-tab="models" aria-selected="false">Models</button>
   <button role="tab" data-tab="benchmarks" aria-selected="false">Benchmarks</button>
   <button role="tab" data-tab="upload" aria-selected="false">Upload</button>
+  <button role="tab" data-tab="cloud" aria-selected="false">Cloud</button>
   <button role="tab" data-tab="chat" aria-selected="false">Chat</button>
   <button role="tab" data-tab="coding" aria-selected="false">Coding</button>
 </nav>
@@ -454,17 +487,95 @@ a { color: var(--cool); }
     <div id="upload-list" class="scroll"></div>
   </section>
 
+  <section id="tab-cloud" hidden>
+    <p class="line">Gateway stores provider keys in private files on the controller. Keys are accepted on save and are never returned to this page.</p>
+    <div class="cloud-grid">
+      <section class="cloud-card cloud-card-full">
+        <h2>OpenRouter</h2>
+        <form id="cloud-openrouter-form" class="cloud-form">
+          <div id="cloud-openrouter-status" class="line">Loading configuration...</div>
+          <label>API key
+            <span class="cloud-secret"><input id="cloud-openrouter-key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the stored key">
+              <button class="act" type="button" data-secret-toggle="cloud-openrouter-key" aria-label="Show OpenRouter API key" title="Show API key">◉</button></span>
+          </label>
+          <div class="cloud-model-toolbar">
+            <button class="act" id="cloud-openrouter-discover" type="button">Refresh model catalog</button>
+            <input id="cloud-openrouter-search" type="search" placeholder="Filter models" aria-label="Filter OpenRouter models">
+            <button class="act" id="cloud-openrouter-select-visible" type="button">Select visible</button>
+            <button class="act" id="cloud-openrouter-clear-visible" type="button">Clear visible</button>
+            <span id="cloud-openrouter-selection-count" class="line">0 models selected</span>
+          </div>
+          <div id="cloud-openrouter-models" class="cloud-model-list">Save an API key, then refresh the catalog.</div>
+          <div class="chat-actions">
+            <button class="act" type="submit">Save OpenRouter settings</button>
+            <button class="act danger" id="cloud-openrouter-clear" type="button">Remove stored key</button>
+          </div>
+        </form>
+      </section>
+      <section class="cloud-card">
+        <h2>Claude</h2>
+        <h3>Anthropic API</h3>
+        <form id="cloud-claude-form" class="cloud-form">
+          <div id="cloud-claude-status" class="line">Loading configuration...</div>
+          <label>API key
+            <span class="cloud-secret"><input id="cloud-claude-key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the stored key">
+              <button class="act" type="button" data-secret-toggle="cloud-claude-key" aria-label="Show Claude API key" title="Show API key">◉</button></span>
+          </label>
+          <label>Model ID
+            <input id="cloud-claude-model" type="text" placeholder="claude-..." maxlength="240">
+          </label>
+          <div class="chat-actions">
+            <button class="act" type="submit">Save Claude settings</button>
+            <button class="act danger" id="cloud-claude-clear" type="button">Remove stored key</button>
+          </div>
+        </form>
+        <h3>Claude subscription</h3>
+        <div id="cloud-claude-code-status" class="line">Checking Claude Code login...</div>
+        <p class="line">Claude subscription access runs through Claude Code on the Gateway.</p>
+        <div id="cloud-claude-code-auth" hidden>
+          <a id="cloud-claude-code-auth-link" target="_blank" rel="noopener noreferrer">Open Claude authorization</a>
+          <label>One-time authorization code
+            <input id="cloud-claude-code-auth-code" type="text" autocomplete="one-time-code" placeholder="Paste the code returned by Claude">
+          </label>
+          <button class="act" id="cloud-claude-code-complete" type="button">Complete Claude login</button>
+        </div>
+        <div class="chat-actions">
+          <button class="act" id="cloud-claude-code-login" type="button">Connect Claude account</button>
+          <button class="act" id="cloud-claude-code-refresh" type="button">Refresh login status</button>
+          <button class="act danger" id="cloud-claude-code-logout" type="button" hidden>Sign out Claude Code</button>
+        </div>
+      </section>
+      <section class="cloud-card">
+        <h2>Codex</h2>
+        <p class="line">ChatGPT subscription and OpenAI API billing are independent. Configure either one or both.</p>
+        <h3>ChatGPT subscription</h3>
+        <div id="chat-account" class="chat-account">
+          <div id="chat-account-state">Checking Codex login...</div>
+          <button class="act" id="chat-connect" type="button">Connect ChatGPT account</button>
+          <button class="act danger" id="chat-disconnect" type="button" hidden>Sign out Codex</button>
+          <div id="chat-device-code" hidden></div>
+        </div>
+        <h3>OpenAI API</h3>
+        <div id="cloud-codex-api-status" class="line">Checking Codex API login...</div>
+        <form id="cloud-codex-api-form" class="cloud-form">
+          <label>OpenAI API key
+            <span class="cloud-secret"><input id="cloud-codex-api-key" type="password" autocomplete="new-password" placeholder="sk-...">
+              <button class="act" type="button" data-secret-toggle="cloud-codex-api-key" aria-label="Show OpenAI API key" title="Show API key">◉</button></span>
+          </label>
+          <div class="chat-actions">
+            <button class="act" type="submit">Save Codex API key</button>
+            <button class="act danger" id="cloud-codex-api-logout" type="button" hidden>Remove Codex API key</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </section>
+
   <section id="tab-chat" hidden>
     <div class="chat-layout" id="chat-shell">
       <aside class="chat-sidebar">
         <label>Model <select id="chat-model" aria-label="Chat model"></select></label>
         <select id="chat-workspace" aria-hidden="true" tabindex="-1" hidden></select>
-        <div id="chat-account" class="chat-account" hidden>
-          <div id="chat-account-state"></div>
-          <button class="act" id="chat-connect" type="button">Connect ChatGPT account</button>
-          <button class="act" id="chat-disconnect" type="button" hidden>Sign out</button>
-          <div id="chat-device-code" hidden></div>
-        </div>
         <div class="line" id="chat-model-note">Loading models...</div>
         <section class="chat-loaded" aria-label="Model availability">
           <h2>Availability</h2><div id="chat-rig-summary">Checking the rig...</div>
@@ -723,6 +834,243 @@ async function act(label, path, body, confirmText) {
     refresh(true);
   } catch (e) { toast(label + " failed: " + e.message, "bad"); }
 }
+async function cloudRequest(path, method = "GET", body) {
+  const options = {method, cache: "no-store", headers: {"Content-Type": "application/json"}};
+  if (body !== undefined) options.body = JSON.stringify(body);
+  const response = await fetch("/dashboard/api/cloud/" + path, options);
+  let data = {};
+  try { data = await response.json(); } catch (e) { /* handled below */ }
+  if (!response.ok) throw new Error(data.error?.message || `${response.status} ${response.statusText}`);
+  return data;
+}
+let cloudSettings = null, openRouterCatalog = [], openRouterSelection = new Set();
+let openRouterSort = {key: "name", direction: "asc"};
+function filteredOpenRouterModels() {
+  const byId = new Map(openRouterCatalog.map((row) => [row.id, row]));
+  for (const id of openRouterSelection) if (!byId.has(id)) byId.set(id, {id, name: id, description: "Selected model"});
+  const query = $("#cloud-openrouter-search").value.trim().toLowerCase();
+  const rows = [...byId.values()].filter((row) =>
+    !query || row.id.toLowerCase().includes(query) || String(row.name || "").toLowerCase().includes(query));
+  const value = (row) => openRouterSort.key === "name" ? String(row.name || row.id).toLowerCase() :
+    row[openRouterSort.key];
+  return rows.sort((left, right) => {
+    const a = value(left), b = value(right);
+    if (a == null && b == null) return left.id.localeCompare(right.id);
+    if (a == null) return 1;
+    if (b == null) return -1;
+    const order = typeof a === "string" ? a.localeCompare(b) : a - b;
+    return (openRouterSort.direction === "asc" ? order : -order) || left.id.localeCompare(right.id);
+  });
+}
+function updateOpenRouterSelectionCount() {
+  const count = openRouterSelection.size;
+  $("#cloud-openrouter-selection-count").textContent = `${count} model${count === 1 ? "" : "s"} selected`;
+}
+function renderCodexAccount(state) {
+  codexConnected = !!state.connected;
+  $("#chat-account-state").textContent = state.error || (state.connected
+    ? "Connected" + (state.email ? ": " + state.email : "") + (state.plan ? " (" + state.plan + ")" : "")
+    : "ChatGPT subscription is not connected.");
+  $("#chat-connect").hidden = false;
+  $("#chat-connect").textContent = state.connected ? "Reconnect ChatGPT account" : "Connect ChatGPT account";
+  $("#chat-disconnect").hidden = !state.connected;
+}
+function renderOpenRouterModels() {
+  const target = $("#cloud-openrouter-models");
+  const rows = filteredOpenRouterModels();
+  updateOpenRouterSelectionCount();
+  if (!rows.length) { target.textContent = openRouterCatalog.length ? "No models match the filter." :
+    "Save an API key, then refresh the catalog."; return; }
+  const table = document.createElement("table"); table.className = "cloud-model-table";
+  const head = document.createElement("thead"), headerRow = document.createElement("tr");
+  const checkHeader = document.createElement("th"); checkHeader.scope = "col";
+  checkHeader.setAttribute("aria-label", "Model selection"); headerRow.append(checkHeader);
+  const columns = [["name", "Model"], ["context_length", "Context"],
+    ["prompt_price_per_million", "Input $ / 1M"],
+    ["completion_price_per_million", "Output $ / 1M"], ["release_year", "Released"]];
+  for (const [key, label] of columns) {
+    const th = document.createElement("th"); th.scope = "col";
+    th.setAttribute("aria-sort", openRouterSort.key === key
+      ? (openRouterSort.direction === "asc" ? "ascending" : "descending") : "none");
+    const button = document.createElement("button"); button.type = "button";
+    button.textContent = label + (openRouterSort.key === key
+      ? (openRouterSort.direction === "asc" ? " ▲" : " ▼") : "");
+    button.onclick = () => {
+      openRouterSort = {key, direction: openRouterSort.key === key && openRouterSort.direction === "asc" ? "desc" : "asc"};
+      renderOpenRouterModels();
+    };
+    th.append(button); headerRow.append(th);
+  }
+  head.append(headerRow); table.append(head);
+  const body = document.createElement("tbody");
+  const price = (value) => value == null ? "—" : value === 0 ? "Free" :
+    "$" + (value < 0.001 ? value.toPrecision(2) : value < 1 ? value.toFixed(3) : value.toFixed(2));
+  for (const row of rows) {
+    const tr = document.createElement("tr"), checkCell = document.createElement("td");
+    const input = document.createElement("input"); input.type = "checkbox"; input.value = row.id;
+    input.setAttribute("aria-label", "Enable " + (row.name || row.id));
+    input.checked = openRouterSelection.has(row.id);
+    input.onchange = () => {
+      if (input.checked) openRouterSelection.add(row.id); else openRouterSelection.delete(row.id);
+      updateOpenRouterSelectionCount();
+    };
+    checkCell.append(input); tr.append(checkCell);
+    const text = document.createElement("td"), name = document.createElement("b");
+    name.textContent = row.name || row.id; const id = document.createElement("small"); id.textContent = row.id;
+    text.append(name, id);
+    const context = document.createElement("td"); context.textContent = Number.isFinite(row.context_length)
+      ? Number(row.context_length).toLocaleString() : "—";
+    const promptPrice = document.createElement("td"); promptPrice.textContent = price(row.prompt_price_per_million);
+    const completionPrice = document.createElement("td"); completionPrice.textContent = price(row.completion_price_per_million);
+    const released = document.createElement("td"); released.textContent = row.release_year || "—";
+    tr.append(text, context, promptPrice, completionPrice, released); body.append(tr);
+  }
+  table.append(body); target.replaceChildren(table);
+}
+async function loadCloud() {
+  try {
+    cloudSettings = await cloudRequest("settings");
+    const openrouter = cloudSettings.openrouter, claude = cloudSettings.claude;
+    openRouterSelection = new Set(openrouter.models || []);
+    $("#cloud-openrouter-status").textContent = openrouter.api_key_configured
+      ? `API key configured · ${openrouter.models.length} model${openrouter.models.length === 1 ? "" : "s"} enabled`
+      : "API key not configured";
+    $("#cloud-claude-status").textContent = claude.api_key_configured
+      ? "API key configured" : "API key not configured";
+    $("#cloud-claude-model").value = claude.model || "";
+    const claudeCode = cloudSettings.claude_code || {};
+    $("#cloud-claude-code-status").textContent = claudeCode.connected
+      ? `Connected: ${claudeCode.email || "Claude account"}${claudeCode.subscription ? " (" + claudeCode.subscription + ")" : ""}`
+      : (claudeCode.error || "Claude Code subscription is not connected.");
+    $("#cloud-claude-code-logout").hidden = !claudeCode.connected;
+    $("#cloud-claude-code-login").textContent = claudeCode.connected
+      ? "Connect a different Claude account" : "Connect Claude account";
+    renderCodexAccount(cloudSettings.codex_subscription || {});
+    const codexApi = cloudSettings.codex_api || {};
+    $("#cloud-codex-api-status").textContent = codexApi.connected
+      ? "OpenAI API key configured for Codex" : (codexApi.error || "Codex API key is not configured.");
+    $("#cloud-codex-api-logout").hidden = !codexApi.connected;
+    renderOpenRouterModels();
+  } catch (error) {
+    $("#cloud-openrouter-status").textContent = "Could not load Cloud settings: " + error.message;
+    $("#cloud-claude-status").textContent = "Could not load Cloud settings: " + error.message;
+    $("#cloud-claude-code-status").textContent = "Could not load Cloud settings: " + error.message;
+    throw error;
+  }
+}
+for (const button of document.querySelectorAll("[data-secret-toggle]")) {
+  button.onclick = () => {
+    const input = document.getElementById(button.dataset.secretToggle);
+    const visible = input.type === "text"; input.type = visible ? "password" : "text";
+    button.textContent = visible ? "◉" : "◎";
+    const provider = input.id.includes("openrouter") ? "OpenRouter" :
+      input.id.includes("codex") ? "OpenAI" : "Claude";
+    button.setAttribute("aria-label", (visible ? "Show " : "Hide ") + provider + " API key");
+    button.title = visible ? "Show API key" : "Hide API key";
+  };
+}
+$("#cloud-openrouter-key").oninput = () => {
+  if ($("#cloud-openrouter-key").value) $("#cloud-openrouter-status").textContent = "Key entered — save to configure.";
+  else if (cloudSettings) $("#cloud-openrouter-status").textContent = cloudSettings.openrouter.api_key_configured
+    ? `API key configured · ${cloudSettings.openrouter.models.length} model${cloudSettings.openrouter.models.length === 1 ? "" : "s"} enabled`
+    : "API key not configured";
+};
+$("#cloud-claude-key").oninput = () => {
+  if ($("#cloud-claude-key").value) $("#cloud-claude-status").textContent = "Key entered — save to configure.";
+  else if (cloudSettings) $("#cloud-claude-status").textContent = cloudSettings.claude.api_key_configured
+    ? "API key configured" : "API key not configured";
+};
+$("#cloud-openrouter-search").oninput = renderOpenRouterModels;
+$("#cloud-openrouter-select-visible").onclick = () => {
+  for (const row of filteredOpenRouterModels()) openRouterSelection.add(row.id);
+  renderOpenRouterModels();
+};
+$("#cloud-openrouter-clear-visible").onclick = () => {
+  for (const row of filteredOpenRouterModels()) openRouterSelection.delete(row.id);
+  renderOpenRouterModels();
+};
+$("#cloud-openrouter-discover").onclick = async () => {
+  try {
+    $("#cloud-openrouter-discover").disabled = true;
+    openRouterCatalog = (await cloudRequest("openrouter/models")).models || [];
+    renderOpenRouterModels(); toast(`Loaded ${openRouterCatalog.length} OpenRouter models.`, "good");
+  } catch (error) { toast("OpenRouter discovery failed: " + error.message, "bad"); }
+  finally { $("#cloud-openrouter-discover").disabled = false; }
+};
+$("#cloud-openrouter-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const models = [...openRouterSelection];
+  try {
+    await cloudRequest("openrouter", "POST", {api_key: $("#cloud-openrouter-key").value, models});
+    $("#cloud-openrouter-key").value = ""; await loadCloud(); last.chat = last.coding = 0;
+    toast("OpenRouter settings saved.", "good");
+  } catch (error) { toast("OpenRouter settings failed: " + error.message, "bad"); }
+};
+$("#cloud-openrouter-clear").onclick = async () => {
+  if (!confirm("Remove the Gateway's stored OpenRouter API key?")) return;
+  try {
+    await cloudRequest("openrouter", "POST", {clear_api_key: true,
+      models: cloudSettings?.openrouter?.models || []});
+    await loadCloud(); last.chat = last.coding = 0; toast("Stored OpenRouter key removed.", "good");
+  } catch (error) { toast("OpenRouter key removal failed: " + error.message, "bad"); }
+};
+$("#cloud-claude-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    await cloudRequest("claude", "POST", {api_key: $("#cloud-claude-key").value,
+      model: $("#cloud-claude-model").value});
+    $("#cloud-claude-key").value = ""; await loadCloud(); last.chat = last.coding = 0;
+    toast("Claude settings saved.", "good");
+  } catch (error) { toast("Claude settings failed: " + error.message, "bad"); }
+};
+$("#cloud-claude-clear").onclick = async () => {
+  if (!confirm("Remove the Gateway's stored Claude API key?")) return;
+  try {
+    await cloudRequest("claude", "POST", {clear_api_key: true,
+      model: $("#cloud-claude-model").value});
+    await loadCloud(); last.chat = last.coding = 0; toast("Stored Claude key removed.", "good");
+  } catch (error) { toast("Claude key removal failed: " + error.message, "bad"); }
+};
+$("#cloud-codex-api-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const input = $("#cloud-codex-api-key");
+  if (!input.value) { toast("Enter an OpenAI API key.", "bad"); return; }
+  try {
+    await cloudRequest("codex/api-key", "POST", {api_key: input.value});
+    input.value = ""; await loadCloud(); last.chat = last.coding = 0;
+    toast("Codex API key configured.", "good");
+  } catch (error) { toast("Codex API login failed: " + error.message, "bad"); }
+};
+$("#cloud-codex-api-logout").onclick = async () => {
+  if (!confirm("Remove the Codex OpenAI API key from the Gateway?")) return;
+  try { await cloudRequest("codex/api-logout", "POST", {}); await loadCloud();
+    toast("Codex API key removed.", "good"); }
+  catch (error) { toast("Codex API sign-out failed: " + error.message, "bad"); }
+};
+$("#cloud-claude-code-refresh").onclick = () => loadCloud().catch(() => {});
+$("#cloud-claude-code-login").onclick = async () => {
+  try {
+    const result = await cloudRequest("claude-code/login", "POST", {});
+    const box = $("#cloud-claude-code-auth"), link = $("#cloud-claude-code-auth-link");
+    link.href = result.verification_url; box.hidden = false; link.focus();
+    toast("Open Claude authorization, then paste the returned code.", "good");
+  } catch (error) { toast("Claude Code sign-in failed: " + error.message, "bad"); }
+};
+$("#cloud-claude-code-complete").onclick = async () => {
+  const input = $("#cloud-claude-code-auth-code");
+  if (!input.value.trim()) { toast("Paste the Claude authorization code.", "bad"); return; }
+  try {
+    await cloudRequest("claude-code/login/complete", "POST", {code: input.value});
+    input.value = ""; $("#cloud-claude-code-auth").hidden = true; await loadCloud();
+    last.chat = last.coding = 0; toast("Claude subscription connected.", "good");
+  } catch (error) { toast("Claude Code sign-in failed: " + error.message, "bad"); }
+};
+$("#cloud-claude-code-logout").onclick = async () => {
+  if (!confirm("Sign Claude Code out on the Gateway?")) return;
+  try { await cloudRequest("claude-code/logout", "POST", {}); await loadCloud();
+    toast("Claude Code signed out.", "good"); }
+  catch (error) { toast("Claude Code sign-out failed: " + error.message, "bad"); }
+};
 function heat(t) { return t == null ? "var(--line)" : t < 60 ? "var(--cool)" : t < 78 ? "var(--warm)" : "var(--hot)"; }
 
 // ---------------------------------------------------------------- rig
@@ -1008,6 +1356,7 @@ let currentChatSnapshot = null;
 const codexLimitAlerts = new Map();
 let codexEventSource = null;
 let codexEventChat = "";
+let pendingCodexCompaction = null;
 let localContextRefreshInFlight = false;
 let chatShowTools = true, chatVisibleToolRows = 80;
 try { chatShowTools = localStorage.getItem("desktop-show-tools") !== "false"; } catch (e) { /* private window */ }
@@ -1045,12 +1394,12 @@ function watchCodexEvents(id) {
   const source = new EventSource("/dashboard/api/chat/conversations/" + encodeURIComponent(id) + "/agent/events");
   codexEventSource = source; codexEventChat = id;
   source.onmessage = () => {
-    if (chatId === id && chatBoundModel === "Codex") refreshCodexApprovals(id);
+    if (chatId === id && isCodexChoice(chatBoundModel)) refreshCodexApprovals(id);
   };
   source.onerror = () => { /* EventSource reconnects; the recovery poll remains active. */ };
 }
 async function refreshLocalContextMeter(id, pending = false) {
-  if (localContextRefreshInFlight || !id || chatId !== id || chatBoundModel === "Codex") return;
+  if (localContextRefreshInFlight || !id || chatId !== id || isCodexChoice(chatBoundModel)) return;
   localContextRefreshInFlight = true;
   try {
     const options = await api("chat/options");
@@ -1221,8 +1570,9 @@ function renderModelAvailability() {
   const full = selectedLoaded?.kind === "shared" && free === 0;
   let message;
   if (!selected) message = "Choose a model to see whether it is ready.";
-  else if (selected === "Codex") message = "Codex is ready through the connected cloud account.";
+  else if (isCodexChoice(selected)) message = "Codex is ready through its configured Cloud connection.";
   else if (selected === "Claude") message = "Claude is ready through its API connection.";
+  else if (selected.startsWith("openrouter/")) message = "OpenRouter is ready through its configured API connection.";
   else if (full) message = `${name} is loaded, but all attached-chat slots are occupied. A new chat will be saved cold.`;
   else if (selectedLoaded || info?.ready) message = `${name} is loaded and ready.`;
   else if (!chatOptions?.rig_available) message = `${name} is cold. The rig is currently unavailable.`;
@@ -1242,14 +1592,14 @@ function renderModelAvailability() {
 function updateChatSwitchUI() {
   const selected = $("#chat-model").value;
   const changing = !!chatId && !!selected && selected !== chatBoundModel &&
-    selected !== "Codex" && chatBoundModel !== "Codex";
+    !isCodexChoice(selected) && !isCodexChoice(chatBoundModel);
   $("#chat-switch").hidden = !changing;
   const loaded = (chatOptions?.loaded_models || []).filter((m) => m.id !== selected);
   const active = loaded.reduce((n, m) => n + (m.live_chats || 0), 0);
   const foreign = loaded.some((m) => !chatLoadInfo.has(m.id));
   const saved = chatSavedConversations.filter((c) => c.model === chatBoundModel).length;
   const warning = $("#chat-switch-warning");
-  const needsRestore = !!chatId && chatBoundModel && chatBoundModel !== "Codex" &&
+  const needsRestore = !!chatId && chatBoundModel && !isCodexChoice(chatBoundModel) &&
     (!chatLoadInfo.get(chatBoundModel)?.ready ||
      (chatBoundModel.startsWith("shared-") && !chatPlacement(currentChatSnapshot)));
   $("#chat-restore").hidden = !needsRestore;
@@ -1293,7 +1643,8 @@ function loadingText(model, started) {
     loadDuration(estimate) + " total" + (remaining > 0 ? " (~" + loadDuration(remaining) + " left)" : " (longer than estimate)");
 }
 let chatBoundModel = "";
-let displayedChatId = "", chatOpening = 0, activeChatWorkspace = null;
+const isCodexChoice = (value) => value === "Codex" || value === "Codex API";
+let displayedChatId = "", chatOpening = 0, chatListOpening = 0, activeChatWorkspace = null;
 const busyChats = new Set();
 const codexActivityCache = new Map();
 function mergeCodexActivity(id, turn, events) {
@@ -1328,7 +1679,7 @@ $("#chat-enter-send").onchange = (event) => {
   chatEnterSends = event.target.checked;
   try { localStorage.setItem("dash-chat-enter-sends", String(chatEnterSends)); } catch (e) { /* private window */ }
 };
-let codexModels = [], codexModelsLoading = null;
+let codexModels = [], codexModelsLoading = null, codexModelsAuth = "";
 let codexModelChoice = null, codexEffortChoice = null, codexReviewerChoice = "user", codexAccessChoice = "local";
 let localAccessChoice = "local", localAccessSaving = false;
 let codexSettingsPending = Promise.resolve();
@@ -1345,9 +1696,9 @@ function pickerButton(menu, label, detail, checked, disabled, action) {
   button.onclick = action; menu.append(button);
 }
 function renderCodexControls() {
-  const cloud = $("#chat-model").value === "Codex";
+  const cloud = isCodexChoice($("#chat-model").value);
   $("#chat-codex-controls").hidden = !cloud;
-  $("#chat-local-controls").hidden = cloud || !chatId || chatBoundModel === "Codex" || chatBoundModel === "Claude";
+  $("#chat-local-controls").hidden = cloud || !chatId || isCodexChoice(chatBoundModel) || chatBoundModel === "Claude";
   const localLabels = {workspace: "Workspace bound", local: "Local", full: "Full"};
   $("#chat-local-access-summary").textContent = localLabels[localAccessChoice] || "Local";
   $("#chat-local-access-menu").querySelectorAll("[data-local-access]").forEach((button) => {
@@ -1384,8 +1735,10 @@ function renderCodexControls() {
   if (!effortMenu.childElementCount) pickerButton(effortMenu, "No effort options", "", false, true, null);
 }
 async function loadCodexModels() {
+  const auth = $("#chat-model").value === "Codex API" || chatBoundModel === "Codex API" ? "api" : "subscription";
+  if (codexModelsAuth !== auth) { codexModels = []; codexModelsAuth = auth; }
   if (codexModels.length || codexModelsLoading) return codexModelsLoading;
-  codexModelsLoading = api("chat/codex/models").then((result) => {
+  codexModelsLoading = api("chat/codex/models?auth=" + auth).then((result) => {
     codexModels = result.models || []; renderCodexControls();
   }).catch((error) => { toast("Codex models unavailable: " + error.message, "bad"); })
     .finally(() => { codexModelsLoading = null; });
@@ -1409,7 +1762,7 @@ async function selectCodexSetting(kind, value) {
   else codexReviewerChoice = value;
   document.querySelectorAll("#chat-codex-controls details").forEach((picker) => { picker.open = false; });
   renderCodexControls();
-  if (!chatId || chatBoundModel !== "Codex") return;
+  if (!chatId || !isCodexChoice(chatBoundModel)) return;
   codexSettingSaving = true; renderCodexControls();
   try {
     codexSettingsPending = saveCodexSettings(chatId);
@@ -1427,7 +1780,7 @@ $("#chat-access-menu").querySelectorAll("[data-access]").forEach((button) => {
   button.onclick = () => selectCodexSetting("access", button.dataset.access);
 });
 async function selectLocalAccess(value) {
-  if (chatBusy || localAccessSaving || !chatId || chatBoundModel === "Codex") return;
+  if (chatBusy || localAccessSaving || !chatId || isCodexChoice(chatBoundModel)) return;
   const before = localAccessChoice;
   localAccessChoice = value;
   localAccessSaving = true;
@@ -1468,22 +1821,31 @@ function chatToolDisclosure(event, line, detail = "") {
 }
 function chatCompactionMarker() {
   const marker = document.createElement("div"); marker.className = "chat-compaction-marker";
-  marker.textContent = "Compacted"; marker.setAttribute("role", "separator");
+  const started = document.createElement("span"); started.textContent = "Compaction started";
+  const rule = document.createElement("span"); rule.className = "compaction-rule";
+  const finished = document.createElement("span"); finished.className = "compaction-finished";
+  finished.textContent = "Compaction finished"; marker.append(started, rule, finished);
+  marker.setAttribute("role", "separator");
   marker.setAttribute("aria-label", "Conversation context compacted"); return marker;
 }
 function renderChatActivity(target, events, active = false, label = "") {
   const byId = new Map();
   for (const [index, event] of (events || []).entries()) {
     if (event.type === "tool") {
-      byId.set("tool:" + index, event);
+      byId.set("tool:" + index, {event, index});
       continue;
     }
     const item = event.item || {};
     if (item.type === "agentMessage" && item.phase === "final_answer") continue;
     const key = item.id || event.method + ":" + event.received_at;
-    byId.set(key, event);
+    byId.set(key, {event, index});
   }
-  const items = [...byId.values()], signature = JSON.stringify(items);
+  const items = [...byId.values()].sort((left, right) => {
+    const leftAt = Date.parse(left.event.received_at || "");
+    const rightAt = Date.parse(right.event.received_at || "");
+    return Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt
+      ? leftAt - rightAt : left.index - right.index;
+  }).map((row) => row.event), signature = JSON.stringify(items);
   const toolOnly = items.length > 0 && items.every((event) =>
     event.method !== "thread/compacted" && event.item?.type !== "agentMessage");
   if (target.dataset.signature === signature && target.dataset.active === String(active)) return;
@@ -1601,7 +1963,7 @@ function showChatCommandOutput(message) {
 function renderCodexSlashMenu() {
   const input = $("#chat-input"), menu = $("#chat-slash-menu");
   const match = input.value.match(/^\/([a-z-]*)$/i);
-  const choices = $("#chat-model").value === "Codex" && match
+  const choices = isCodexChoice($("#chat-model").value) && match
     ? codexSlashCommands.filter(([name]) => name.startsWith(match[1].toLowerCase()) &&
         (tab === "coding" || name !== "diff")) : [];
   menu.replaceChildren();
@@ -1640,16 +2002,21 @@ async function runCodexSlashCommand(prompt) {
       await openChat(matches[0].id); showChatCommandOutput("");
     }
   } else if (command === "status") {
-    if (!chatId || chatBoundModel !== "Codex") throw new Error("Open a Codex chat first.");
+    if (!chatId || !isCodexChoice(chatBoundModel)) throw new Error("Open a Codex chat first.");
     const c = await api("chat/conversations/" + encodeURIComponent(chatId));
     showChatCommandOutput("Chat: " + c.title + "\nWorkspace: " + c.cwd + "\nThread: " + (c.thread_id || "not started") +
       "\nModel: " + (c.codex_model || "Codex default") +
       "\nLast turn: " + (c.last_turn?.state || "none") + (c.last_turn?.error ? "\nError: " + c.last_turn.error : ""));
   } else if (command === "compact" || command === "diff" || command === "model") {
-    if (!chatId || chatBoundModel !== "Codex") throw new Error("Open a Codex chat first.");
-    const result = await api("chat/conversations/" + encodeURIComponent(chatId) + "/agent/command",
+    if (!chatId || !isCodexChoice(chatBoundModel)) throw new Error("Open a Codex chat first.");
+    const commandChat = chatId, startedAt = Date.now();
+    const result = await api("chat/conversations/" + encodeURIComponent(commandChat) + "/agent/command",
       {command, value: argument});
     showChatCommandOutput(result.message);
+    if (command === "compact") {
+      pendingCodexCompaction = {id: commandChat, startedAt};
+      await refreshCodexApprovals(commandChat);
+    }
     if (command === "model" && argument) await openChat(chatId, false);
   } else throw new Error("Unknown command. Type /help to see supported browser commands.");
 }
@@ -1676,7 +2043,7 @@ function renderPendingChatImages() {
   box.hidden = !chatImages.length;
   const warning = $("#chat-image-warning");
   warning.textContent = chatImageWarning || "This local model cannot read images. Start a Codex chat to send the picture, or remove it to send text only.";
-  warning.hidden = $("#chat-model").value === "Codex" || (!chatImages.length && !chatImageWarning);
+  warning.hidden = isCodexChoice($("#chat-model").value) || (!chatImages.length && !chatImageWarning);
   renderChatImages(box, chatImages, true);
   const files = $("#chat-pending-files"); files.replaceChildren(); files.hidden = !chatFiles.length;
   chatFiles.forEach((file, index) => {
@@ -1753,7 +2120,7 @@ async function loadUploads() {
   if (!uploadedFiles.length) list.textContent = "No uploaded files yet.";
 }
 async function addChatImages(files) {
-  if ($("#chat-model").value !== "Codex") {
+  if (!isCodexChoice($("#chat-model").value)) {
     chatImageWarning = "This local model cannot read images. Start a Codex chat to send a picture.";
     renderPendingChatImages();
     return;
@@ -1773,6 +2140,20 @@ async function addChatImages(files) {
   renderPendingChatImages();
 }
 function saveChatTabs() { try { localStorage.setItem("dash-chat-tabs", JSON.stringify(openChatTabs)); } catch (e) {} }
+function showChatModeLoading(mode) {
+  chatImages = []; chatFiles = []; chatImageWarning = "";
+  $("#chat-input").value = "";
+  $("#chat-title").textContent = "Loading " + (mode === "coding" ? "coding" : "chat") + " conversation...";
+  $("#chat-conversations").textContent = "Loading " + (mode === "coding" ? "Coding" : "Chat") + " conversations...";
+  $("#chat-tabs").replaceChildren();
+  const live = $("#chat-live"); $("#chat-messages").replaceChildren(live);
+  $("#chat-agent-events").replaceChildren(); $("#chat-agent-events").hidden = true;
+  $("#chat-command-output").hidden = true; $("#chat-progress").hidden = true;
+  $("#chat-approvals").hidden = true; $("#chat-placement").hidden = true;
+  $("#chat-delete").hidden = true; $("#chat-toggle-tools").hidden = true;
+  $("#chat-status").textContent = "Refreshing the selected " + mode + " conversation.";
+  syncChatLive(); renderPendingChatImages();
+}
 function clearChatView({preserveComposer = false} = {}) {
   chatId = ""; displayedChatId = ""; chatBoundModel = ""; activeChatWorkspace = null;
   currentChatSnapshot = null;
@@ -1845,34 +2226,33 @@ function syncChatTabSelection() {
   }
 }
 function chatProviderChanged() {
-  const cloud = $("#chat-model").value === "Codex";
+  const cloud = isCodexChoice($("#chat-model").value);
   const claude = $("#chat-model").value === "Claude";
+  const claudeCode = $("#chat-model").value === "Claude Code";
+  const openrouter = $("#chat-model").value.startsWith("openrouter/");
   if (cloud) chatImageWarning = "";
-  $("#chat-account").hidden = !cloud;
   $("#chat-model-note").hidden = cloud && tab === "coding";
   $("#chat-model-note").textContent = tab === "coding"
     ? "Text and files supported. Images require Codex."
     : cloud ? "Cloud research chat."
     : claude ? "Claude API chat uses the same reviewed harness tools as local chat. No rig GPU load is needed."
+    : claudeCode ? "Claude Code uses the connected Claude subscription and the selected workspace. No rig GPU load is needed."
+    : openrouter ? "OpenRouter cloud chat uses the reviewed harness tools. No rig GPU load is needed."
     : "Text and files supported. Images require Codex.";
   $("#chat-attach-row").hidden = false;
   $("#chat-attach").hidden = !cloud;
   renderCodexControls();
   renderPendingChatImages();
   if (tab === "coding" && !$("#chat-workspace").options.length) loadCodexAccount();
-  else if (cloud && !codexConnected) loadCodexAccount();
-  if (cloud && codexConnected) loadCodexModels();
+  else if (cloud) loadCodexAccount();
+  if ($("#chat-model").value === "Codex API" || (cloud && codexConnected)) loadCodexModels();
 }
 async function loadCodexAccount() {
   try {
     const state = await api("chat/codex/account");
-    codexConnected = !!state.connected;
-    if (codexConnected && $("#chat-model").value === "Codex") loadCodexModels();
-    $("#chat-account-state").textContent = state.error || (state.connected
-      ? "Connected: " + (state.email || "ChatGPT account") + (state.plan ? " (" + state.plan + ")" : "")
-      : "No ChatGPT account connected on the Pi.");
-    $("#chat-connect").hidden = codexConnected;
-    $("#chat-disconnect").hidden = !codexConnected;
+    renderCodexAccount(state);
+    if ($("#chat-model").value === "Codex API" ||
+        (codexConnected && $("#chat-model").value === "Codex")) loadCodexModels();
     const workspace = $("#chat-workspace"), wanted = activeChatWorkspace || workspace.value;
     workspace.replaceChildren(...(state.workspaces || []).map((path) => {
       const option = document.createElement("option"); option.value = path; option.textContent = path; return option;
@@ -1890,7 +2270,7 @@ async function loadCodexAccount() {
 }
 $("#chat-connect").onclick = async () => {
   try {
-    const result = await api("chat/codex/login", {});
+    const result = await cloudRequest("codex/login", "POST", {});
     const box = $("#chat-device-code"); box.replaceChildren(); box.hidden = false;
     const link = document.createElement("a"); link.href = result.verification_url;
     link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = result.verification_url;
@@ -1900,7 +2280,7 @@ $("#chat-connect").onclick = async () => {
   } catch (e) { toast("Sign-in could not start: " + e.message, "bad"); }
 };
 $("#chat-disconnect").onclick = async () => {
-  try { await api("chat/codex/logout", {}); await loadCodexAccount(); }
+  try { await cloudRequest("codex/logout", "POST", {}); await loadCodexAccount(); }
   catch (e) { toast("Sign-out failed: " + e.message, "bad"); }
 };
 $("#chat-attach").onclick = () => $("#chat-image-input").click();
@@ -1947,8 +2327,11 @@ function selectSavedChatModel(model) {
   select.value = model;
 }
 async function loadChat() {
+  const mode = tab === "coding" ? "coding" : "chat";
+  const listOpening = ++chatListOpening;
   const openingAtStart = chatOpening;
   const [opts, saved] = await Promise.all([api("chat/options"), api("chat/conversations")]);
+  if (listOpening !== chatListOpening || mode !== (tab === "coding" ? "coding" : "chat")) return;
   chatLoadInfo = new Map((opts.models || []).map((m) => [m.id, m]));
   chatPlacements = opts.chat_placements || [];
   chatOptions = opts; chatSavedConversations = saved.conversations;
@@ -1956,7 +2339,6 @@ async function loadChat() {
   managerApi("local-agent-capabilities").then(renderAgentCapacity)
     .catch(() => { $("#chat-agent-capacity").innerHTML =
       '<div class="chat-loaded-item"><b>Local agents</b><small>Status unavailable</small></div>'; });
-  const mode = tab === "coding" ? "coding" : "chat";
   const visible = saved.conversations.filter((c) => (c.mode || "chat") === mode);
   if (!visible.some((c) => c.id === chatId)) {
     chatId = chatNoSelection ? "" : visible[0]?.id || "";
@@ -1968,8 +2350,11 @@ async function loadChat() {
   }
   const select = $("#chat-model"), old = select.value;
   select.innerHTML = (mode === "coding" ? '' : '<option value="">Choose a model...</option>') +
-    '<option value="Codex">Codex</option>' +
+    (opts.codex_subscription_available ? '<option value="Codex">Codex (Subscription)</option>' : '') +
+    (opts.codex_api_available ? '<option value="Codex API">Codex (API)</option>' : '') +
     (opts.claude_api_available ? '<option value="Claude">Claude (API)</option>' : '') +
+    (opts.claude_code_available ? '<option value="Claude Code">Claude (Subscription)</option>' : '') +
+    (opts.cloud_models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (OpenRouter)</option>`).join("") +
     opts.models.map((m) => `<option value="${esc(m.id)}">${esc(m.model)} (${esc(m.id)})</option>`).join("");
   const current = visible.find((c) => c.id === chatId);
   // A prepare or park can change the live binding without reopening the conversation.
@@ -1979,10 +2364,14 @@ async function loadChat() {
     currentChatSnapshot.shared_instance_id = current.shared_instance_id;
   }
   if (current && old && displayedChatId === chatId &&
-      (old === "Codex" || old === "Claude" || opts.models.some((m) => m.id === old))) select.value = old;
+      (old === "Codex" || old === "Codex API" || old === "Claude" || old === "Claude Code" ||
+       (opts.cloud_models || []).some((m) => m.id === old) ||
+       opts.models.some((m) => m.id === old))) select.value = old;
   else if (current) selectSavedChatModel(current.model);
-  else if (old && (old === "Codex" || old === "Claude" || opts.models.some((m) => m.id === old))) select.value = old;
-  else if (mode === "coding") select.value = "Codex";
+  else if (old && (old === "Codex" || old === "Codex API" || old === "Claude" || old === "Claude Code" ||
+      (opts.cloud_models || []).some((m) => m.id === old) || opts.models.some((m) => m.id === old))) select.value = old;
+  else if (mode === "coding") select.value = opts.codex_subscription_available ? "Codex" :
+    opts.codex_api_available ? "Codex API" : select.options[0]?.value || "";
   chatProviderChanged();
   updateChatSwitchUI();
   renderModelAvailability();
@@ -1994,7 +2383,7 @@ async function loadChat() {
     (current.updated_at !== currentChatSnapshot.updated_at ||
      current.last_turn_state !== currentChatSnapshot.last_turn?.state);
   if (current && (displayedChatId !== chatId || changedElsewhere) && openingAtStart === chatOpening)
-    await openChat(chatId, false, !!changedElsewhere);
+    await openChat(chatId, false, !!changedElsewhere, mode);
   else if (current && currentChatSnapshot?.id === chatId && !busyChats.has(chatId) &&
       $("#chat-switch").hidden && openingAtStart === chatOpening) {
     $("#chat-status").textContent = chatContextStatus(currentChatSnapshot);
@@ -2057,7 +2446,8 @@ function addCodexRecoveryActions(notice, id) {
   inspect.onclick = () => notice.nextElementSibling?.querySelector("summary")?.click();
   actions.append(resume, inspect); notice.append(actions);
 }
-async function openChat(id, reloadList = true, preserveSelection = false) {
+async function openChat(id, reloadList = true, preserveSelection = false,
+                        expectedMode = tab === "coding" ? "coding" : "chat") {
   if (tab === "coding" && chatId !== id && codingHasDirtyDocuments() &&
       !confirm("Discard unsaved edits in the open workspace files?")) return;
   const opening = ++chatOpening;
@@ -2076,7 +2466,8 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   }
   const pendingModel = preserveSelection && sameChat ? $("#chat-model").value : "";
   const c = await api("chat/conversations/" + encodeURIComponent(id));
-  if (opening !== chatOpening) return;
+  if (opening !== chatOpening || expectedMode !== (tab === "coding" ? "coding" : "chat") ||
+      (c.mode || "chat") !== expectedMode) return;
   currentChatSnapshot = c;
   chatNoSelection = false;
   chatId = c.id;
@@ -2125,13 +2516,6 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
   box.replaceChildren();
   const historicalTurns = [...(c.historical_turns || [])];
   const conversationEvents = [...(c.events || [])];
-  const flushConversationEvents = (before) => {
-    while (conversationEvents.length && (!before ||
-        (Date.parse(conversationEvents[0].created_at) || 0) <= (Date.parse(before) || 0))) {
-      const event = conversationEvents.shift();
-      if (event.type === "compacted") box.append(chatCompactionMarker());
-    }
-  };
   const renderHistoricalTurn = (turn) => {
     const prompt = document.createElement("div"); prompt.className = "chat-message user";
     const meta = document.createElement("div"); meta.className = "meta";
@@ -2151,13 +2535,21 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
     notice.textContent = turn.state + ": " + (turn.error || "No final answer was saved. Continue this conversation to resume.");
     box.append(notice);
   };
-  const flushHistoricalTurns = (before) => {
-    while (historicalTurns.length && (!before || (Date.parse(historicalTurns[0].created_at) || 0) <= (Date.parse(before) || 0)))
-      renderHistoricalTurn(historicalTurns.shift());
+  const flushTranscriptHistory = (before) => {
+    const limit = before ? (Date.parse(before) || 0) : Infinity;
+    while (historicalTurns.length || conversationEvents.length) {
+      const historicalAt = historicalTurns.length ? Date.parse(historicalTurns[0].created_at) || 0 : Infinity;
+      const eventAt = conversationEvents.length ? Date.parse(conversationEvents[0].created_at) || 0 : Infinity;
+      if (Math.min(historicalAt, eventAt) > limit) break;
+      if (historicalAt <= eventAt) renderHistoricalTurn(historicalTurns.shift());
+      else {
+        const event = conversationEvents.shift();
+        if (event.type === "compacted") box.append(chatCompactionMarker());
+      }
+    }
   };
   for (const m of c.messages) {
-    flushConversationEvents(m.created_at);
-    if (m.role === "user") flushHistoricalTurns(m.created_at);
+    flushTranscriptHistory(m.created_at);
     const item = document.createElement("div");
     item.className = "chat-message " + m.role;
     const meta = document.createElement("div");
@@ -2198,8 +2590,7 @@ async function openChat(id, reloadList = true, preserveSelection = false) {
       box.append(item);
     }
   }
-  flushConversationEvents();
-  flushHistoricalTurns();
+  flushTranscriptHistory();
   if (c.last_turn && c.last_turn.state !== "completed") {
     const notice = document.createElement("div");
     notice.className = "line" + (["failed", "interrupted"].includes(c.last_turn.state) ? " bad" : "");
@@ -2300,13 +2691,13 @@ $("#chat-model").onchange = () => {
   loadChat().catch((error) => toast("Could not refresh chat capacity: " + error.message, "bad"));
   if (chatId && selected !== chatBoundModel) {
     $("#chat-status").textContent = "This conversation uses " + chatBoundModel +
-      (selected === "Codex" || chatBoundModel === "Codex"
+      (isCodexChoice(selected) || isCodexChoice(chatBoundModel)
         ? ". Start a new conversation for Codex or a rig model."
         : ". Continue with the selected model, or start a new conversation.");
   }
 };
 $("#chat-switch").onclick = async () => {
-  if (!chatId || busyChats.has(chatId) || chatBoundModel === "Codex") return;
+  if (!chatId || busyChats.has(chatId) || isCodexChoice(chatBoundModel)) return;
   const selected = $("#chat-model").value;
   if (!selected || selected === chatBoundModel) return;
   const loaded = (chatOptions?.loaded_models || []).filter((m) => m.id !== selected);
@@ -2325,7 +2716,7 @@ $("#chat-switch").onclick = async () => {
   } catch (e) { toast("Model switch failed: " + e.message, "bad"); }
 };
 $("#chat-restore").onclick = async () => {
-  if (!chatId || busyChats.has(chatId) || !chatBoundModel || chatBoundModel === "Codex") return;
+  if (!chatId || busyChats.has(chatId) || !chatBoundModel || isCodexChoice(chatBoundModel)) return;
   const target = chatBoundModel;
   if (sharedSlotsFull(target)) {
     toast("Hot chat slots are full. Open Rig details, park an idle attached chat, then activate this saved chat.", "bad");
@@ -2388,7 +2779,7 @@ async function prepareChat(id, model) {
 $("#chat-retry").onclick = () => prepareChat(chatId, chatBoundModel);
 $("#chat-new").onclick = async () => {
   try {
-    if ($("#chat-model").value === "Codex") {
+    if (isCodexChoice($("#chat-model").value)) {
       if (!codexConnected) { toast("Connect a ChatGPT account first.", "bad"); return; }
       const cwd = $("#chat-workspace").value;
       if (tab === "coding" && !cwd) { toast("No coding repository is available.", "bad"); return; }
@@ -2485,7 +2876,7 @@ async function deliverCodexAtNextBoundary(id, turnBody, preferSteer) {
 $("#chat-form").onsubmit = async (event) => {
   event.preventDefault();
   const input = $("#chat-input"); let prompt = input.value.trim();
-  const cloud = $("#chat-model").value === "Codex";
+  const cloud = isCodexChoice($("#chat-model").value);
   const steering = !!(cloud && chatId && busyChats.has(chatId));
   if (busyChats.has(chatId) && !steering) return;
   const model = cloud ? "Codex" : $("#chat-model").value;
@@ -2667,9 +3058,9 @@ $("#chat-form").onsubmit = async (event) => {
     loadChat(); }
 };
 
-$("#chat-stop").onclick = async () => {
+async function stopActiveCodexTurn() {
   const id = chatId;
-  if (!id || chatBoundModel !== "Codex" || !busyChats.has(id)) return;
+  if (!id || !isCodexChoice(chatBoundModel) || !busyChats.has(id)) return;
   $("#chat-stop").disabled = true;
   $("#chat-status").textContent = "Stopping the active Codex turn...";
   try {
@@ -2681,12 +3072,28 @@ $("#chat-stop").onclick = async () => {
   } finally {
     if (chatId === id) $("#chat-stop").disabled = false;
   }
-};
+}
+$("#chat-stop").onclick = stopActiveCodexTurn;
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.isComposing || event.repeat || event.defaultPrevented ||
+      !(tab === "chat" || tab === "coding") || !isCodexChoice(chatBoundModel) || !busyChats.has(chatId)) return;
+  event.preventDefault();
+  stopActiveCodexTurn();
+});
 
 async function refreshCodexApprovals(id) {
-  if (!id || chatId !== id || chatBoundModel !== "Codex") return;
+  if (!id || chatId !== id || !isCodexChoice(chatBoundModel)) return;
   try {
     const state = await api("chat/conversations/" + encodeURIComponent(id) + "/agent");
+    const finishedCompaction = pendingCodexCompaction?.id === id && (state.events || []).some((event) =>
+      event.method === "thread/compacted" &&
+      (Date.parse(event.received_at) || 0) >= pendingCodexCompaction.startedAt);
+    if (finishedCompaction) {
+      pendingCodexCompaction = null;
+      await openChat(id, false, true);
+      showChatCommandOutput("Codex context compaction finished.");
+      return;
+    }
     updateCodexLimitAlert(state.rate_limits);
     if (currentChatSnapshot?.id === id) {
       if (state.context) {
@@ -2762,7 +3169,7 @@ async function refreshCodexApprovals(id) {
   } catch (e) { /* A turn request reports failures. */ }
 }
 async function refreshActiveLocalTurn(id) {
-  if (!id || chatId !== id || chatBoundModel === "Codex" || !busyChats.has(id)) return;
+  if (!id || chatId !== id || isCodexChoice(chatBoundModel) || !busyChats.has(id)) return;
   try {
     const [conversation, options] = await Promise.all([
       api("chat/conversations/" + encodeURIComponent(id)), api("chat/options")]);
@@ -2782,7 +3189,7 @@ async function refreshActiveLocalTurn(id) {
 }
 setInterval(() => {
   if (!chatId) return;
-  if (chatBoundModel === "Codex") refreshCodexApprovals(chatId);
+  if (isCodexChoice(chatBoundModel)) refreshCodexApprovals(chatId);
   else if (!busyChats.has(chatId)) return;
   else refreshActiveLocalTurn(chatId);
 }, 10000);
@@ -3132,12 +3539,23 @@ function scrollActiveChatToBottom() {
 function show(name) {
   if ((name === "coding" || name === "chat") && shownTab !== name) {
     forceChatScrollBottom = true;
+    if ((shownTab === "chat" || shownTab === "coding") && chatId) {
+      chatDrafts.set(chatId, $("#chat-input").value);
+      chatImageDrafts.set(chatId, chatImages);
+      chatFileDrafts.set(chatId, chatFiles);
+    }
+    chatOpening++;
+    chatListOpening++;
+    currentChatSnapshot = null;
+    chatBoundModel = "";
+    activeChatWorkspace = null;
     try {
       const saved = localStorage.getItem("dash-chat-id-" + name);
       chatNoSelection = saved === "";
       chatId = saved || "";
     } catch (e) { chatId = ""; chatNoSelection = false; }
     displayedChatId = "";
+    showChatModeLoading(name);
   }
   shownTab = name;
   tab = name;
@@ -3167,39 +3585,55 @@ $("#load-form").onsubmit = (e) => {
                 args: f.get("args"), force: f.get("force") === "on"};
   act(`Load ${body.model}`, "rig/load", body, body.force ? `Kill whatever runs on cards ${body.gpu_ids} and load ${body.model}?` : "");
 };
-const every = {rig: 5000, models: 60000, benchmarks: 15000, upload: 10000, chat: 10000};
+const every = {rig: 5000, models: 60000, benchmarks: 15000, upload: 10000, cloud: 30000, chat: 10000, coding: 10000};
 let last = {};
 const localClock = (stamp) => new Intl.DateTimeFormat(undefined, {
   hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short"
 }).format(new Date(stamp));
 let refreshInFlight = null;
+let refreshQueued = false, refreshQueuedNow = false;
 async function refresh(now) {
-  if (refreshInFlight) return refreshInFlight;
+  if (refreshInFlight) {
+    refreshQueued = true;
+    refreshQueuedNow = refreshQueuedNow || now;
+    return refreshInFlight;
+  }
+  const refreshTab = tab;
   const button = $("#dashboard-refresh");
   button.disabled = true;
   refreshInFlight = (async () => {
     const due = (k) => now || !last[k] || Date.now() - last[k] > every[k];
     try {
-      if (tab === "rig" && due("rig")) {
+      if (refreshTab === "rig" && due("rig")) {
         renderRig(await api("rig"));
         last.rig = Date.now();
         if (!modelsData) renderModels(await api("models"));
       }
-      if (tab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
-      if (tab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
-      if (tab === "upload" && due("upload")) { await loadUploads(); last.upload = Date.now(); }
-      if ((tab === "chat" || tab === "coding") && due("chat") && !chatBusy) {
-        await Promise.all([loadChat(), loadUploads()]); last.chat = Date.now();
-        if (tab === "coding") { await loadCodingWorkspace(); last.coding = Date.now(); }
+      if (refreshTab === "models" && due("models")) { renderModels(await api("models")); last.models = Date.now(); }
+      if (refreshTab === "benchmarks" && due("benchmarks")) { renderBenchmarks(await api("benchmarks")); last.benchmarks = Date.now(); }
+      if (refreshTab === "upload" && due("upload")) { await loadUploads(); last.upload = Date.now(); }
+      if (refreshTab === "cloud" && due("cloud")) { await loadCloud(); last.cloud = Date.now(); }
+      if ((refreshTab === "chat" || refreshTab === "coding") && due(refreshTab) && !chatBusy) {
+        await Promise.all([loadChat(), loadUploads()]);
+        if (refreshTab === "coding" && tab === refreshTab) await loadCodingWorkspace();
+        if (tab === refreshTab) last[refreshTab] = Date.now();
       }
-      if (last[tab]) $("#stamp").textContent = "updated " + localClock(last[tab]);
+      if (tab === refreshTab && last[refreshTab]) $("#stamp").textContent = "updated " + localClock(last[refreshTab]);
     } catch (e) {
-      const prior = last[tab] ? " · last updated " + localClock(last[tab]) : "";
-      $("#stamp").textContent = "refresh failed: " + e.message + prior;
+      if (tab === refreshTab) {
+        const prior = last[refreshTab] ? " · last updated " + localClock(last[refreshTab]) : "";
+        $("#stamp").textContent = "refresh failed: " + e.message + prior;
+      }
     }
   })();
   try { await refreshInFlight; }
-  finally { refreshInFlight = null; button.disabled = false; }
+  finally {
+    const rerun = refreshQueued || tab !== refreshTab;
+    const rerunNow = refreshQueuedNow || tab !== refreshTab;
+    refreshQueued = false; refreshQueuedNow = false;
+    refreshInFlight = null; button.disabled = false;
+    if (rerun) Promise.resolve().then(() => refresh(rerunNow));
+  }
 }
 $("#dashboard-refresh").onclick = () => refresh(true);
 show(tab);

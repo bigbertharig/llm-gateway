@@ -103,7 +103,7 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert '<button id="codingTab">Coding</button>' in page
     assert 'id="workTab"' not in page and '>Work</button>' not in page
     assert "activeMode='chat'" in page
-    assert ".filter(row=>(row.mode||'chat')===activeMode)" in page
+    assert ".filter(row=>(row.mode||'chat')===mode)" in page
     assert "name==='coding'?'Coding':'Chat'" in page
     assert "name==='coding'?'Continue coding work':'Continue this chat'" in page
     assert 'id="newConversation"' in page and 'id="createConversationPanel"' in page
@@ -128,6 +128,9 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "showTools?'Hide tools':'Show tools'" in page
     assert "visibleToolRows=80" in page and "Show earlier activity" in page
     assert "compaction-marker" in page and "addCompaction" in page
+    assert "Compaction started" in page and "Compaction finished" in page and "compaction-rule" in page
+    assert "color:#f2ba67" in page and "background:#f2ba67" in page
+    assert "flushTranscriptHistory" in page and "historicalAt<=eventAt" in page
     assert "toolRows.slice(0,hiddenCount)" in page and "visibleToolRows+=80" in page
     assert "Automatic Continue scheduled for" in page and "timeZoneName:'short'" in page
     assert ".messages .older-tool" in page
@@ -145,6 +148,14 @@ def test_mobile_chat_has_distinct_tool_style_attachments_and_live_turn_check():
     assert "document.addEventListener('visibilitychange',refreshVisibleConversation)" in page
     assert "timeline([...(turn.activity||[]),...liveEvents],turn.steers||[])" in page
     assert "records.sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)" in page
+    assert "workListSerial" in page and "mode!==activeMode||serial!==workListSerial" in page
+    assert "workListSerial++;stopAgentEvents()" in page and "Loading ${activeMode==='coding'?'Coding':'Chat'} conversations" in page
+    assert "(current.mode||'chat')!==expectedMode" in page
+    assert "openConversation(row.id,true,mode)" in page
+    assert "document.body.classList.toggle('mode-chat',name==='chat')" in page
+    assert "body.mode-chat #chatTab.active" in page and "body.mode-coding #codingTab.active" in page
+    assert "interruptActiveTurn(confirmFirst=true)" in page
+    assert "event.key!=='Escape'" in page and "interruptActiveTurn(false)" in page
     assert "Rig occupancy" in page
     assert "Math.round(occupied/gpus.length*100)" in page
     assert "cards occupied" in page and "metric('Available',free)" in page

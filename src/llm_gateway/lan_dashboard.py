@@ -22,6 +22,7 @@ GET_PATHS = frozenset({
     "/dashboard/api/chat/options", "/dashboard/api/chat/conversations",
     "/dashboard/api/chat/codex/account",
     "/dashboard/api/chat/codex/models",
+    "/dashboard/api/cloud/settings", "/dashboard/api/cloud/openrouter/models",
     "/v1/manager/local-agent-capabilities",
 })
 RIG_ACTIONS = frozenset({"kill", "unload", "unclaim", "cancel", "load"})
@@ -72,6 +73,12 @@ def _allowed(method: str, path: str) -> bool:
     if path == "/v1/manager/agent-routes/release":
         return True
     if path in ("/dashboard/api/chat/codex/login", "/dashboard/api/chat/codex/logout"):
+        return True
+    if path in ("/dashboard/api/cloud/openrouter", "/dashboard/api/cloud/claude",
+                "/dashboard/api/cloud/codex/api-key", "/dashboard/api/cloud/codex/login",
+                "/dashboard/api/cloud/codex/logout", "/dashboard/api/cloud/codex/api-logout",
+                "/dashboard/api/cloud/claude-code/logout", "/dashboard/api/cloud/claude-code/login",
+                "/dashboard/api/cloud/claude-code/login/complete"):
         return True
     if path.startswith("/dashboard/api/chat/conversations/") and path.endswith((
             "/agent/approval", "/agent/command", "/agent/steer", "/agent/interrupt",

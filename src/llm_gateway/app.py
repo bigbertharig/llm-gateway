@@ -21,6 +21,9 @@ from .dashboard.google_workspace import router as google_workspace_router
 from .dashboard.transfers import router as transfers_router
 from .dashboard.chat import router as chat_router
 from .dashboard.codex_bridge import CodexBridge
+from .dashboard.claude_code import ClaudeCodeBridge
+from .dashboard.cloud import router as cloud_router
+from .dashboard.cloud_settings import CloudSettings, CloudSettingsError
 from .profiles import ProfileError, Profiles
 from .rig import Rig, RigUnavailable
 from .settings import Settings
@@ -106,6 +109,9 @@ def create_app(
     rig = rig or Rig(s.rig_command, s.start_timeout_seconds)
     manager: Manager | None = None
     codex_bridge = CodexBridge()
+    cloud_settings = CloudSettings()
+    codex_api_bridge = CodexBridge(auth_home=cloud_settings.root / "codex-api")
+    claude_code_bridge = ClaudeCodeBridge()
     chat_background = None
     if s.manager_enabled:
         manager = Manager(rig, s.start_timeout_seconds, s.controller_id, mirror_path=s.mirror_path)
@@ -124,6 +130,8 @@ def create_app(
         if reconciler:
             reconciler.cancel()
         await codex_bridge.close()
+        await codex_api_bridge.close()
+        await claude_code_bridge.close()
         await app.state.http.aclose()
 
     app = FastAPI(title="llm-gateway", version="0.4.0", lifespan=lifespan)
@@ -133,6 +141,8 @@ def create_app(
         app.include_router(dashboard_router(manager))
         app.include_router(google_workspace_router)
         app.include_router(transfers_router)
+        app.include_router(cloud_router(cloud_settings, codex_bridge, claude_code_bridge,
+                                        codex_api_bridge))
 
     @app.exception_handler(ManagerError)
     async def _manager_error(_req, exc: ManagerError):
@@ -236,9 +246,48 @@ def create_app(
         return StreamingResponse(relay(), resp.status_code, media_type=ctype.split(";")[0],
                                  headers={"Cache-Control": "no-cache"})
 
+    async def forward_openrouter(request: Request, body: dict) -> Response:
+        try:
+            key, allowed = cloud_settings.openrouter_configuration()
+        except CloudSettingsError as exc:
+            raise GatewayError(503, str(exc), "provider_unavailable") from exc
+        route = body.get("model")
+        model = route.removeprefix("openrouter/") if isinstance(route, str) else ""
+        if model not in allowed:
+            raise GatewayError(404, f"OpenRouter model is not enabled: {model}", "model_not_found")
+        if request.url.path != "/v1/chat/completions":
+            raise GatewayError(501, "OpenRouter routes support Chat Completions", "unsupported")
+        upstream_body = {**body, "model": model}
+        client: httpx.AsyncClient = request.app.state.http
+        upstream_req = client.build_request(
+            "POST", cloud_settings.openrouter_base_url + "/chat/completions",
+            json=upstream_body, headers={"Authorization": "Bearer " + key,
+                                         "Content-Type": "application/json",
+                                         "X-Title": "Big Bertha LLM Gateway"})
+        try:
+            response = await client.send(upstream_req, stream=True)
+        except httpx.RequestError as exc:
+            raise GatewayError(502, "OpenRouter is unavailable", "upstream_error") from exc
+        content_type = response.headers.get("content-type", "application/json").split(";")[0]
+        if response.status_code >= 400 or not bool(body.get("stream")):
+            content = await response.aread()
+            await response.aclose()
+            return Response(content, response.status_code, media_type=content_type)
+
+        async def relay():
+            try:
+                async for chunk in response.aiter_raw():
+                    yield chunk
+            finally:
+                await response.aclose()
+        return StreamingResponse(relay(), response.status_code, media_type=content_type,
+                                 headers={"Cache-Control": "no-cache"})
+
     if manager is not None:
         chat_routes = chat_router(manager, profiles, forward, codex_bridge,
-                                  shared_inference=lambda pid, body: shared_completion(pid, body))
+                                  shared_inference=lambda pid, body: shared_completion(pid, body),
+                                  cloud_settings=cloud_settings, claude_code=claude_code_bridge,
+                                  codex_api=codex_api_bridge)
         chat_background = chat_routes.auto_continue_loop
         app.include_router(chat_routes)
 
@@ -548,6 +597,13 @@ def create_app(
             data.append({"id": row["id"], "object": "model", "created": 0,
                          "owned_by": s.model_prefix, "description": "35B shared-weight chat",
                          "context_length": row["context_length"]})
+        try:
+            _key, cloud_models = cloud_settings.openrouter_configuration()
+        except CloudSettingsError:
+            cloud_models = []
+        data.extend({"id": "openrouter/" + model, "object": "model", "created": 0,
+                     "owned_by": "openrouter", "description": "Curated OpenRouter cloud model",
+                     "context_length": None} for model in cloud_models)
         return {"object": "list", "data": data}
 
     @app.get("/v1/rig/status")
@@ -657,6 +713,8 @@ def create_app(
     @app.post("/v1/responses")
     async def completions(request: Request):
         raw, body = await read_json(request)
+        if isinstance(body.get("model"), str) and body["model"].startswith("openrouter/"):
+            return await forward_openrouter(request, body)
         pid = resolve_profile(body.get("model"))
         if pid.startswith(tuple(shared_routes.values())):
             if request.url.path == "/v1/chat/completions":
