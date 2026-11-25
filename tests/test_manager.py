@@ -900,6 +900,29 @@ def test_a_reboot_hold_is_reviewed_and_resumed(menv, monkeypatch):
     assert menv["leases"]() == []  # the interrupted load left an unbacked lease: released
 
 
+def test_a_reboot_does_not_replay_queued_model_lifecycle_requests(menv):
+    manager = menv["app"].state.manager
+    st = menv["rig"]()
+    st.update(boot_id="boot-2", plan_hold={"reason": "boot", "since": "now", "interrupted": []})
+    st.setdefault("plan_items", []).extend([
+        {"id": "load-stale", "kind": "load", "state": "queued", "args": {"profile": "small"}},
+        {"id": "unload-stale", "kind": "unload", "state": "queued", "args": {"profile": "small"}},
+        {"id": "job-durable", "kind": "job", "state": "queued", "args": {"run": "explicit-job"}},
+    ])
+    menv["write"](st)
+
+    import asyncio
+    asyncio.run(manager.reconcile_once())
+
+    items = {item["id"]: item for item in menv["rig"]()["plan_items"]}
+    assert items["load-stale"]["state"] == "cancelled"
+    assert items["unload-stale"]["state"] == "cancelled"
+    assert items["job-durable"]["state"] == "queued"
+    assert menv["rig"]()["plan_hold"] is None
+    assert any("stale model requests cancelled: load-stale, unload-stale" in event["event"]
+               for event in manager.events)
+
+
 def test_a_rig_that_lost_its_plan_gets_the_controller_copy_back(menv):
     c = menv["client"]
     manager = menv["app"].state.manager

@@ -8,8 +8,9 @@ controller goes away, and this or another controller picks up from `rig observe`
 
 Shared report (rule 1c): the rig keeps the record and the plan; this controller keeps a copy on its own
 disk, saved on every observation. When the rig reboots it holds its plan; the reconciler reviews it
-(restoring the plan from the copy if the rig's is behind) and resumes it. When the rig is unreachable,
-status answers from the copy and says since when.
+(restoring the plan from the copy if the rig's is behind), cancels stale queued model lifecycle work,
+and resumes it for fresh requests. When the rig is unreachable, status answers from the copy and says
+since when.
 
 One controller is active at a time. This one takes control when there is none or the active one's
 heartbeat is stale, heartbeats while it holds it, and is read-only (writes refused with 409) while
@@ -192,7 +193,9 @@ class Manager:
     async def settle_hold(self, obs: dict) -> dict | None:
         """The rig rebooted (or lost its plan) and holds its queue: write back our copy if the rig's is
         behind, report what was interrupted, and resume. Interrupted loads are not retried: their callers
-        got the failure, and their leases are released below as unbacked."""
+        got the failure, and their leases are released below as unbacked. A boot also cancels model
+        lifecycle requests that were still queued before the reboot, so reconnecting the controller cannot
+        turn an intentionally empty rig boot into an implicit model load."""
         plan = obs.get("plan") or {}
         hold = plan.get("hold")
         if not hold:
@@ -203,15 +206,23 @@ class Manager:
             restored = await self.record.plan_restore(mine)
             self._event(f"rig plan was behind (version {plan.get('version')} < {mine.get('version')}); "
                         f"wrote back this controller's copy")
-        items = {i["id"]: i for i in (restored or plan).get("items", [])}
+        current_plan = restored or plan
+        items = {i["id"]: i for i in current_plan.get("items", [])}
         stopped = [f"{iid}: {items.get(iid, {}).get('result') or 'interrupted'}" for iid in hold.get("interrupted", [])]
+        cancelled = []
+        if hold.get("reason") == "boot":
+            for item in current_plan.get("items", []):
+                if item.get("state") == "queued" and item.get("kind") in {"load", "unload"}:
+                    await self.record.plan_cancel(item["id"])
+                    cancelled.append(item["id"])
         await self.record.plan_resume()
         self._obs = None
         runs = hold.get("runs_interrupted") or []
         self._event(f"plan held ({hold.get('reason')}) since {hold.get('since')}; resumed"
                     + (f"; interrupted, not retried: {'; '.join(stopped)}" if stopped else "; nothing interrupted")
+                    + (f"; stale model requests cancelled: {', '.join(cancelled)}" if cancelled else "")
                     + (f"; runs interrupted: {', '.join(runs)} (rigctl recover RUN or rigctl dismiss RUN)" if runs else ""))
-        return {"hold": hold, "restored": bool(restored), "interrupted": stopped}
+        return {"hold": hold, "restored": bool(restored), "interrupted": stopped, "cancelled": cancelled}
 
     def rig_report(self) -> dict:
         """Reachability and recent events, for status."""

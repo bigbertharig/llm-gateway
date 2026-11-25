@@ -55,9 +55,12 @@ build) results fall back to local storage when the shared drive is gone and sync
    - rig reboots: on the first start of a new boot it marks the item that was running `interrupted`
      (with what it was doing) and holds the plan; it boots neutral and runs nothing. The controller's
      reconciler sees the hold, writes its copy back if the rig's version is behind (lost or replaced
-     file, `rig plan restore`), reports what was interrupted and resumes (`rig plan resume`).
+     file, `rig plan restore`), reports what was interrupted, cancels any pre-reboot queued model
+     load/unload requests, and resumes the executor for fresh on-demand work (`rig plan resume`).
      Interrupted loads are not retried (their caller got the failure); their leases are released as
-     unbacked. A lost network without a reboot is not a hold: the rig finishes what it was given.
+     unbacked. Thus reconnecting the controller cannot populate an intentionally empty rig boot from
+     stale model lifecycle work. A lost network without a reboot is not a hold: the rig finishes what
+     it was given.
    - rig unreachable: status answers from the copy (`from_copy`, "RIG UNREACHABLE since ...") and the
      controller logs when the rig went away, when it came back and whether it rebooted (`rig.events`).
    - controller crashes: it restarts with its copy and reads the rig's live report.
