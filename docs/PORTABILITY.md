@@ -69,3 +69,12 @@ The input/output fields, security invariants, and conformance gates are defined 
 The OpenAI-compatible API alone does not make hardware scripts or harness policy portable. See
 [the current architecture](../ARCHITECTURE.md), [Manager guide](MANAGER.md), and
 [work-organization direction](WORK_ORGANIZATION_DIRECTION.md) for the boundaries still being migrated.
+
+## Standalone status (2026-11-24)
+
+Standalone cloud coding is a required product workflow, but is not yet verified.
+Currently `app.py` mounts dashboard, cloud, and conversation routes only when Rig
+Manager is enabled; several tool launchers also resolve scripts from a Harness
+checkout. Those are open isolation gaps. See the [source audit and acceptance
+criteria](https://github.com/bigbertharig/benchmarking/blob/master/reports/STANDALONE_ISOLATION_AUDIT_2026-11-24.md). The engine substitution description above is a target contract,
+not a completed generic adapter/conformance implementation.
