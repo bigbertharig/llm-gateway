@@ -393,6 +393,24 @@ def test_search_elicitation_is_allowlisted():
     assert writes == [{"id": 9, "result": {"action": "accept", "content": {}}}]
 
 
+def test_pending_approval_disappears_when_app_server_exits():
+    bridge = CodexBridge()
+
+    async def check():
+        reader = asyncio.StreamReader()
+        bridge.process = SimpleNamespace(stdout=reader)
+        bridge.events["thread-1"] = asyncio.Queue()
+        reader.feed_data((json.dumps({
+            "id": 41, "method": "item/commandExecution/requestApproval",
+            "params": {"threadId": "thread-1", "itemId": "command-1"},
+        }) + "\n").encode())
+        reader.feed_eof()
+        await bridge._read()
+        assert bridge.status("thread-1")["approvals"] == []
+
+    asyncio.run(check())
+
+
 def test_app_server_reader_accepts_large_saved_thread_messages():
     bridge = CodexBridge()
 

@@ -385,6 +385,9 @@ class CodexBridge:
                         await process.wait()
             if self.process is process:
                 self.process = None
+                # App-server request IDs belong to this process; an approval cannot
+                # be answered after it exits. Keep it out of mobile and LAN views.
+                self.approvals.clear()
             if not self._closing:
                 log.error("Codex app-server exited unexpectedly with status %s",
                           getattr(process, "returncode", "unknown"))

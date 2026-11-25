@@ -7,9 +7,11 @@ the [security model](REMOTE_ACCESS_SECURITY.md), then follow the staged setup
 below. Keep deployment-specific identities and recovery details in private
 operations notes.
 
-Reference rollout status (2026-11-18): the 443-only policy passed validation and
-the phone loaded the dashboard over cellular. Cross-device conversation
-continuation and revocation still need operator verification.
+Operator status (2026-11-25): the phone dashboard works over cellular, and the
+operator has continued conversations across devices in regular use. Chat/Coding
+list switching now shows the last fetched list immediately while refreshing it.
+Device revocation and a live restart during a pending Codex approval were not
+retested in this change.
 
 ## Boundaries
 
@@ -62,7 +64,10 @@ The mobile view does not yet provide every local operation in its UI. Do not
 enable privileged remote controls until an action-specific approval mechanism
 and its denial tests are implemented. Ordinary Codex approvals currently use
 the gateway's existing live app-server bridge; after a gateway restart a pending
-approval may need reconciliation before remote reliance.
+approval cannot be answered after the app-server exits: the bridge clears the
+stale prompt, and the saved turn follows the existing interrupted-turn recovery path.
+The exact live pending-approval restart scenario still needs a dedicated acceptance
+run if the phone becomes the sole approval device.
 
 ## New tailnet, first stage
 
