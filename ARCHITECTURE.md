@@ -2,8 +2,8 @@
 
 Gateway owns dashboard conversations, authenticated remote access, cloud accounts and
 connectors, operator approvals, connection configuration and user-work coordination.
-The [cross-repo contract](https://github.com/bigbertharig/benchmarking/blob/master/CROSS_REPO_CONTRACT.md) owns the shared responsibility rules; the
-[cleanup plan](https://github.com/bigbertharig/benchmarking/blob/master/REPOSITORY_CLEANUP_PLAN.md) gives the implementation sequence.
+The [product boundary](README.md#product-boundary) defines Gateway responsibilities; the
+[implementation status](README.md#implementation-status) tracks Gateway implementation work.
 
 ## Accepted ownership
 

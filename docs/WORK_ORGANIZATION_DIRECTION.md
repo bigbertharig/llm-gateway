@@ -1,24 +1,21 @@
 # Work organization: status and pickup notes
 
 Updated 2026-11-24. This guide owns Gateway's future user-work coordination design.
-The [cross-repo contract](https://github.com/bigbertharig/benchmarking/blob/master/CROSS_REPO_CONTRACT.md) owns product responsibilities;
-the [cleanup plan](https://github.com/bigbertharig/benchmarking/blob/master/REPOSITORY_CLEANUP_PLAN.md) owns the agreed implementation sequence.
+The [product boundary](../README.md#product-boundary) defines Gateway responsibilities;
+the [implementation status](../README.md#implementation-status) tracks Gateway implementation work.
 The legacy Markdown plan system is Retired. A general Gateway work graph remains Planned.
 
 ## Decision and repo ownership
 
-| Repo | Accepted ownership | Active implementation and remaining work |
-|---|---|---|
-| **llm-gateway** | Dashboard/conversations, remote access, cloud accounts/connectors, connection configuration, operator approvals, work requests and model assignment. | Manager coordinates loads and still computes some hardware fit. Cloud-only startup and a general work graph remain Planned. |
-| **llm_orchestration** | Local executable model profiles, hardware discovery, physical fit/admission, placement, reservations, lifecycle, telemetry and recovery. | Rig selects cards and enforces live admission. Standalone local-profile loading and extraction of remaining Gateway fit logic are Planned. |
-| **llm-harness** | Agent loop, model-facing tools, bounded execution, context, delegation and run journals/receipts. | MCP tools and the local-child loop are active. Generic provider/embedding and run/engine interfaces remain Planned. |
-| **benchmarking** | Evaluation tasks, model/runtime/tool/harness comparisons, measured configurations, scoring and published evidence. | Registry/export and experiment runners are active. Portable endpoint workflows and relocation of misplaced comparative runners remain cleanup work. |
+Gateway owns dashboard/user-work coordination, connections, approvals and model assignment.
+It consumes tool/agent execution and runtime lifecycle through their supported interfaces.
+Physical admission and reservations remain with the runtime service; bounded model/tool
+interaction remains with the execution engine. Comparative measurements remain with their
+evaluation owner. Gateway keeps its own correctness tests and conversation records.
 
-Gateway coordinates user work for its installation. Orchestration decides what can run
-on its hardware. Harness controls a bounded execution. Benchmarking records measurements.
-Standalone acceptance requires direct use of each product without the other services. Gateway work-level retries, Harness
-model/tool retries and Orchestration lifecycle recovery have separate owners and attempt
-identities; no layer blindly retries a possibly completed external write.
+Gateway work-level retries, engine model/tool retries and runtime recovery have separate
+attempt identities. Gateway must reconcile a possibly completed operation before repeating
+it. Standalone cloud acceptance requires the other product services and checkouts to be absent.
 
 ## Present state
 
@@ -106,7 +103,7 @@ execution constraints. Bus bandwidth and storage latency affect performance.
 
 ## When this work resumes
 
-1. Follow the accepted cross-repo division and cleanup plan: move physical fit and
+1. Follow Gateway's product boundary: move physical fit and
    admission decisions into Orchestration while Gateway retains operator work policy.
    A future work graph does not block standalone product cleanup.
 2. Define a small versioned gateway work/step/execution contract. Include
@@ -127,5 +124,5 @@ execution constraints. Bus bandwidth and storage latency affect performance.
 Related local docs: gateway `docs/WORKLOAD_COORDINATION.md` and
 `docs/MANAGER.md`; orchestration `shared/workspace/CONTEXT.md`;
 harness `docs/HARNESS_SUITE_CATALOG.md` and
-`mcp_servers/rig_search/README.md`; benchmarking `CROSS_REPO_CONTRACT.md`,
+`mcp_servers/rig_search/README.md`; benchmarking `MODEL_LIBRARY_CONTRACT.md`,
 `MODEL_LOADING_AND_CHAT_PLACEMENT.md`, and `RIG_LIMIT_TEST.md`.

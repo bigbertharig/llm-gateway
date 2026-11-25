@@ -4,24 +4,12 @@ Gateway owns the dashboard, conversations, authenticated remote access, cloud ac
 
 Gateway coordinates model requests and dashboard work. Its Manager selects model offers, estimates fit, and coordinates loads. The rig now selects cards for lease requests and enforces live admission; Gateway still has context and load policy to move across this boundary. [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md) records the remaining migration.
 
-## Project map
+## Product boundary
 
-The [cross-repo contract](https://github.com/bigbertharig/benchmarking/blob/master/CROSS_REPO_CONTRACT.md) owns the product division. These are accepted
-responsibilities; the [cleanup plan](https://github.com/bigbertharig/benchmarking/blob/master/REPOSITORY_CLEANUP_PLAN.md) separates active code from pending migration.
-Each product must support a useful standalone workflow with optional integrations.
-
-| Repository | Responsibility |
-|---|---|
-| [llm-gateway](https://github.com/bigbertharig/llm-gateway) | Dashboard, conversations, remote access, cloud accounts/connectors, connection configuration, operator approvals and work coordination. |
-| [llm-harness](https://github.com/bigbertharig/llm-harness) | Agent loop, model-facing tools, bounded execution, context, delegation, execution journals and receipts. |
-| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | Local executable model profiles, hardware discovery, physical admission, reservations, runtime lifecycle and observation. |
-| [benchmarking](https://github.com/bigbertharig/benchmarking) | Evaluation tasks, comparative experiments, measurements, scores, result history and published model evidence. |
-
-Gateway coordinates the connected deployment. Direct clients and standalone callers are
-part of the accepted design. Product state stays with its owner; versioned requests,
-events, receipts and optional artifact imports connect the products. Private site
-configuration supplies addresses, credentials, model files and mounts. The current
-checkout dependencies are tracked in the cleanup plan, not a supported installation contract.
+Gateway owns dashboard conversations, remote access, cloud accounts/connectors, connection
+configuration, operator approvals and work coordination. Tool/agent execution is consumed
+through supported interfaces; local hardware admission and lifecycle remain with the runtime
+service. Gateway keeps conversation history and account credentials in its own stores.
 
 ## Read this repo
 
@@ -197,3 +185,13 @@ What these tools have found, where their results are kept and which question eac
 - `remote_profiles.json`: generated offer
 - `deploy/`: Pi systemd units and the deploy script
 - `docs/`: start with [Read this repo](#read-this-repo)
+
+## Implementation status
+
+The following cleanup is Planned until its tests and receipts are recorded:
+
+- Separate cloud dashboard/conversation startup from Rig Manager.
+- Configure optional tool providers through installed entry points or services.
+- Consume the Harness run/event/receipt interface without sharing mutable stores.
+- Move hardware-fit decisions and comparative experiments to their owning products.
+- Test cloud coding with fake providers and no sibling checkout or hardware service.
