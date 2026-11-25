@@ -2,14 +2,14 @@
 
 > Runtime ownership updated November 25: Orchestration owns local model decisions and its controller. Gateway is a request client. Earlier controller-design discussion below is historical; current setup and migration are in [local runtime requests](MANAGER.md).
 
-Updated 2026-11-24. This guide owns Gateway's future user-work coordination design.
+Updated 2026-11-25. This guide owns Gateway's future user-work coordination design.
 The [product boundary](../README.md#product-boundary) defines Gateway responsibilities;
 the [implementation status](../README.md#implementation-status) tracks Gateway implementation work.
 The legacy Markdown plan system is Retired. A general Gateway work graph remains Planned.
 
 ## Decision and repo ownership
 
-Gateway owns dashboard/user-work coordination, connections, approvals and model assignment.
+Gateway owns dashboard/user-work coordination, connections, approvals, cloud-model assignment and local capability requests.
 It consumes tool/agent execution and runtime lifecycle through their supported interfaces.
 Physical admission and reservations remain with the runtime service; bounded model/tool
 interaction remains with the execution engine. Comparative measurements remain with their
@@ -21,7 +21,7 @@ it. Standalone cloud acceptance requires the other product services and checkout
 
 ## Present state
 
-- Gateway dashboard Chat and Coding hold user and agent conversations. The old Markdown plan form and batch controls are removed. Gateway's manager still has some fit and loading calculations that should move behind rig admission.
+- Gateway dashboard Chat and Coding hold user and agent conversations. The old Markdown plan form and batch controls are removed. Orchestration now owns local fit, placement and loading decisions; Gateway requests and displays its results.
 - Orchestration now contains the hardware and model-runtime layer. Its rig-local action queue handles loads, unloads, and recovery; it is not a user-work planner. The brain/worker source, shared task queue commands, CPU-worker packaging, and private batch API have been removed.
 - Benchmarking exports the canonical model library and validation evidence; the other repositories import local projections. Deterministic benchmark campaigns are separate from creative model onboarding and load experiments.
 - Harness provides shared MCP tools and model-use behavior. Six external harnesses are references for selected features, not candidate replacements for the owned Harness.
@@ -52,10 +52,10 @@ Ideas worth carrying forward:
    parallel branches, and explicit completion evidence. A plan is a list or
    graph of work to execute as well as possible; scarce capacity makes a step
    wait or choose a fallback without invalidating the whole plan.
-2. Keep model choice separate from the work definition. Gateway manager reads
-   the steps and published benchmark roles/recipes, checks live availability,
-   assigns the best feasible model for each step, and sends concrete execution
-   instructions to the rig and harness.
+2. Keep model choice separate from the work definition. Gateway coordinates
+   work steps and cloud-model assignment. For a local step it requests a suitable
+   model and readiness from Orchestration, which resolves fit and placement.
+   Gateway sends bounded execution work to Harness.
 3. Preserve run events, step inputs/outputs, selected model and recipe, tool
    calls, retries, validation outcomes, and costs/timings so work can resume
    and later benchmarking can compare choices.
@@ -69,8 +69,9 @@ Ideas worth carrying forward:
   responsibilities, even when both are exposed through llm-gateway; persist
   project/run state outside model sessions; consume the owning project's
   validation receipts instead of inventing a second source of truth.
-- Put new work graphs and model assignment in the gateway. The orchestration
-  repo is the hardware-facing executor; its old plan brain and worker queue are removed. New plans belong in Gateway.
+- Put new work graphs and cloud-model assignment in Gateway. For local work,
+  Gateway asks Orchestration to resolve a model and admit the runtime. Its old
+  plan brain and worker queue are removed. New user-work plans belong in Gateway.
 - Allow shoulders as capability providers with thin adapters, while also
   supporting chat, research, tool sessions, and direct work. A job need not
   be packaged as a shoulder.
@@ -90,24 +91,23 @@ Ideas worth carrying forward:
 
 ## Future interface sketch
 
-`request -> gateway work graph -> benchmark role/recipe selection -> live fit and
-admission -> concrete rig execution + harness tool session -> step evidence ->
-gateway next step`
+`request -> Gateway work graph -> cloud assignment or Orchestration local offer
+and admission -> Harness tool session -> step evidence -> Gateway next step`
 
 The work graph should describe objectives and step needs, not GPU indexes or
 specific cards. A selected execution record should name the model artifact,
 runtime profile, context/concurrency target, allowed tools, fit decision, and
-run ID. The hardware layer may reject or defer an actual load; gateway can then
-retry, select a documented fallback, or report that step as blocked. VRAM is
+run ID. Orchestration may reject or defer an actual load; Gateway can request another
+owner-resolved local offer, use an allowed cloud fallback, or mark the step blocked. VRAM is
 the first capacity input. Artifact/runtime compatibility, adequate RAM/storage
 for the chosen tiering mode, and KV/context/concurrency fit are also hard
 execution constraints. Bus bandwidth and storage latency affect performance.
 
 ## When this work resumes
 
-1. Follow Gateway's product boundary: move physical fit and
-   admission decisions into Orchestration while Gateway retains operator work policy.
-   A future work graph does not block standalone product cleanup.
+1. Use the completed ownership split: Orchestration resolves local model fit,
+   admission and lifecycle; Gateway owns work policy and requests. Do not
+   duplicate hardware decisions in the future work graph.
 2. Define a small versioned gateway work/step/execution contract. Include
    stable step IDs, dependencies, desired capability, selected model and recipe,
    context, allowed tools, status, and durable evidence. Keep a compatibility
