@@ -1,23 +1,27 @@
 # llm-gateway
 
-Gateway serves an OpenAI-compatible model API, dashboard conversations, and model/tool policy. It can run on the rig host or on a separate controller. Big Bertha currently runs it on a Pi with a certificate-protected LAN dashboard and a narrower private mobile route.
+Gateway owns the dashboard, conversations, authenticated remote access, cloud accounts/connectors, connection configuration and operator policy. It serves an OpenAI-compatible model API and coordinates connected products. Big Bertha runs it on a Pi with a certificate-protected LAN dashboard and a narrower private mobile route. Standalone cloud coding remains Planned: dashboard and conversation startup still depend on Rig Manager.
 
 Gateway coordinates model requests and dashboard work. Its Manager selects model offers, estimates fit, and coordinates loads. The rig now selects cards for lease requests and enforces live admission; Gateway still has context and load policy to move across this boundary. [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md) records the remaining migration.
 
 ## Project map
 
-Big Bertha currently uses a separate controller, GPU rig, and optional CPU workers. The same interfaces support a single-host installation. Four repositories divide the system's work:
+The [cross-repo contract](https://github.com/bigbertharig/benchmarking/blob/master/CROSS_REPO_CONTRACT.md) owns the product division. These are accepted
+responsibilities; the [cleanup plan](https://github.com/bigbertharig/benchmarking/blob/master/REPOSITORY_CLEANUP_PLAN.md) separates active code from pending migration.
+Each product must support a useful standalone workflow with optional integrations.
 
 | Repository | Responsibility |
 |---|---|
-| [llm-gateway](https://github.com/bigbertharig/llm-gateway) | Serves the dashboard, conversations, model API, tool policy, and work coordination. Its Manager also coordinates some model placement and loading. |
-| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | Observes and controls rig hardware, enforces admission and reservations, and manages model runtimes. |
-| [benchmarking](https://github.com/bigbertharig/benchmarking) | Measures models and runtimes; publishes the model library, roles, load recipes, evaluation suites, and results. |
-| [llm-harness](https://github.com/bigbertharig/llm-harness) | Builds the default project-owned tool and agent layer and defines the integration contract for additional harness engines. |
+| [llm-gateway](https://github.com/bigbertharig/llm-gateway) | Dashboard, conversations, remote access, cloud accounts/connectors, connection configuration, operator approvals and work coordination. |
+| [llm-harness](https://github.com/bigbertharig/llm-harness) | Agent loop, model-facing tools, bounded execution, context, delegation, execution journals and receipts. |
+| [llm_orchestration](https://github.com/bigbertharig/llm_orchestration) | Local executable model profiles, hardware discovery, physical admission, reservations, runtime lifecycle and observation. |
+| [benchmarking](https://github.com/bigbertharig/benchmarking) | Evaluation tasks, comparative experiments, measurements, scores, result history and published model evidence. |
 
-Benchmarking publishes a validated model library. Gateway imports it, serves model routes, and manages dashboard work. Harness supplies reviewed tool schemas and tests model interactions through Gateway routes. Orchestration enforces rig hardware rules and runs admitted model services. [The work-organization guide](https://github.com/bigbertharig/llm-gateway/blob/main/docs/WORK_ORGANIZATION_DIRECTION.md) tracks the remaining Manager-to-Orchestration migration.
-
-Private site configuration supplies host addresses, credentials, model files, and mounts. The published examples use role placeholders. For another card mix, run a hardware survey and validate fit, context, concurrency, and speed before offering a load recipe. The repositories integrate through versioned artifacts and APIs, not private code imports. [Porting and extension guide](docs/PORTABILITY.md).
+Gateway coordinates the connected deployment. Direct clients and standalone callers are
+part of the accepted design. Product state stays with its owner; versioned requests,
+events, receipts and optional artifact imports connect the products. Private site
+configuration supplies addresses, credentials, model files and mounts. The current
+checkout dependencies are tracked in the cleanup plan, not a supported installation contract.
 
 ## Read this repo
 

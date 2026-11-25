@@ -1,28 +1,56 @@
 # Architecture
 
-This is the current operator-facing architecture of the integrated Big Bertha project. The four repositories can be tested separately, but the deployed service depends on their published artifacts and live interfaces. For operational detail, see [the Manager guide](docs/MANAGER.md), [the dashboard guide](docs/DASHBOARD.md), and [work organization](docs/WORK_ORGANIZATION_DIRECTION.md).
+Gateway owns dashboard conversations, authenticated remote access, cloud accounts and
+connectors, operator approvals, connection configuration and user-work coordination.
+The [cross-repo contract](https://github.com/bigbertharig/benchmarking/blob/master/CROSS_REPO_CONTRACT.md) owns the shared responsibility rules; the
+[cleanup plan](https://github.com/bigbertharig/benchmarking/blob/master/REPOSITORY_CLEANUP_PLAN.md) gives the implementation sequence.
 
-## Ownership and data flow
+## Accepted ownership
 
-1. **Benchmarking** measures models and runtimes and publishes a validated, hash-checked model library. A load recipe is evidence until it is reviewed and promoted into a supported offer. It does not schedule live user work.
-2. **Gateway** imports that library, presents the dashboard and OpenAI-compatible API, keeps conversations and tool grants, and coordinates model requests. Its current Manager estimates context fit and coordinates leases and loads; it sends card requirements to the rig for physical selection.
-3. **Orchestration** observes the rig, enforces hardware admission and reservations, starts/stops admitted runtimes, and reports status. Its brain/worker Markdown-plan queue remains for legacy batch jobs; it is not the planned owner of new dashboard work organization.
-4. **Harness** develops and tests the model-use loop: shared tools, prompts, sessions, context, delegation, limits, and recovery. Gateway consumes its reviewed tool catalog. No candidate harness has been promoted as the sole dashboard work engine.
+Gateway assigns requested work and supplies effective grants. Harness owns the model/tool
+loop, reusable tools, bounded execution and run journals/receipts. Orchestration owns
+executable local profiles, physical fit/admission, reservations, runtime lifecycle and
+observed hardware state. Benchmarking owns evaluation tasks, comparative experiments
+and published evidence. Each product keeps its own correctness tests.
 
-The Gateway offers model routes, including cold offers. A route is *ready* only when the rig reports the matching running service, context, and port. The gateway's model list must not be read as a list of loaded models. The Manager proposes a fit and route; the rig may refuse it when live leases, reservations, guards, or runtime state conflict. The rig's admission and reservation record is authoritative for physical capacity. Clients may request a ready-only response to avoid waiting for a cold load; concurrent requests for the same cold offer use the Manager's single-flight load path.
+A tool wrapper lives in Harness; the controlled operation stays with its service.
+Gateway owns conversation/account operations and their authorization, while Harness
+validates and invokes them through public interfaces. Gateway stores conversation history;
+Harness stores execution journals. Neither writes the other's private store.
 
-## Hardware and deployment boundary
+## Active deployment
 
-The current deployment puts Gateway on a Pi and keeps rig runtimes behind SSH and loopback forwarding. The LAN dashboard, the narrower mobile Tailscale front door, and the model API have distinct access rules; see [remote access security](docs/REMOTE_ACCESS_SECURITY.md). Addresses, credentials, model archives, and host inventory are private site configuration. The published docs are not a turnkey deployment template.
+- Gateway runs on the Pi with SSH/loopback access to rig services. LAN and mobile access
+  have different authentication and tool grants; see [remote access](docs/REMOTE_ACCESS_SECURITY.md).
+- Manager imports a hash-verified Benchmarking snapshot, selects model offers, estimates
+  some context fit and coordinates loads. Orchestration selects physical cards, checks
+  live admission and owns reservations. Remaining hardware-fit logic must move there.
+- The offered model list can include cold profiles. The ready roster describes observed
+  served identity, context and port. Ready-only callers refuse cold routes.
+- Dashboard, cloud and conversation routes are mounted only when Manager is enabled.
+  Several tool providers are launched from configured Harness script paths. These are
+  open standalone gaps, recorded in [portability](docs/PORTABILITY.md).
+- Shared MCP tools and the project-owned local-child loop are active. A generic Harness
+  run/engine service and full substitution conformance are Planned.
+- The legacy Markdown brain/worker system, shared task queues and private batch API were
+  removed. Orchestration's remaining action queue handles hardware lifecycle operations.
 
-Model IDs and routes do not encode a physical card. Fit and execution still depend on observed VRAM, supported runtime/backend, host memory or storage for tiered loads, and a tested context/concurrency recipe. Some published experiments deliberately pin cards or use a private runtime fork; those measurements do not establish that the same load works on every card mix. See [porting to another rig](docs/PORTABILITY.md) and Benchmarking's [load and chat placement evidence](https://github.com/bigbertharig/benchmarking/blob/master/MODEL_LOADING_AND_CHAT_PLACEMENT.md).
+## Planned interfaces and cleanup
 
-## Current migration
+Gateway consumes Harness's versioned run/event/receipt interface, supplies inference as
+one configurable provider, and uses Harness MCP tools independently of engine choice.
+The [Harness engine contract](https://github.com/bigbertharig/llm-harness/blob/main/docs/ENGINE_ADAPTERS.md)
+owns run semantics. New endpoint shapes and transport/authentication are not deployed by
+this document. Account credentials remain with Gateway's connector; models receive
+bounded results. Standalone Harness callers supply their own provider and permission authority.
 
-**Deployed:** The rig selects physical cards for leases and enforces admission against live state. Gateway imports a hash-verified model library, retains operator-facing model and permission policy, and still computes some context-fit and load-policy decisions. The LAN and mobile dashboard surfaces have separate access rules. Gateway consumes Harness's reviewed tool-name grants while live MCP discovery supplies the current argument schema.
+Cloud-only startup must work without Rig Manager or any sibling checkout. Missing optional
+hardware or tool integrations must disable only those capabilities. Gateway's networking
+role covers ingress, authentication, routing and configured connections; it does not make
+Gateway a mandatory relay for standalone clients.
 
-**Experimental:** Candidate local-child, shared-model, and alternative-runtime paths are usable only where their own catalog entries and receipts label them available. They are not a general compatibility guarantee for the four repositories.
-
-**Proposed:** The remaining ownership migration moves physical capacity calculations and reservations to Orchestration while Gateway retains user-facing work policy and model choice. The reliability review also calls for one served-model identity resolver, boot-qualified restored-run reconciliation, stable idempotent load-submission IDs, Gateway-owned approval bound to credentialed-write arguments, reviewed tool-schema digests, and a four-repository compatibility manifest. None of those items should be inferred from this architecture description before its implementation and acceptance tests land.
-
-**Compatibility-only:** Legacy Markdown plans remain separate from new Gateway work. New work graphs and model assignment belong to Gateway.
+The reliability work includes served-model identity resolution, boot-qualified restored-run
+reconciliation, idempotent load submissions, approval bound to credentialed-write arguments,
+reviewed tool-schema digests and a tested-revision/artifact compatibility record. These remain
+Planned until their owner publishes implementation and acceptance evidence. Candidate local
+children, shared-model trials and alternative runtimes retain their own Experimental labels.
