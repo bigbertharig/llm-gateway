@@ -75,3 +75,13 @@ November 25 source validation: 160 owned regression tests passed. Fresh installe
 passed cloud coding/history acceptance, separate-environment Orchestration integration, and
 the shared-chat lifecycle/conversation scenario. Gateway 0.4.0 requires the new owner service
 for local models; no live controller handoff was performed during these checks.
+
+
+November 25 live acceptance: the production `python -m llm_gateway` entry point
+now logs current connection settings; an obsolete startup reference discovered during
+the handoff was fixed. The registered API/infrastructure suites pass 47 tests, including
+cloud and integrated startup regression cases. A real local model load, inference,
+Gateway restart, second inference, and unload passed through the owner API. Restarting
+Gateway preserved the independent controller process and model lease. Conversation
+counts and the saved usage-limit continuation were unchanged. Site service units,
+rollback source and full receipts belong in the deployment's external operations folder.

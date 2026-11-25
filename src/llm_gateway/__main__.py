@@ -13,7 +13,7 @@ def main() -> None:
     settings = Settings.from_env()
     settings.validate()
     logging.getLogger("llm_gateway").info(
-        "rig=%s profiles=%s bind=%s:%s auth=%s", " ".join(settings.rig_command), settings.profiles_path,
+        "mode=%s upstream=%s bind=%s:%s auth=%s", "integrated" if settings.runtime_enabled else "cloud", settings.upstream_host,
         settings.bind, settings.port, f"{len(settings.api_keys)} key(s)" if settings.api_keys else "off",
     )
     # Browser SSE status streams are intentionally long-lived. Bound graceful
