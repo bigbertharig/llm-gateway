@@ -499,7 +499,7 @@ APP_SERVER_RECOVERY_PROMPT = (
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _process_identity(pid: int) -> str | None:
@@ -756,6 +756,26 @@ class ChatStore:
             conversation_events = [dict(event) for event in db.execute(
                 "SELECT id,type,created_at FROM conversation_events "
                 "WHERE conversation_id=? ORDER BY created_at,id", (cid,))]
+            completed_turns = [dict(t) for t in db.execute(
+                "SELECT prompt,created_at,updated_at FROM turns "
+                "WHERE conversation_id=? AND state='completed' ORDER BY rowid", (cid,))]
+        # Older exchanges stamped the prompt at completion. Recover its display
+        # time from the durable turn, including turns outside recent activity.
+        completed_by_end = {}
+        for completed in completed_turns:
+            completed_by_end.setdefault(completed["updated_at"], []).append(completed)
+        pending_users = []
+        for message in messages:
+            if message["role"] == "user":
+                pending_users.append(message)
+            elif message["role"] == "assistant":
+                if pending_users:
+                    original = pending_users[0]
+                    matches = [t for t in completed_by_end.get(message["created_at"], [])
+                               if t["prompt"] == original["content"]]
+                    if len(matches) == 1 and original["created_at"] == message["created_at"]:
+                        original["created_at"] = matches[0]["created_at"]
+                pending_users = []
         for message in messages:
             message["attachments"] = json.loads(message["attachments"] or "[]")
             message["activity"] = json.loads(message["activity"] or "[]")
@@ -887,7 +907,7 @@ class ChatStore:
                 "due_at": due, "surface": surface, "state": "scheduled", "kind": kind}
 
     def claim_due_auto_continuations(self, at: datetime | None = None) -> list[dict]:
-        cutoff = (at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+        cutoff = (at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="milliseconds")
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = [dict(row) for row in db.execute(
@@ -1035,11 +1055,13 @@ class ChatStore:
             if count != expected_count:
                 raise ManagerError(409, "conversation changed in another tab; refresh before sending")
             if turn_id is not None:
-                turn = db.execute("SELECT prompt,state,steers FROM turns WHERE id=? AND conversation_id=?",
+                turn = db.execute("SELECT prompt,state,steers,created_at FROM turns WHERE id=? AND conversation_id=?",
                                   (turn_id, cid)).fetchone()
                 if turn is None or turn["state"] != "running" or turn["prompt"] != user:
                     raise ManagerError(409, "turn state changed; refresh before sending")
-            user_messages = [(cid, "user", user, model, now, json.dumps(attachments or []), "[]", None)]
+            user_at = turn["created_at"] if turn_id is not None else now
+            user_messages = [(cid, "user", user, model, user_at,
+                              json.dumps(attachments or []), "[]", None)]
             if turn_id is not None:
                 user_messages.extend((cid, "user", item["content"], model,
                                       item.get("created_at") or now, "[]", "[]", None)

@@ -27,3 +27,14 @@ The Chat and Coding availability details show every resident chat model, includi
 - `tests/test_dashboard.py`, `tests/test_mobile_dashboard.py`: focused route and presentation contracts.
 
 See [Manager](MANAGER.md) for the admission and loading contract and [local access](LOCAL_DASHBOARD_ACCESS.md) for the LAN front door.
+
+## Saved transcript ordering
+
+Completed turns retain the original prompt time, steer times, and answer completion time. Existing
+exchanges recorded with a completion-time prompt use their matching durable turn's start time when
+read; ambiguous or unlinked records retain their stored time. This display correction leaves saved
+message rows intact. Desktop and mobile activity deduplication places each surviving event at its
+actual timestamp. Recovery scheduling uses millisecond cutoffs consistently with turn timestamps.
+
+Regression coverage lives in the registered `conversations` and `dashboard_ui` suites. The latter
+executes the desktop and mobile activity renderers with Node.js, which must be installed on the test host.

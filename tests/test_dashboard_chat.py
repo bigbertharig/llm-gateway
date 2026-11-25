@@ -1337,3 +1337,38 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
         assert client.delete(f"/dashboard/api/chat/conversations/{first['id']}").status_code == 200
         assert cloud.deleted == ["thread-2", "thread-1"]
         assert not stored.exists()
+
+
+def test_completed_prompt_keeps_start_time_across_compaction_and_steer(tmp_path, monkeypatch):
+    from llm_gateway.dashboard import chat
+    store = ChatStore(tmp_path / "chat")
+    cid = store.create("Codex", mode="coding")["id"]
+    monkeypatch.setattr(chat, "_now", lambda: "2026-11-24T12:00:00.100+00:00")
+    turn_id = store.begin_turn(cid, 0, "Codex", "Original request")
+    monkeypatch.setattr(chat, "_now", lambda: "2026-11-24T12:00:01.200+00:00")
+    store.add_conversation_event(cid, "compacted")
+    with store._db() as db:
+        db.execute("UPDATE turns SET steers=? WHERE id=?", (json.dumps([
+            {"content": "Correction", "created_at": "2026-11-24T12:00:02.300+00:00"}
+        ]), turn_id))
+    monkeypatch.setattr(chat, "_now", lambda: "2026-11-24T12:00:03.400+00:00")
+    saved = store.append_exchange(cid, 0, "Codex", "Original request", "Done", turn_id=turn_id)
+    prompt, steer, answer = saved["messages"]
+    assert prompt["created_at"] < saved["events"][0]["created_at"] < steer["created_at"] < answer["created_at"]
+    assert prompt["created_at"] == "2026-11-24T12:00:00.100+00:00"
+
+    # Simulate a pre-fix exchange without rewriting the user's saved database.
+    with store._db() as db:
+        db.execute("UPDATE messages SET created_at=? WHERE id=?", (answer["created_at"], prompt["id"]))
+    reopened = ChatStore(tmp_path / "chat").get(cid)
+    assert reopened["messages"][0]["created_at"] == prompt["created_at"]
+    assert reopened["messages"][1]["created_at"] == steer["created_at"]
+    with store._db() as db:
+        assert db.execute("SELECT created_at FROM messages WHERE id=?", (prompt["id"],)).fetchone()[0] == answer["created_at"]
+
+
+def test_legacy_prompt_without_matching_turn_keeps_recorded_time(tmp_path):
+    store = ChatStore(tmp_path / "chat")
+    cid = store.create("Codex")["id"]
+    saved = store.append_exchange(cid, 0, "Codex", "Unlinked request", "Answer")
+    assert saved["messages"][0]["created_at"] == saved["messages"][1]["created_at"]
