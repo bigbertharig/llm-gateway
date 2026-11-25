@@ -8,8 +8,7 @@ def test_cloud_dashboard_without_runtime_profiles_or_commands(tmp_path, monkeypa
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setenv('CHAT_DATA_ROOT', str(tmp_path / 'chat'))
     monkeypatch.setenv('GATEWAY_MODE', 'cloud')
-    settings = replace(Settings.from_env(), profiles_path=tmp_path / 'absent.json',
-                       rig_command=(), api_keys=('fixture',))
+    settings = replace(Settings.from_env(), api_keys=('fixture',))
     with TestClient(create_app(settings)) as client:
         assert client.get('/v1/capabilities').status_code == 401
         client.headers['Authorization'] = 'Bearer fixture'

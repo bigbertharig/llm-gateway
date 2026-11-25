@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from llm_gateway.dashboard import transfers
 from llm_gateway.dashboard.transfers import TransferStore
-from llm_gateway.manager.errors import ManagerError
+from llm_gateway.orchestration_client import ManagerError
 
 
 def data_url(data: bytes, mime: str = "text/plain") -> str:

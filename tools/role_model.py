@@ -1,56 +1,31 @@
-"""Resolve a reviewed model role from gateway's imported local catalog.
-
-    python3 tools/role_model.py [ROLE]          print the model id (default: single_1060)
-    python3 tools/role_model.py ROLE --json     model, profile, gguf_path, gguf_relative
-
-Run tools/sync_model_library.py after benchmarking publishes a new model export.
-This helper reads no benchmarking checkout or Python module. Standard library only.
-"""
-
+"""Request a reviewed local-model role from Orchestration."""
 import json
+import os
 import sys
-from pathlib import Path
+import urllib.request
+from uuid import uuid4
 
-CATALOG = Path(__file__).resolve().parents[1] / "model_catalog.json"
-DEFAULT_ROLE = "single_1060"
+def request(arguments):
+    endpoint = os.environ['ORCHESTRATION_URL'].rstrip('/')
+    token = os.environ['ORCHESTRATION_CONTROL_TOKEN']
+    rid = uuid4().hex
+    req = urllib.request.Request(endpoint + '/v1/control', method='POST',
+        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
+        data=json.dumps({'schema': 'orchestration-control/1', 'request_id': rid,
+                         'operation': 'catalog.role', 'arguments': arguments}).encode())
+    with urllib.request.urlopen(req, timeout=30) as response:
+        value = json.load(response)
+    if value.get('schema') != 'orchestration-control/1' or value.get('request_id') != rid or not value.get('ok'):
+        raise RuntimeError('Orchestration refused model role resolution')
+    return value['result']
 
+def resolve(role='single_1060'):
+    return request({'role': role})
 
-def _catalog() -> dict:
-    doc = json.loads(CATALOG.read_text(encoding="utf-8"))
-    if not isinstance(doc.get("models"), dict) or not isinstance(doc.get("roles"), dict):
-        raise ValueError("gateway model catalog is incomplete; sync from benchmarking")
-    return doc
+def resolve_model(model):
+    return request({'model': model})
 
-
-def _summary(model: str, profile: str, entry: dict) -> dict:
-    if profile not in entry.get("profiles", {}):
-        raise KeyError(f"model {model} has no profile {profile}")
-    gguf = entry.get("gguf_path") or ""
-    return {"model": model, "profile": profile, "gguf_path": gguf,
-            "gguf_relative": gguf.split("/models/", 1)[1] if "/models/" in gguf else Path(gguf).name}
-
-
-def resolve(role: str = DEFAULT_ROLE) -> dict:
-    """Return canonical model, profile and path for a reviewed role."""
-    doc = _catalog()
-    spec = doc["roles"][role]
-    return _summary(spec["model"], spec.get("profile") or "default", doc["models"][spec["model"]])
-
-
-def resolve_model(model: str) -> dict:
-    """Return canonical model, default profile and path for an ID or alias."""
-    doc = _catalog()
-    if model in doc["models"]:
-        canonical = model
-    else:
-        canonical = next((mid for mid, entry in doc["models"].items()
-                          if model in entry.get("aliases", [])), None)
-        if canonical is None:
-            raise KeyError(f"unknown model {model}")
-    return _summary(canonical, "default", doc["models"][canonical])
-
-
-if __name__ == "__main__":
-    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
-    info = resolve(args[0] if args else DEFAULT_ROLE)
-    print(json.dumps(info) if "--json" in sys.argv else info["model"])
+if __name__ == '__main__':
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    result = resolve(args[0] if args else 'single_1060')
+    print(json.dumps(result) if '--json' in sys.argv else result['model'])

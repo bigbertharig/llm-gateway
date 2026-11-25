@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from llm_gateway.dashboard import chat, cloud, openrouter_api
 from llm_gateway.dashboard.cloud_settings import CloudSettings
-from llm_gateway.manager.errors import ManagerError
+from llm_gateway.orchestration_client import ManagerError
 
 
 def app_for(settings: CloudSettings) -> FastAPI:
@@ -148,6 +148,10 @@ def test_openrouter_dashboard_conversation_uses_curated_model(tmp_path, monkeypa
     monkeypatch.setattr(chat.OpenRouterApi, "turn", answer)
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self): return {}
     class Manager: pass
     app = FastAPI()
@@ -181,6 +185,10 @@ def test_claude_code_subscription_conversation_persists_cli_session(tmp_path, mo
                     "usage": {"input_tokens": 6, "output_tokens": 2}, "model": "Claude Code"}
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self): return {}
     class Manager: pass
     bridge = ClaudeCode()

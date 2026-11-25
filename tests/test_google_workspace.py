@@ -6,7 +6,7 @@ import json
 import pytest
 
 from llm_gateway.dashboard import google_workspace as google
-from llm_gateway.manager.errors import ManagerError
+from llm_gateway.orchestration_client import ManagerError
 
 
 def test_disabled_connector_cannot_open_token(monkeypatch, tmp_path):

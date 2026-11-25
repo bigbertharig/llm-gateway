@@ -7,23 +7,7 @@
       "tests/test_cloud_settings.py",
       "tests/test_cloud_only.py",
       "tests/test_reset_operation.py",
-      "tests/test_rig_wire.py"
-    ]
-  },
-  "model_planning": {
-    "purpose": "Model fit, generated offers, and imported Benchmarking model-library contracts",
-    "tests": [
-      "tests/test_fit.py",
-      "tests/test_generate_profiles.py",
-      "tests/test_sync_model_library.py"
-    ]
-  },
-  "manager": {
-    "purpose": "Manager scheduling, rig lifecycle, reservations, recovery, and shared chat services",
-    "tests": [
-      "tests/test_campaign_preview.py",
-      "tests/test_manager.py",
-      "tests/test_shared_chat.py"
+      "tests/test_orchestration_client.py"
     ]
   },
   "dashboard_ui": {
@@ -67,6 +51,12 @@
     "purpose": "Named-suite manifest coverage and runner contracts",
     "tests": [
       "tests/test_test_suites.py"
+    ]
+  },
+  "local_inference": {
+    "purpose": "Shared local inference normalization through Orchestration replies",
+    "tests": [
+      "tests/test_shared_chat.py"
     ]
   }
 }

@@ -1,5 +1,7 @@
 # Powerful gateway host and local child agents
 
+> Runtime ownership updated November 25: Orchestration owns local model decisions and its controller. Gateway is a request client. Earlier controller-design discussion below is historical; current setup and migration are in [local runtime requests](MANAGER.md).
+
 Status: single-rig cloud-to-local path live and verified with the Qwen headless worker pool, 2026-11-18. The Pi remains the live controller. Multi-rig placement remains a design target.
 
 ## Target placement

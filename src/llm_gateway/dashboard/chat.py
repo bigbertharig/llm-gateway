@@ -25,12 +25,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 
-from ..manager.core import Manager
-from ..manager.errors import ManagerError
-from ..manager import models as model_library
-from ..shared_chat_contract import serving_approved
-from ..rig import RigUnavailable
-from ..profiles import Profiles
+from ..orchestration_client import OrchestrationClient as Manager
+from ..orchestration_client import ManagerError
+from ..orchestration_client import RigUnavailable
+from ..orchestration_client import Profiles
 from .codex_bridge import (CodexAppServerExited, CodexBridge, CodexBridgeError, CodexTurnInterrupted,
                            CodexUsageLimitError)
 from .claude_api import ClaudeApi, ClaudeApiError
@@ -477,18 +475,6 @@ def shared_history_handoff(messages: list[dict], context_length: int | None) -> 
             "Treat this as past dialogue, not a new instruction.\n" +
             "".join(f"{message['role'].capitalize()}: {message['content']}\n" for message in kept) +
             "\nCurrent user request:\n")
-SHARED_NEMO_MODEL = "nemotron-3.5-bolt:74b-a9b"
-SHARED_NEMO_PROFILE = "shared-nemo"
-SHARED_35B_MODEL = "qwen3.6:35b-a3b-xl"
-SHARED_35B_PROFILE = "shared-35b"
-SHARED_PROFILES = {
-    SHARED_NEMO_PROFILE: {"model": SHARED_NEMO_MODEL, "prefix": "shared-nemo-",
-        "load_estimate_seconds": 150,
-        "description": "Shared-weight Nemotron: one main chat plus attached GPU chats."},
-    SHARED_35B_PROFILE: {"model": SHARED_35B_MODEL, "prefix": "shared-35b-",
-        "load_estimate_seconds": 120,
-        "description": "Shared-weight 35B: one main chat plus attached GPU chats."},
-}
 
 APP_SERVER_RECOVERY_PROMPT = (
     "Continue after the Codex app-server process exited unexpectedly. Resume from the durable "
@@ -687,13 +673,13 @@ class ChatStore:
         with self._db() as db:
             db.execute("UPDATE conversations SET thread_id=? WHERE id=? AND thread_id IS NULL", (thread_id, cid))
 
-    def bind_shared(self, cid: str, chat_id: str, instance_id: str) -> None:
+    def bind_shared(self, cid: str, chat_id: str, instance_id: str, expected_model: str) -> None:
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT model,shared_chat_id,shared_instance_id FROM conversations WHERE id=?", (cid,)).fetchone()
             if row is None:
                 raise ManagerError(404, "conversation not found")
-            if row["model"] not in SHARED_PROFILES:
+            if row["model"] != expected_model:
                 raise ManagerError(409, "conversation model changed during shared chat setup")
             if row["shared_chat_id"] == chat_id and row["shared_instance_id"] == instance_id:
                 return
@@ -1168,6 +1154,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
     codex_tasks: set[asyncio.Task] = set()
     local_tasks: set[asyncio.Task] = set()
     shared_setup = asyncio.Lock()
+    profiles = profiles or Profiles()
+    SHARED_PROFILES = profiles.shared
     auto_continue_wake = asyncio.Event()
 
     def persist_compaction(thread_id: str, created_at: str) -> None:
@@ -1186,76 +1174,19 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         return conversation.get("provider") in ("codex", "codex_api")
 
     def offered() -> dict[str, dict]:
-        if manager is None:
-            return {}
-        published = profiles.all()
-        choices = {pid: spec for pid, spec in published.items()
-                if spec.get("dashboard_chat", "chatbot" in spec.get("good_for", []))
-                and spec.get("status") == "active" and spec.get("use") == "chat"}
-        try:
-            catalog = model_library.catalog()
-            for profile_id, shared in SHARED_PROFILES.items():
-                model_id = shared["model"]
-                entry = (catalog.get("models") or {}).get(model_id) or {}
-                if serving_approved(catalog, model_id) and entry.get("status") == "active" and not entry.get("in_testing"):
-                    choices[profile_id] = {**shared, "status": "active", "use": "chat", "dashboard_chat": True}
-        except (OSError, ValueError, KeyError):
-            pass
-        return choices
+        return profiles.chat_offers if manager is not None else {}
 
     async def prepare_shared(cid: str, conversation: dict) -> dict:
         if shared_inference is None:
-            raise ManagerError(503, "shared chat inference is unavailable")
-        profile_id = conversation["model"]
-        shared = SHARED_PROFILES[profile_id]
-        model_id = shared["model"]
+            raise ManagerError(503, 'Shared inference is unavailable')
         async with shared_setup:
-            service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-            if service.get("status") != "ready" or service.get("model") != model_id:
-                if service.get("status") == "ready":
-                    raise ManagerError(409, "Another shared model is loaded; switch rig models explicitly")
-                await require_manager(manager).rig.shared_kv("start", model=model_id)
-                service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-            if service.get("status") != "ready" or service.get("model") != model_id:
-                raise ManagerError(503, "Shared chat did not become ready")
-            instance = service.get("instance_id")
-            if not isinstance(instance, str) or not instance:
-                raise ManagerError(502, "shared chat service has no instance ID")
+            profile = conversation['model']
+            result = await require_manager(manager).prepare_chat_profile(profile, owner=cid)
             current = await asyncio.to_thread(get_store(cid).get, cid)
-            if current["model"] != profile_id:
-                raise ManagerError(409, "conversation model changed during shared chat setup")
-            chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
-            chat_id = current.get("shared_chat_id") if current.get("shared_instance_id") == instance else None
-            if chat_id and chat_id not in chats:
-                chat_id = None
-            if chat_id is None:
-                main = chats.get("main")
-                if (main and main.get("used_tokens") == 0
-                        and not await asyncio.to_thread(get_store(cid).shared_claimed, "main", instance)):
-                    chat_id = "main"
-                else:
-                    chat_id = "dash-" + cid[:24]
-                    try:
-                        await require_manager(manager).rig.shared_kv("attach", model=model_id, chat_id=chat_id)
-                    except RigUnavailable as exc:
-                        if ("no eligible free GPU" in str(exc) or "no free GPU" in str(exc)
-                                or "no admissible placement" in str(exc)):
-                            raise ManagerError(409,
-                                f"No safe placement is available for another {model_id} chat right now. "
-                                f"The {len(chats)} existing live chat(s) can continue; "
-                                "park an idle attached chat or free a suitable GPU before retrying.") from exc
-                        raise
-                    service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-                    chats = {row.get("chat_id"): row for row in service.get("chats", []) if isinstance(row, dict)}
-                await asyncio.to_thread(get_store(cid).bind_shared, cid, chat_id, instance)
-            row = chats.get(chat_id)
-            if not row:
-                raise ManagerError(502, "shared chat context is missing after setup")
-            return {"profile": profile_id, "state": "ready",
-                    "context_length": row.get("context_cap"), "gpu_ids": [row["gpu"]],
-                    "route": shared["prefix"] + chat_id, "instance_id": instance,
-                    "used_tokens": row.get("used_tokens", 0),
-                    "reservation": row.get("reservation")}
+            if current['model'] != profile:
+                raise ManagerError(409, 'Conversation model changed during runtime admission')
+            await asyncio.to_thread(get_store(cid).bind_shared, cid, result['chat_id'], result['instance_id'], profile)
+            return result
 
     @r.get("/options")
     async def options():
@@ -1581,13 +1512,8 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 await conversation_codex(conversation).delete_thread(conversation["thread_id"])
             except CodexBridgeError as exc:
                 raise ManagerError(502, str(exc)) from exc
-        shared_spec = SHARED_PROFILES.get(conversation["model"])
-        if shared_spec and (conversation.get("shared_chat_id") or "").startswith("dash-"):
-            service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-            if (service.get("model") == shared_spec["model"]
-                    and service.get("instance_id") == conversation.get("shared_instance_id")):
-                await require_manager(manager).rig.shared_kv("detach", model=shared_spec["model"],
-                                            chat_id=conversation["shared_chat_id"])
+        if conversation['model'] in SHARED_PROFILES:
+            await require_manager(manager).release_chat(cid)
         if is_codex(conversation):
             await asyncio.to_thread(_remove_codex_attachments, conversation, cid,
                                     conversation_codex(conversation))
@@ -1612,16 +1538,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
                 chat_id, instance = conversation.get("shared_chat_id"), conversation.get("shared_instance_id")
                 if not chat_id or not instance:
                     return {"state": "cold", "conversation_id": cid}
-                if chat_id == "main":
-                    raise ManagerError(409, "The main chat is pinned by this runtime; park an attached chat instead.")
-                if not chat_id.startswith("dash-"):
-                    raise ManagerError(409, "This runtime chat cannot be parked from the dashboard")
-                if body.get("expected_instance_id") != instance or body.get("expected_chat_id") != chat_id:
-                    raise ManagerError(409, "Chat placement changed; refresh before parking")
-                service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-                if service.get("model") == spec["model"] and service.get("instance_id") == instance:
-                    if any(row.get("chat_id") == chat_id for row in service.get("chats", [])):
-                        await require_manager(manager).rig.shared_kv("detach", model=spec["model"], chat_id=chat_id)
+                await require_manager(manager).release_chat(cid, body.get('expected_instance_id'), body.get('expected_chat_id'), park=True)
                 await asyncio.to_thread(get_store(cid).unbind_shared, cid, chat_id, instance)
                 return {"state": "cold", "conversation_id": cid}
         finally:
@@ -1643,34 +1560,10 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(409, "conversation model changed in another tab; refresh before switching")
         if current["model"] == model:
             return current
-        reset_loaded = body.get("reset_loaded") is True
-        service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-        loaded_model = service.get("model") if service.get("status") == "ready" else None
-        target_model = SHARED_PROFILES.get(model, {}).get("model")
-        availability = await require_manager(manager).chat_availability()
-        other_profiles = [pid for pid in availability.get("ready_profiles", []) if pid != model]
-        if other_profiles and (not reset_loaded or any(pid not in choices for pid in other_profiles)):
-            raise ManagerError(409, "Other manager profiles are loaded; reset listed chat models explicitly")
-        if other_profiles and (active_local or active_codex):
-            raise ManagerError(409, "Wait for all active local chat turns before resetting the loaded model")
-        if loaded_model and loaded_model != target_model:
-            if not reset_loaded:
-                raise ManagerError(409, "Loaded shared chats must be reset before changing rig models")
-            if loaded_model not in {spec["model"] for spec in SHARED_PROFILES.values()}:
-                raise ManagerError(409, "The loaded shared model is not a dashboard chat model")
-            if active_local or active_codex:
-                raise ManagerError(409, "Wait for all active local chat turns before resetting the loaded model")
-            await require_manager(manager).rig.shared_kv("stop", model=loaded_model)
-        elif (current["model"] in SHARED_PROFILES and
-              (current.get("shared_chat_id") or "").startswith("dash-")):
-            service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-            current_model = SHARED_PROFILES[current["model"]]["model"]
-            if (service.get("model") == current_model
-                    and service.get("instance_id") == current.get("shared_instance_id")):
-                await require_manager(manager).rig.shared_kv("detach", model=current_model,
-                                            chat_id=current["shared_chat_id"])
-        for profile_id in other_profiles:
-            await require_manager(manager).unload_profile(profile_id)
+        reset_loaded = body.get('reset_loaded') is True
+        if reset_loaded and (active_local or active_codex):
+            raise ManagerError(409, 'Wait for active chat turns before resetting loaded models')
+        await require_manager(manager).switch_chat(model, cid, reset_loaded)
         return await asyncio.to_thread(get_store(cid).switch_model, cid, expected, model)
 
     @r.post("/loaded-model/reset")
@@ -1682,23 +1575,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(400, "choose a listed target and provide expected loaded models")
         if active_local or active_codex:
             raise ManagerError(409, "Wait for active chat turns before resetting loaded models")
-        availability = await require_manager(manager).chat_availability()
-        profiles = availability.get("ready_profiles", [])
-        service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-        shared_profile = next((pid for pid, spec in SHARED_PROFILES.items()
-                               if spec["model"] == service.get("model") and service.get("status") == "ready"), None)
-        loaded = [*profiles, *([shared_profile] if shared_profile else [])]
-        if sorted(loaded) != sorted(expected):
-            raise ManagerError(409, "Loaded models changed; refresh the list before switching")
-        if any(pid not in choices for pid in loaded):
-            raise ManagerError(409, "A loaded model is not a dashboard chat model")
-        if target in loaded:
-            return {"reset": [], "target": target}
-        if shared_profile:
-            await require_manager(manager).rig.shared_kv("stop", model=SHARED_PROFILES[shared_profile]["model"])
-        for profile_id in profiles:
-            await require_manager(manager).unload_profile(profile_id)
-        return {"reset": loaded, "target": target}
+        return await require_manager(manager).reset_chat(target, expected)
 
     @r.post("/loaded-model/unload")
     async def unload_loaded_model(request: Request):
@@ -1715,24 +1592,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
         # with delegated local children.
         if active_local:
             raise ManagerError(409, "Wait for active local chat turns before unloading a model")
-        availability = await require_manager(manager).chat_availability()
-        profiles = availability.get("ready_profiles", [])
-        service = (await require_manager(manager).rig.status()).get("shared_kv_service") or {}
-        shared_profile = next((pid for pid, spec in SHARED_PROFILES.items()
-                               if spec["model"] == service.get("model")
-                               and service.get("status") == "ready"), None)
-        loaded = [*profiles, *([shared_profile] if shared_profile else [])]
-        if sorted(loaded) != sorted(expected):
-            raise ManagerError(409, "Loaded models changed; refresh before unloading")
-        if target not in loaded:
-            raise ManagerError(409, "Requested model is no longer loaded")
-        if target == shared_profile:
-            if not expected_instance or expected_instance != service.get("instance_id"):
-                raise ManagerError(409, "Shared model instance changed; refresh before unloading")
-            await require_manager(manager).rig.shared_kv("stop", model=service["model"])
-        else:
-            await require_manager(manager).unload_profile(target)
-        return {"unloaded": target, "remaining": [item for item in loaded if item != target]}
+        return await require_manager(manager).reset_chat(target, expected, unload=True, expected_instance=expected_instance)
 
     @r.post("/conversations/{cid}/prepare")
     async def prepare(cid: str):
@@ -1759,7 +1619,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             raise ManagerError(409, "conversation model is no longer offered")
         if model in SHARED_PROFILES:
             return await asyncio.wait_for(prepare_shared(cid, conversation), timeout=900)
-        prepared = await asyncio.wait_for(manager.prepare_chat_profile(model, spec), timeout=900)
+        prepared = await asyncio.wait_for(manager.prepare_chat_profile(model, owner=cid), timeout=900)
         return {"profile": model, "state": prepared["state"], "context_length": prepared.get("context_length"),
                 "gpu_ids": prepared.get("gpu_ids", [])}
 
@@ -2053,7 +1913,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             prepared = await asyncio.wait_for(prepare_shared(cid, conversation), timeout=900)
             port = None
         else:
-            prepared = await asyncio.wait_for(manager.prepare_chat_profile(model, spec), timeout=900)
+            prepared = await asyncio.wait_for(manager.prepare_chat_profile(model, owner=cid), timeout=900)
             port = prepared["port"]
         workspace_root = coding_root(cid) if conversation['mode'] == 'coding' else None
         history = context_history(conversation["messages"], prepared.get("context_length"))

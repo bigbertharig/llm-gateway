@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import APIRouter, Request
 
-from ..manager.errors import ManagerError
+from ..orchestration_client import ManagerError
 from .claude_code import ClaudeCodeBridge, ClaudeCodeError
 from .cloud_settings import CloudSettings, CloudSettingsError
 from .codex_bridge import CodexBridge, CodexBridgeError

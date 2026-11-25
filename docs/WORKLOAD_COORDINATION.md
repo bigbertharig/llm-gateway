@@ -1,5 +1,7 @@
 # Gateway workload coordination
 
+> Runtime ownership updated November 25: Orchestration owns local model decisions and its controller. Gateway is a request client. Earlier controller-design discussion below is historical; current setup and migration are in [local runtime requests](MANAGER.md).
+
 Status: migration contract, 2026-11-09. The current rig still has global `idle`,
 `remote`, `bench`, and `orchestration` mode checks. Do not remove those checks until
 every GPU launcher in orchestration and benchmarking uses the manager's leases.

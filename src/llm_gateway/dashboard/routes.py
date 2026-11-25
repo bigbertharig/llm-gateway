@@ -11,8 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from ..manager.core import Manager
-from ..manager.errors import ManagerError
+from ..orchestration_client import OrchestrationClient as Manager
+from ..orchestration_client import ManagerError
 from . import sources
 
 STATIC = Path(__file__).parent / "static"
@@ -134,14 +134,14 @@ def router(manager: Manager) -> APIRouter:
     @r.get("/api/models")
     async def models():
         try:
-            return await asyncio.to_thread(sources.models_summary)
+            return require_manager(manager).profiles.summary
         except (OSError, ValueError) as exc:
             return _unavailable(exc)
 
     @r.get("/api/benchmarks")
     async def benchmarks():
         try:
-            return await asyncio.to_thread(sources.benchmark_evidence_summary)
+            return sources.benchmark_evidence_summary(require_manager(manager).profiles.summary)
         except (OSError, ValueError) as exc:
             return _unavailable(exc)
 

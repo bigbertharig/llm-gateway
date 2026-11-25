@@ -22,7 +22,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Request
 
-from ..manager.errors import ManagerError
+from ..orchestration_client import ManagerError
 
 router = APIRouter(prefix="/dashboard/api/google", tags=["google-workspace"])
 OBJECT_ID = re.compile(r"^[A-Za-z0-9_-]{4,128}$")

@@ -1,5 +1,7 @@
 # Work organization: status and pickup notes
 
+> Runtime ownership updated November 25: Orchestration owns local model decisions and its controller. Gateway is a request client. Earlier controller-design discussion below is historical; current setup and migration are in [local runtime requests](MANAGER.md).
+
 Updated 2026-11-24. This guide owns Gateway's future user-work coordination design.
 The [product boundary](../README.md#product-boundary) defines Gateway responsibilities;
 the [implementation status](../README.md#implementation-status) tracks Gateway implementation work.

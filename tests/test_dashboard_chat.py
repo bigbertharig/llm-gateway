@@ -24,8 +24,8 @@ from llm_gateway.dashboard.chat import (APP_SERVER_RECOVERY_PROMPT, ChatStore, _
                                         context_history, shared_history_handoff, requested_page_url,
                                         malformed_reasoning, router)
 from llm_gateway.lan_dashboard import _allowed
-from llm_gateway.rig import RigUnavailable
-from llm_gateway.manager.errors import ManagerError
+from llm_gateway.orchestration_client import RigUnavailable
+from llm_gateway.orchestration_client import ManagerError
 
 
 def test_dashboard_hides_internal_workspace_routing_from_chat_sidebars():
@@ -181,6 +181,10 @@ def test_agent_status_reconciles_a_saved_turn_without_a_live_runner(tmp_path, mo
             return {"events": [], "approvals": [], "active": False}
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self):
             return {}
 
@@ -224,6 +228,10 @@ def test_codex_usage_limit_failure_schedules_visible_automatic_continue(tmp_path
         def status(self, thread_id): return {"events": [], "approvals": []}
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self): return {}
     class Manager:
         async def chat_availability(self):
@@ -267,6 +275,10 @@ def test_codex_app_server_exit_schedules_immediate_safe_recovery(tmp_path, monke
         def status(self, thread_id): return {"events": [], "approvals": []}
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self): return {}
     class Manager:
         async def chat_availability(self):
@@ -416,242 +428,6 @@ def test_chat_store_migrates_existing_conversations(tmp_path):
     assert (saved["context_length"], saved["last_total_tokens"]) == (16384, 16)
 
 
-def test_nemo_shared_dashboard_claims_main_then_worker_and_rejects_reloaded_context(tmp_path, monkeypatch):
-    monkeypatch.setenv("CHAT_DATA_ROOT", str(tmp_path / "history"))
-    from llm_gateway.dashboard import tool_runtime
-    from llm_gateway.manager import models as model_library
-    monkeypatch.setattr(tool_runtime, "available", lambda route, servers: (
-        [], {**({"fetch_page": ([], {"properties": {"url": {}, "max_chars": {}}, "required": ["url"]})}
-                if "rig_search" in servers else {}),
-             **({"inspect_github_repo": ([], {"properties": {"repository": {}}, "required": ["repository"]})}
-                if "github_public" in servers else {})}))
-    def page_call(dispatch, name, args):
-        if name == "inspect_github_repo":
-            return {"structuredContent": {"repository": "example/project", "revision": "a" * 40,
-                "root_entries": [{"path": "README.md", "type": "file"}],
-                "readme_preview": {"content": "A sample project"}}}
-        url = args["url"]
-        return {"structuredContent": {"url": url, "title": url.rsplit("/", 1)[-1],
-            "text": "Content from " + url, "truncated": False,
-            "links": ([{"url": "https://www.daedalmap.com/about", "label": "About"},
-                       {"url": "https://www.daedalmap.com/projects", "label": "Projects"}]
-                      if url == "https://www.daedalmap.com" else [])}}
-    monkeypatch.setattr(tool_runtime, "call", page_call)
-    catalog_doc = {"load_recipes": {"recipes": {
-        "nemotron74_shared_kv_http_v1": {"status": "validated", "procedure": "shared_kv_http_v1",
-            "model": "nemotron-3.5-bolt:74b-a9b"}}},
-        "models": {"nemotron-3.5-bolt:74b-a9b": {"status": "active"}}}
-    monkeypatch.setattr(model_library, "catalog", lambda: catalog_doc)
-
-    class Profiles:
-        def all(self):
-            return {}
-
-    class Rig:
-        def __init__(self):
-            self.instance = "load-1"
-            self.starts = 0
-            self.model = "nemotron-3.5-bolt:74b-a9b"
-            self.chats = []
-            self.calls = []
-            self.fail_attach = False
-        async def status(self):
-            return {"shared_kv_service": {"status": "ready" if self.chats else "stopped",
-                    "model": self.model,
-                    "instance_id": self.instance, "chats": [dict(row) for row in self.chats],
-                    "worker_capacity": {"status": "observed", "context_capacity": 262144,
-                        "free_gpu_ids": [5] if len(self.chats) < 2 else [],
-                        "free_gpu_count": 1 if len(self.chats) < 2 else 0}},
-                    "gpus": [{"gpu": 0, "verdict": "unleased_busy"},
-                             {"gpu": 5, "verdict": "free" if len(self.chats) < 2 else "unleased_busy"}]}
-        async def shared_kv(self, action, **kwargs):
-            self.calls.append((action, kwargs))
-            if action == "start":
-                self.starts += 1
-                self.instance = "load-" + str(self.starts)
-                self.model = kwargs["model"]
-                self.chats = [{"chat_id": "main", "gpu": 0, "context_cap": 262144, "used_tokens": 0}]
-            elif action == "attach":
-                if self.fail_attach:
-                    raise RigUnavailable(503, "shared chat attach failed: no eligible free GPU for an attached chat")
-                self.chats.append({"chat_id": kwargs["chat_id"], "gpu": 5,
-                                   "context_cap": 262144, "used_tokens": 0})
-            elif action == "detach":
-                self.chats = [row for row in self.chats if row["chat_id"] != kwargs["chat_id"]]
-            elif action == "stop":
-                self.chats = []
-            return {"status": "ready"}
-
-    class Manager:
-        def __init__(self):
-            self.rig = Rig()
-        async def chat_availability(self):
-            return {"busy": False, "reason": "", "ready_profiles": []}
-        async def prepare_chat_profile(self, *args):
-            raise AssertionError("shared Nemo must bypass conventional profile loading")
-
-    manager = Manager()
-    seen = []
-    async def shared(route, body):
-        prompt = body["messages"][-1]["content"]
-        seen.append((route, body["_shared_instance_id"], prompt))
-        for row in manager.rig.chats:
-            if route.endswith(row["chat_id"]):
-                row["used_tokens"] += 20
-                break
-        if prompt == "Long reply":
-            return JSONResponse({"choices": [{"message": {"content": "First part "},
-                                              "finish_reason": "length"}]})
-        if prompt == "Failing reply":
-            return JSONResponse({"error": "shared chat could not produce a user-facing answer"}, status_code=502)
-        if prompt == "Malformed reply":
-            return JSONResponse({"choices": [{"message": {
-                "content": "I will fetch more. </think> </think> </think> </think>"},
-                "finish_reason": "length"}]})
-        if prompt.startswith("Your previous response was malformed"):
-            return JSONResponse({"choices": [{"message": {"content": "I read the pages and found two projects."},
-                                              "finish_reason": "stop"}]})
-        if prompt.startswith("Continue your previous answer"):
-            return JSONResponse({"choices": [{"message": {"content": "and the end."},
-                                              "finish_reason": "stop"}]})
-        return JSONResponse({"choices": [{"message": {"content": "Nemo reply"}, "finish_reason": "stop"}],
-                             "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}})
-    app = FastAPI()
-    app.add_exception_handler(ManagerError,
-        lambda request, exc: JSONResponse({"error": str(exc)}, status_code=exc.status))
-    app.include_router(router(manager, Profiles(), None, shared_inference=shared))
-    base = "/dashboard/api/chat/conversations"
-    with TestClient(app) as client:
-        catalog_doc["load_recipes"]["recipes"]["nemotron74_shared_kv_http_v1"]["status"] = "research"
-        assert client.get("/dashboard/api/chat/options").json()["models"] == []
-        catalog_doc["load_recipes"]["recipes"]["nemotron74_shared_kv_http_v1"]["status"] = "validated"
-        offered = client.get("/dashboard/api/chat/options").json()["models"]
-        assert offered[0]["load_estimate_seconds"] == 150
-        first = client.post(base, json={"model": "shared-nemo"}).json()
-        assert client.post(f"{base}/{first['id']}/prepare").json()["gpu_ids"] == [0]
-        first_capacity = client.get("/dashboard/api/chat/options").json()["loaded_models"][0]
-        assert first_capacity["live_chats"] == 1
-        assert first_capacity["free_gpu_ids"] == [5]
-        reply = client.post(f"{base}/{first['id']}/turn",
-                            json={"model": "shared-nemo", "message": "Hello"})
-        assert reply.status_code == 200, reply.text
-        page_reply = client.post(f"{base}/{first['id']}/turn",
-            json={"model": "shared-nemo", "message": "Can you read www.daedalmap.com?"})
-        assert page_reply.status_code == 200, page_reply.text
-        assert "Content from https://www.daedalmap.com" in seen[-1][2]
-        assert page_reply.json()["conversation"]["messages"][-1]["activity"][0]["name"] == "fetch_page"
-        github_reply = client.post(f"{base}/{first['id']}/turn", json={"model": "shared-nemo",
-            "message": "What do you think of https://github.com/example/project?"})
-        assert github_reply.status_code == 200, github_reply.text
-        assert 'A sample project' in seen[-1][2]
-        assert github_reply.json()["conversation"]["messages"][-1]["activity"][0]["name"] == "inspect_github_repo"
-        navigation = client.post(f"{base}/{first['id']}/turn", json={"model": "shared-nemo",
-            "message": "Can you follow the About and Projects links on that site?"})
-        assert navigation.status_code == 200, navigation.text
-        assert "Content from https://www.daedalmap.com/about" in seen[-1][2]
-        assert "Content from https://www.daedalmap.com/projects" in seen[-1][2]
-        assert len(navigation.json()["conversation"]["messages"][-1]["activity"]) == 3
-        broad = client.post(f"{base}/{first['id']}/turn", json={"model": "shared-nemo",
-            "message": "Go back to the site and explore the project. Navigate around and read more pages."})
-        assert broad.status_code == 200, broad.text
-        assert "Content from https://www.daedalmap.com/about" in seen[-1][2]
-        assert "Content from https://www.daedalmap.com/projects" in seen[-1][2]
-        assert len(broad.json()["conversation"]["messages"][-1]["activity"]) == 3
-        malformed = client.post(f"{base}/{first['id']}/turn",
-            json={"model": "shared-nemo", "message": "Malformed reply"})
-        assert malformed.status_code == 200, malformed.text
-        assert malformed.json()["conversation"]["messages"][-1]["content"] == "I read the pages and found two projects."
-        continued = client.post(f"{base}/{first['id']}/turn",
-                                json={"model": "shared-nemo", "message": "Long reply"})
-        assert continued.status_code == 200, continued.text
-        assert continued.json()["conversation"]["messages"][-1]["content"] == "First part and the end."
-        second = client.post(base, json={"model": "shared-nemo"}).json()
-        empty = client.post(base, json={"model": "shared-nemo", "history": "tests"}).json()
-        assert client.delete(f"{base}/{empty['id']}").status_code == 200
-        assert client.post(f"{base}/{second['id']}/prepare").json()["gpu_ids"] == [5]
-        placements = client.get("/dashboard/api/chat/options").json()["chat_placements"]
-        loaded = client.get("/dashboard/api/chat/options").json()["loaded_models"]
-        assert loaded[0]["id"] == "shared-nemo" and loaded[0]["live_chats"] == 2
-        assert loaded[0]["free_gpu_count"] == 0
-        manager.rig.fail_attach = True
-        third = client.post(base, json={"model": "shared-nemo"}).json()
-        full = client.post(f"{base}/{third['id']}/prepare")
-        assert full.status_code == 409
-        assert "No safe placement is available for another" in full.json()["error"]
-        assert "usage:" not in full.json()["error"]
-        manager.rig.fail_attach = False
-        attached = client.get(f"{base}/{second['id']}").json()
-        assert [(p["chat_id"], p["gpu_ids"]) for p in placements] == [("main", [0]), (attached["shared_chat_id"], [5])]
-        assert [item[:2] for item in seen] == [("shared-nemo-main", "load-1")] * 9
-        assert [action for action, _ in manager.rig.calls] == ["start", "attach", "attach"]
-        assert client.post(f"{base}/{first['id']}/park", json={
-            "expected_instance_id": "load-1", "expected_chat_id": "main"}).status_code == 409
-        assert client.post(f"{base}/{second['id']}/park", json={
-            "expected_instance_id": "stale", "expected_chat_id": attached["shared_chat_id"]}).status_code == 409
-        saved_store = ChatStore(tmp_path / "history")
-        running_turn = saved_store.begin_turn(second["id"], 0, "shared-nemo", "Working task")
-        assert client.post(f"{base}/{second['id']}/park", json={
-            "expected_instance_id": "load-1", "expected_chat_id": attached["shared_chat_id"]}).status_code == 409
-        saved_store.set_turn_state(running_turn, "interrupted")
-        parked = client.post(f"{base}/{second['id']}/park", json={
-            "expected_instance_id": "load-1", "expected_chat_id": attached["shared_chat_id"]})
-        assert parked.status_code == 200, parked.text
-        assert parked.json()["state"] == "cold"
-        assert client.get(f"{base}/{second['id']}").json()["shared_chat_id"] is None
-        assert client.get("/dashboard/api/chat/options").json()["loaded_models"][0]["live_chats"] == 1
-        assert client.post(f"{base}/{third['id']}/prepare").status_code == 200
-        manager.rig.instance = "load-2"
-        manager.rig.starts = 2
-        manager.rig.chats = [{"chat_id": "main", "gpu": 0, "context_cap": 262144, "used_tokens": 0}]
-        stale = client.post(f"{base}/{first['id']}/turn",
-                            json={"model": "shared-nemo", "message": "Continue"})
-        assert stale.status_code == 200, stale.text
-        assert "Saved conversation handoff" in seen[-1][2]
-        catalog_doc["models"]["qwen3.6:35b-a3b-xl"] = {"status": "active"}
-        assert "shared-35b" in {m["id"] for m in client.get("/dashboard/api/chat/options").json()["models"]}
-        blocked = client.post(f"{base}/{first['id']}/model", json={
-            "expected_model": "shared-nemo", "model": "shared-35b"})
-        assert blocked.status_code == 409
-        switched = client.post(f"{base}/{first['id']}/model", json={
-            "expected_model": "shared-nemo", "model": "shared-35b", "reset_loaded": True})
-        assert switched.status_code == 200, switched.text
-        assert switched.json()["model"] == "shared-35b"
-        assert len(switched.json()["messages"]) == len(stale.json()["conversation"]["messages"])
-        assert [action for action, _ in manager.rig.calls][-1] == "stop"
-        assert client.post(f"{base}/{first['id']}/prepare").status_code == 200
-        qwen = client.post(f"{base}/{first['id']}/turn", json={"model": "shared-35b", "message": "What did we discuss?"})
-        assert qwen.status_code == 200, qwen.text
-        assert seen[-1][0] == "shared-35b-main"
-        assert "Saved conversation handoff" in seen[-1][2]
-        failed = client.post(f"{base}/{first['id']}/turn",
-                             json={"model": "shared-35b", "message": "Failing reply"})
-        assert failed.status_code == 502
-        failed_chat = client.get(f"{base}/{first['id']}").json()
-        assert failed_chat["last_turn"]["state"] == "failed"
-        assert failed_chat["last_turn"]["prompt"] == "Failing reply"
-        assert "user-facing answer" in failed_chat["last_turn"]["error"]
-        assert len(failed_chat["messages"]) == len(qwen.json()["conversation"]["messages"])
-        retried = client.post(f"{base}/{first['id']}/turn",
-                              json={"model": "shared-35b", "message": "Retry"})
-        assert retried.status_code == 200
-        assert retried.json()["conversation"]["last_turn"]["state"] == "completed"
-        reset = client.post("/dashboard/api/chat/loaded-model/reset", json={
-            "model": "shared-nemo", "expected_loaded": ["shared-35b"]})
-        assert reset.status_code == 200, reset.text
-        assert reset.json()["reset"] == ["shared-35b"]
-        assert client.post("/dashboard/api/chat/loaded-model/reset", json={
-            "model": "shared-35b", "expected_loaded": ["shared-35b"]}).status_code == 409
-        assert client.post(f"{base}/{first['id']}/prepare").status_code == 200
-        loaded_qwen = client.get("/dashboard/api/chat/options").json()["loaded_models"][0]
-        stale_unload = client.post("/dashboard/api/chat/loaded-model/unload", json={
-            "model": "shared-35b", "expected_loaded": ["shared-35b"],
-            "expected_instance_id": "stale-instance"})
-        assert stale_unload.status_code == 409
-        unloaded = client.post("/dashboard/api/chat/loaded-model/unload", json={
-            "model": "shared-35b", "expected_loaded": ["shared-35b"],
-            "expected_instance_id": loaded_qwen["service_instance_id"]})
-        assert unloaded.status_code == 200, unloaded.text
-        assert unloaded.json() == {"unloaded": "shared-35b", "remaining": []}
 
 
 def test_chat_tool_intent_keeps_ordinary_question_conversational():
@@ -745,14 +521,18 @@ def test_local_model_uses_coding_workspace_and_coding_tools(tmp_path, monkeypatc
     profile = {"model": "local-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self):
             return {"local-chat": profile}
 
     class Manager:
         async def chat_availability(self):
             return {"busy": False, "reason": "", "ready_profiles": ["local-chat"]}
-        async def prepare_chat_profile(self, model, spec):
-            assert (model, spec) == ("local-chat", profile)
+        async def prepare_chat_profile(self, model, spec=None, **kwargs):
+            assert model == "local-chat"
             return {"state": "ready", "port": 11434, "context_length": 8192}
 
     class Codex:
@@ -883,6 +663,10 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
     other = {"id": "gpt-oss-20b", "model": "other-test", "status": "active", "use": "chat", "good_for": ["chatbot"]}
     unmarked = {"id": "code-only", "model": "code-test", "status": "active", "use": "chat", "good_for": ["coding"]}
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self):
             return {profile["id"]: profile, other["id"]: other, unmarked["id"]: unmarked}
     class Manager:
@@ -900,10 +684,14 @@ def test_chat_api_uses_ready_manager_profile_and_saves_reply(tmp_path, monkeypat
             if self.busy:
                 return {"busy": True, "reason": "active rig job", "ready_profiles": [], "requested_ready": False}
             return {"busy": False, "reason": "", "ready_profiles": self.ready, "requested_ready": True}
-        async def prepare_chat_profile(self, pid, spec):
+        async def switch_chat(self, target, owner, reset_loaded=False):
+            assert target == other['id'] and reset_loaded is True
+            self.switched = (target, owner)
+            return {'target': target}
+        async def prepare_chat_profile(self, pid, spec=None, **kwargs):
             if self.busy:
                 raise ManagerError(409, "rig busy: active rig job", rig_busy=True)
-            assert pid == profile["id"] and spec == profile
+            assert pid == profile["id"] and spec is None
             self.loads.append(pid)
             return {"profile": pid, "state": "ready", "port": 11434, "context_length": 65536}
     manager = Manager()
@@ -1230,6 +1018,10 @@ def test_codex_chat_uses_account_workspace_and_separate_threads(tmp_path, monkey
             return [{"model": "test-codex", "displayName": "Test Codex"}]
 
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self):
             return {}
     class Manager:
@@ -1372,3 +1164,17 @@ def test_legacy_prompt_without_matching_turn_keeps_recorded_time(tmp_path):
     cid = store.create("Codex")["id"]
     saved = store.append_exchange(cid, 0, "Codex", "Unlinked request", "Answer")
     assert saved["messages"][0]["created_at"] == saved["messages"][1]["created_at"]
+
+
+def test_shared_binding_checks_conversation_identity_without_local_model_policy(tmp_path):
+    store = ChatStore(tmp_path / 'history')
+    cid = store.create('owner-approved-model', 'local', str(tmp_path))['id']
+    store.bind_shared(cid, 'owner-chat', 'instance-one', 'owner-approved-model')
+    assert store.get(cid)['shared_chat_id'] == 'owner-chat'
+    store.switch_model(cid, 'owner-approved-model', 'another-owner-model')
+    try:
+        store.bind_shared(cid, 'old-chat', 'instance-one', 'owner-approved-model')
+    except ManagerError as error:
+        assert error.status == 409
+    else:
+        raise AssertionError('stale conversation binding accepted')

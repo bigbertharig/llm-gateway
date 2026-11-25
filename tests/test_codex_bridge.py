@@ -14,7 +14,7 @@ from llm_gateway.dashboard.codex_bridge import (CodexBridge, CodexBridgeError,
                                                  CodexUsageLimitError, _delegate_receipt,
                                                  _safe_app_server_log)
 from llm_gateway.dashboard.chat import ChatStore, router, usage_limit_resume_at
-from llm_gateway.manager.errors import ManagerError
+from llm_gateway.orchestration_client import ManagerError
 
 
 def test_existing_codex_thread_resumes_without_experimental_capability(tmp_path):

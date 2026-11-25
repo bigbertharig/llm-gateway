@@ -18,7 +18,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from ..manager.errors import ManagerError
+from ..orchestration_client import ManagerError
 
 router = APIRouter(prefix="/dashboard/api/transfers", tags=["dashboard-transfers"])
 

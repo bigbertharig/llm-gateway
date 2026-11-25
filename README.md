@@ -1,192 +1,69 @@
 # llm-gateway
 
-Gateway owns the dashboard, conversations, authenticated remote access, cloud accounts/connectors, connection configuration and operator policy. It serves an OpenAI-compatible model API and coordinates connected products. Big Bertha runs it on a Pi with a certificate-protected LAN dashboard and a narrower private mobile route. Standalone cloud coding remains Planned: dashboard and conversation startup still depend on Rig Manager.
+Gateway provides the dashboard, saved conversations, cloud accounts and model connections,
+authenticated remote access, operator approvals, and connections to optional tools and services.
+It runs cloud coding and chat workflows without Orchestration or a local model catalog.
 
-Gateway coordinates model requests and dashboard work. Its Manager selects model offers, estimates fit, and coordinates loads. The rig now selects cards for lease requests and enforces live admission; Gateway still has context and load policy to move across this boundary. [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md) records the remaining migration.
+Orchestration decides how local models run. Gateway requests an outcome and presents the
+result. Profile selection, fit, placement, admission, leases, loading/unloading, shared-model
+context allocation and recovery all live in Orchestration. Gateway alone cannot run local models.
 
-## Product boundary
-
-Gateway owns dashboard conversations, remote access, cloud accounts/connectors, connection
-configuration, operator approvals and work coordination. Tool/agent execution is consumed
-through supported interfaces; local hardware admission and lifecycle remain with the runtime
-service. Gateway keeps conversation history and account credentials in its own stores.
-
-## Read this repo
-
-- [Dashboard](docs/DASHBOARD.md): operator UI, saved conversations, and its local controls.
-- [Remote access security](docs/REMOTE_ACCESS_SECURITY.md): why the phone route is separate from the LAN dashboard.
-- [Cloud connectors](docs/CLOUD_CONNECTORS.md): Google and Claude setup, tool grants, and credential boundaries.
-- [Porting to another rig](docs/PORTABILITY.md): what is reusable, what must be supplied, and what must be remeasured.
-- [Manager](docs/MANAGER.md): current model admission and rig-control interface.
-- [Work organization](docs/WORK_ORGANIZATION_DIRECTION.md): current ownership and the planned hardware-boundary migration.
-
-## Documentation index
-
-| Doc | For |
-|---|---|
-| [EXTERNAL_REPOS.md](EXTERNAL_REPOS.md) | outside runtimes and source projects, local revisions, and update checks |
-| [docs/MANAGER.md](docs/MANAGER.md) | current Gateway controller and rig hardware contract: model loads, fit, reservations, runs, and refusal reasons |
-| [docs/WORKLOAD_COORDINATION.md](docs/WORKLOAD_COORDINATION.md) | migration from exclusive rig modes to gateway-coordinated requests and explicit commands |
-| [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md) | design notes and ideas: failure recovery, slots, sharing capacity (exploratory) |
-| [docs/DASHBOARD.md](docs/DASHBOARD.md) | the dashboard |
-| [docs/REMOTE_ACCESS_SECURITY.md](docs/REMOTE_ACCESS_SECURITY.md) | private phone access boundaries, reusable setup, and verification |
-| [docs/MOBILE_DASHBOARD.md](docs/MOBILE_DASHBOARD.md) | mobile dashboard and Tailscale rollout |
-| [docs/POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md](docs/POWERFUL_GATEWAY_AND_LOCAL_AGENTS.md) | powerful gateway host target and cloud Codex to local child agent integration |
-| [docs/multi_rig_tests.md](docs/multi_rig_tests.md) | tests across two machines (network splits, failover) |
-
-```text
-client -> Pi 127.0.0.1:8080 llm-gateway (pi-gateway.service)
-             |  ssh <rig-ip> rig observe / plan / lease / claim / run ...
-             `-> Pi 127.0.0.1:<port> --pi-rig-tunnel.service--> rig 127.0.0.1:<port> llama-server
-```
-
-The core Gateway API and rig runtimes remain on loopback or the isolated rig link. The trusted home-LAN browser uses its separate certificate front door; the approved phone uses the narrower, tailnet-only mobile front door. See [remote access security](docs/REMOTE_ACCESS_SECURITY.md) for the boundary and [local dashboard access](docs/LOCAL_DASHBOARD_ACCESS.md) for LAN setup. The inference API offers local models; dashboard Codex conversations have their own provider and tool policy.
-
-## rigctl: the common commands
+## Install and run
 
 ```bash
-tools/rigctl.py status                                  # every GPU, its lease or claim, the plan, recent events
-tools/rigctl.py fit MODEL [--cards N | --gpus 1,3]      # would it fit, at what context and split (nothing loads)
-tools/rigctl.py load-model MODEL [--gpus 1,3] [--wait S|forever] [--owner WHO]
-                                                        # no --gpus: Gateway Manager selects the cards; with --wait it
-                                                        # collects them as they free (MANAGER.md, Reservations)
-tools/rigctl.py unload PROFILE
-tools/rigctl.py run-start --run ID [--resume "CMD"] [--auto-resume] [--needs MIB[xN]] -- CMD...
-tools/rigctl.py runs | recover RUN | run-stop RUN | dismiss RUN
-tools/rigctl.py cancel-owner WHO                        # stop everything one owner has: runs, loads, leases, claims, waits
-tools/rigctl.py claim NAME --gpus 1,3 | unclaim NAME | claims
-tools/rigctl.py kill --gpus 1,3                         # operator override: stop every runtime on those cards
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m llm_gateway
 ```
 
-## Models
+The default is cloud-only when `ORCHESTRATION_URL` is absent. Configure cloud accounts in the
+dashboard. A non-loopback bind requires configured Gateway bearer keys. See
+[cloud connectors](docs/CLOUD_CONNECTORS.md) and [remote access](docs/REMOTE_ACCESS_SECURITY.md).
 
-The gateway runs from its own files and never reads the benchmarking repo at runtime (ARCHITECTURE.md,
-"Boundaries"). `tools/generate_profiles.py` is its importer: it reads the benchmarking model library
-(where benchmarking keeps what it learned about how each model loads) and writes, both committed here:
+For local models, configure `ORCHESTRATION_URL` and `ORCHESTRATION_CONTROL_TOKEN` in the
+protected service environment. The owner must support `orchestration-control/1` and use the
+same model prefix. `UPSTREAM_HOST` identifies the reachable inference host/tunnel; Gateway
+continues to own that network connection. `GATEWAY_MODE=cloud` explicitly disables local access.
 
-- `model_catalog.json`: every model with its resolved profiles, the roles, the runtime image and the
-  dashboard's model summary; the manager plans and loads from it.
-- `remote_profiles.json`: the offer. `OFFER` in the script names each published profile, its model, the
-  registry profile to use (usually `interactive`) and a description. It names no cards: the manager's fit
-  places each profile and plans the largest context that fits, at least the profile's `ctx_size`.
+There is no `RIG_COMMAND`, SSH command fallback, local model-file import or embedded scheduler.
+An absent connection returns a specific unavailable response. An unavailable owner leaves
+cloud workflows available; stale metadata cannot authorize a local model operation.
 
-```bash
-tools/generate_profiles.py            # after an OFFER edit or a library change (run on the Pi)
-tools/generate_profiles.py --check    # exit 1 if an offer is invalid or either file is stale
-```
+## Interfaces
 
-The gateway publishes each profile as `gpu-rig/<id>` with its `context_length`, and re-reads the
-files when they change, so no restart is needed. Offers may use `active` or `candidate` registry models.
-What the manager learns from loads goes to `lessons/` (see `lessons/README.md`).
-
-## API
-
-| Route | Notes |
+| Interface | Behavior |
 |---|---|
-| `GET /v1/models` | one entry per remote profile |
-| `GET /v1/rig/ready-roster` | read-only, versioned routes that are both offered and already ready; includes actual served context |
-| `POST /v1/chat/completions`, `POST /v1/completions` | streaming and non-streaming. Body forwarded unchanged |
-| `POST /v1/responses` | Responses API passthrough for clients such as Codex; requires a loaded llama-server that implements this route |
-| `POST /tokenize`, `POST /detokenize` | llama-server tokenizer, routed by `model`. Exact counts for compaction |
-| `GET /v1/rig/status` | rig status plus `gateway_loading`: loads in progress with `since` and `elapsed_s` |
-| `GET /health` | liveness |
-| `/v1/manager/...` | the rig manager: `status`, `leases/preview` (read-only rig admission), `leases`, `claims`, `models/fit`, `models/load`, `profiles/<id>/load\|unload`, `runs` (start, `recover`, `stop`, `dismiss`), `owners/<who>/cancel`, `kill`, `plan`, `controller`, `reconcile`. Rules: [docs/MANAGER.md](docs/MANAGER.md) |
-| `/dashboard/` | the dashboard and its `api/` routes |
+| `/dashboard/` | Cloud accounts, coding/chat conversations, optional runtime views |
+| `GET /v1/models` | Cloud models and owner-published local offers; an offer is not readiness |
+| `GET /v1/rig/ready-roster` | Observed, identity-matched local routes and served capacities |
+| `POST /v1/chat/completions`, `/v1/responses` | Configured cloud connectors or admitted local inference |
+| `POST /tokenize`, `/detokenize` | Local tokenizer forwarding after owner readiness checks |
+| `/v1/manager/...` | Authenticated request facade to Orchestration's decision engine |
+| `/v1/harness/...` | Optional Harness run-control connection |
+| `GET /v1/capabilities` | Configured product capabilities |
+| `GET /health` | Gateway liveness |
 
-Harnesses should read `GET /v1/rig/ready-roster` before inference. Its `data` contains only
-published profiles whose rig status is `ready`, whose served model identity matches the published
-model, and whose actual `ctx_size` and port are known. Each entry gives the gateway route `id`,
-underlying `model`, `registry_profile` when available, `context_length` from the running server,
-and `/tokenize` as `tokenizer_path`. `capabilities.responses` is probed on the ready upstream with
-an invalid, non-generating request and reports `native`, `unsupported`, or `unknown`; shared chats
-report `adapter_limited`. The probe is cached for 60 seconds. Ordinary profile routes leave
-`output_limit` and `tool_call_format` null until those capabilities have verified sources. An empty
-`data` array means no currently usable route; this
-read does not start or alter a model. `GET /v1/models` remains the broader published offer and its
-context value may differ from the running server's context.
+`X-Require-Ready: true` asks Orchestration to refuse cold or mismatched local routes.
+`X-Request-ID` on Manager mutations preserves the operator's request identity. Gateway does
+not retry uncertain writes or take over controller ownership when a connection fails.
 
-For a passive harness, send `X-Require-Ready: true` on every completion, Responses, and tokenizer request.
-The gateway then checks current readiness and returns HTTP 409 `model_not_ready` if the route is
-no longer ready. Without that header, the existing cold-load behavior remains in effect. A ready
-check and inference are separate operations, so a model that stops between them can still produce
-an upstream error, but the ready-only request will not initiate a load.
+## Documentation
 
-Errors use the OpenAI shape `{"error": {"message", "type", "code"}}`:
+- [Standalone setup and validation](docs/STANDALONE.md)
+- [Architecture](ARCHITECTURE.md)
+- [Local runtime request facade](docs/MANAGER.md)
+- [Dashboard](docs/DASHBOARD.md), [LAN access](docs/LOCAL_DASHBOARD_ACCESS.md), [mobile access](docs/MOBILE_DASHBOARD.md)
+- [Cloud connectors](docs/CLOUD_CONNECTORS.md)
+- [Optional model evidence display](docs/MODEL_LIBRARY_HANDOFF.md)
+- [External runtime dependencies](EXTERNAL_REPOS.md)
 
-| Situation | Status |
-|---|---|
-| unknown model | 404 (message lists published ids) |
-| prompt larger than the profile's context | 400 `context_length_exceeded`, OpenAI wording, so harnesses compact and retry |
-| not enough free GPUs, or cards kept free for waiting work | 503 / 409 with the reason |
-| load failed | 502 with the rig error |
-| rig unreachable (ssh exit 255) | 502 `rig unreachable over ssh: ...` (waits keep waiting through an outage) |
-| load exceeded `START_TIMEOUT_SECONDS` | 504; the load keeps running on the rig |
-| a wait cancelled (its claim removed, or `cancel-owner`) | 409 `cancelled` |
-| API keys configured, key missing or wrong | 401 `invalid_api_key` |
+## Validation and rollout
 
-Concurrent cold requests for one profile share a single load.
+Use `tools/run_test_suite.py --list` for owned API, dashboard, conversation, tool-policy and
+connection suites. Runtime decision tests moved with their implementation to Orchestration.
+`tools/verify_install.py --wheel FILE --receipt OUTPUT` checks a fresh installed cloud workflow.
 
-## Configuration (environment)
-
-| Variable | Default | Notes |
-|---|---|---|
-| `RIG_COMMAND` | `rig` | Pi service: multiplexed `ssh ... <rig-ip> /usr/local/bin/rig` (see `deploy/pi-gateway.service`). ssh exit 255 maps to 502 "rig unreachable" |
-| `PROFILES_PATH` | `remote_profiles.json` in this repo | generated by `tools/generate_profiles.py` |
-| `UPSTREAM_HOST` | `127.0.0.1` | host serving profile ports (on the Pi: its end of `pi-rig-tunnel.service`) |
-| `MODEL_PREFIX` | `gpu-rig` | |
-| `GATEWAY_BIND` / `GATEWAY_PORT` | `127.0.0.1` / `8080` | a non-loopback bind is refused unless API keys are configured |
-| `GATEWAY_API_KEYS_FILE` | `/etc/llm-gateway/api_keys` | one bearer key per line (`#` comments). Missing file = auth off |
-| `RIG_MANAGER` | `off` | Pi service: `on` |
-| `START_TIMEOUT_SECONDS` | `900` | |
-| `REQUEST_TIMEOUT_SECONDS` | `900` | |
-
-## Run, test, deploy
-
-FastAPI + uvicorn + httpx (Python >= 3.11), in a per-host `.venv`.
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest -q                    # fake rig + fake llama-server
-.venv/bin/python tools/run_test_suite.py --list  # named, change-scoped suites
-.venv/bin/python tools/run_test_suite.py conversations tool_policy
-.venv/bin/python -m llm_gateway                  # run locally (env vars above)
-deploy/deploy_pi.sh                              # on the Pi: check profiles, copy repo to the rig, restart Pi services
-```
-
-Before deploying on the Pi, copy `deploy/site.environment.example` to
-`/etc/llm-gateway/site/environment` and set `RIG_SSH_TARGET` for this site. Both service units and
-the deploy script read that private file. On the Pi Gateway runs as `pi-gateway.service`, with
-`pi-rig-tunnel.service` forwarding ports 11434-11441 to Pi loopback. The deploy script restarts
-these services; check active chats and loads before running it. On Windows (another controller machine):
-`deploy\run_windows.ps1`. Stop the Pi Gateway before taking over. The rig enforces one active controller; a second controller remains read-only until explicit handoff or the active heartbeat becomes stale.
-
-A load is never killed by the gateway: past `START_TIMEOUT_SECONDS` the request gets a 504 and the
-load continues on the rig; the next request finds it ready.
-
-## Tools
-
-| Tool | What it does |
-|---|---|
-| `tools/rigctl.py` | the manager's CLI (above) |
-| `tools/generate_profiles.py` | the offer -> `remote_profiles.json` |
-| `tools/model_check.py` | exercise each profile the way a harness would: load time, context, thinking leak, streaming, tool calls, tokenize, prompt speed, overflow error. Reports in `results/` (gitignored) |
-| `tools/role_model.py` | resolve a benchmarking role to a model |
-
-What these tools have found, where their results are kept and which question each answers: benchmarking `RIG_PERFORMANCE.md`; the measurements: benchmarking `results/RUNTIME_REFERENCE.md`.
-
-## Repo layout
-
-- `src/llm_gateway/`: the gateway, the manager (`manager/`) and the dashboard (`dashboard/`)
-- `tools/`: operator tools (above)
-- `remote_profiles.json`: generated offer
-- `deploy/`: Pi systemd units and the deploy script
-- `docs/`: start with [Read this repo](#read-this-repo)
-
-## Implementation status
-
-Implemented and tested: cloud-only dashboard/conversations, optional installed MCP tools,
-Gateway-owned authenticated restart receipts, the optional Harness run client and versioned
-rig CLI transport. The full registered suites pass 299 tests. Coding conversation regression
-runs without a Rig Manager; native provider sessions keep their own session transport.
-Runtime producer deployment and live accounts/GPU trials are separate from these fake-provider
-checks. See [standalone operations](docs/STANDALONE.md).
+The November 25 source extraction moves the remaining local controller out of Gateway.
+Deployment requires starting the Orchestration control service before enabling this connection.
+Stop the old Gateway controller and reconcile its outstanding leases before handing control to
+the new service. Existing GPU-host edits and running services are not overwritten by this change.

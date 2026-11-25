@@ -75,6 +75,10 @@ def test_claude_dashboard_conversation_does_not_load_rig(monkeypatch, tmp_path):
                 "output_tokens": 4}, "model": "claude-test"}
     monkeypatch.setattr(chat.ClaudeApi, "turn", answer)
     class Profiles:
+        shared = {}
+        @property
+        def chat_offers(self):
+            return self.all()
         def all(self):
             return {}
     class Manager:

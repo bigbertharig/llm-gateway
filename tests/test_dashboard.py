@@ -5,7 +5,18 @@ from __future__ import annotations
 import json
 
 from llm_gateway.dashboard import sources
-from test_manager import menv  # noqa: F401  (fixture: the gateway with the manager and a fake rig)
+import pytest
+from fastapi.testclient import TestClient
+from llm_gateway.app import create_app
+from llm_gateway.settings import Settings
+from runtime_fixture import fake_owner
+
+@pytest.fixture
+def menv():
+    owner = fake_owner()
+    with TestClient(create_app(Settings.from_env(), orchestration=owner)) as client:
+        yield {'client': client, 'owner': owner}
+
 
 
 def test_page_and_rig_status(menv):  # noqa: F811
@@ -71,41 +82,22 @@ def test_page_and_rig_status(menv):  # noqa: F811
     assert 'event.key !== "Escape"' in page.text and 'tab === "chat" || tab === "coding"' in page.text
     assert c.get("/dashboard", follow_redirects=False).status_code in (301, 302, 307)
     rig = c.get("/dashboard/api/rig").json()
-    assert [g["gpu"] for g in rig["gpus"]] == [0, 1, 2]
-    assert "temp_c" in rig["gpus"][0]["observed"]
+    assert rig["gpus"][0]["name"] == "fixture"
 
 
-def test_overrides_go_through_the_manager(menv):  # noqa: F811
-    c = menv["client"]
-    lid = c.post("/v1/manager/leases", json={"controller": "benchmarks", "owner": "lanes", "run_id": "r",
-                                             "gpu_ids": [2]}).json()["lease"]["lease_id"]
-    assert c.post("/v1/manager/claims", json={"name": "pair", "gpu_ids": [1, 2]}).status_code == 201
-    r = c.post("/dashboard/api/rig/kill", json={"gpu_ids": "2", "reason": "test"})
-    assert r.status_code == 200 and r.json()["released"] == [lid] and r.json()["claims_dropped"] == ["pair"]
-    assert c.post("/v1/manager/claims", json={"name": "solo", "gpu_ids": [1]}).status_code == 201
-    assert c.post("/dashboard/api/rig/unclaim", json={"name": "solo"}).status_code == 200
-    assert menv["rig"]()["claims"] == []
-    assert c.post("/dashboard/api/rig/kill", json={"gpu_ids": []}).status_code == 400
+def test_overrides_are_requests_to_orchestration(menv):
+    c = menv['client']
+    response = c.post('/dashboard/api/rig/kill', json={'gpu_ids': '2', 'reason': 'test'})
+    assert response.json() == {'killed': [2]}
+    request = next(call for call in menv['owner'].calls if call['operation'] == 'manager.kill')
+    assert request['arguments'] == {'args': [[2], 'test'], 'kwargs': {}}
+    assert c.post('/dashboard/api/rig/kill', json={'gpu_ids': []}).status_code == 400
 
 
-def test_models_summary_is_read_from_the_catalog_not_benchmarking(tmp_path, monkeypatch):
-    path = tmp_path / "model_catalog.json"
-    path.write_text(json.dumps({"models": {}, "summary": {"models": [{"model": "m:9b"}], "roles": {}, "key_tests": []}}))
-    monkeypatch.setenv("MODEL_CATALOG", str(path))
-    assert sources.models_summary()["models"] == [{"model": "m:9b"}]
-    monkeypatch.setenv("MODEL_CATALOG", str(tmp_path / "missing.json"))
-    assert "error" in sources.models_summary()
-
-
-def test_benchmark_evidence_uses_imported_gateway_catalog(tmp_path, monkeypatch, menv):  # noqa: F811
-    path = tmp_path / "model_catalog.json"
-    path.write_text(json.dumps({"models": {}, "summary": {"models": [
-        {"model": "m:9b", "status": "active", "scores": {"code": {"score": 0.8}},
-         "runtime": {"decode_tps": 20}, "profiles": ["m"]}], "key_tests": ["code"]}}))
-    monkeypatch.setenv("MODEL_CATALOG", str(path))
-    out = menv["client"].get("/dashboard/api/benchmarks").json()
-    assert out["source"] == "gateway_model_catalog" and out["key_tests"] == ["code"]
-    assert out["models"][0]["scores"]["code"]["score"] == 0.8
+def test_model_evidence_is_projected_from_owner(menv):
+    c = menv['client']
+    assert c.get('/dashboard/api/models').json()['models'][0]['model'] == 'fixture'
+    assert c.get('/dashboard/api/benchmarks').json()['source'] == 'orchestration_model_catalog'
 
 
 def test_retired_queue_routes_are_absent(menv):  # noqa: F811

@@ -9,7 +9,9 @@
   "optional_consumes": [
     "harness-control/1",
     "harness-event/v1",
-    "rig-cli/1",
+    "orchestration-control/1",
     "stdio MCP"
-  ]
+  ],
+  "local_runtime_control": "orchestration-control/1",
+  "runtime_decision_owner": "llm_orchestration"
 }

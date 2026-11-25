@@ -1,5 +1,7 @@
 # Gateway installation boundaries
 
+> Runtime ownership updated November 25: Orchestration owns local model decisions and its controller. Gateway is a request client. Earlier controller-design discussion below is historical; current setup and migration are in [local runtime requests](MANAGER.md).
+
 Gateway owns its dashboard, conversations, authenticated remote ingress, cloud accounts,
 connection configuration and operator policy. See the [product boundary](../README.md#product-boundary)
 and [architecture](../ARCHITECTURE.md). This guide describes Gateway installation inputs.

@@ -14,8 +14,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .manager import Manager, ManagerError
-from .manager.routes import router as manager_router
+from .orchestration_client import OrchestrationClient as Manager, ManagerError, Profiles, RigUnavailable
 from .dashboard import router as dashboard_router
 from .dashboard.google_workspace import router as google_workspace_router
 from .dashboard.transfers import router as transfers_router
@@ -24,10 +23,7 @@ from .dashboard.codex_bridge import CodexBridge
 from .dashboard.claude_code import ClaudeCodeBridge
 from .dashboard.cloud import router as cloud_router
 from .dashboard.cloud_settings import CloudSettings, CloudSettingsError
-from .profiles import ProfileError, Profiles
-from .rig import Rig, RigUnavailable
 from .settings import Settings
-from .shared_chat_contract import ROUTE_PREFIX_BY_MODEL
 
 log = logging.getLogger("llm_gateway")
 
@@ -100,35 +96,35 @@ def log_usage(profile: str, status: int, payload: bytes) -> None:
 def create_app(
     settings: Settings | None = None,
     *,
-    rig: Rig | None = None,
+    orchestration: Manager | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
-    run_reconciler: bool = True,
 ) -> FastAPI:
     s = settings or Settings.from_env()
-    profiles = Profiles(s.profiles_path, enabled=s.runtime_enabled)
-    rig = rig or Rig(s.rig_command, s.start_timeout_seconds, wire_version=s.rig_wire_version)
-    manager: Manager | None = None
+    manager = orchestration
+    if manager is None and s.runtime_enabled and s.orchestration_url:
+        manager = Manager(s.orchestration_url, s.orchestration_token, timeout=s.start_timeout_seconds, model_prefix=s.model_prefix)
+    profiles = manager.profiles if manager else Profiles()
+    rig = manager.rig if manager else None
     codex_bridge = CodexBridge()
     cloud_settings = CloudSettings()
     codex_api_bridge = CodexBridge(auth_home=cloud_settings.root / "codex-api")
     claude_code_bridge = ClaudeCodeBridge()
     chat_background = None
-    if s.manager_enabled and s.runtime_enabled:
-        manager = Manager(rig, s.start_timeout_seconds, s.controller_id, mirror_path=s.mirror_path)
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         s.validate()
+        if manager is not None:
+            try:
+                await manager.refresh()
+            except (ManagerError, RigUnavailable):
+                pass  # Cloud access does not require a reachable local runtime.
         timeout = httpx.Timeout(s.request_timeout_seconds, connect=10.0)
         app.state.http = httpx.AsyncClient(timeout=timeout, transport=upstream_transport)
-        reconciler = asyncio.create_task(manager.run_reconciler()) if manager and run_reconciler else None
         auto_continue = asyncio.create_task(chat_background()) if chat_background else None
         yield
         if auto_continue:
             auto_continue.cancel()
             await asyncio.gather(auto_continue, return_exceptions=True)
-        if reconciler:
-            reconciler.cancel()
         await codex_bridge.close()
         await codex_api_bridge.close()
         await claude_code_bridge.close()
@@ -136,8 +132,35 @@ def create_app(
 
     app = FastAPI(title="llm-gateway", version="0.4.0", lifespan=lifespan)
     app.state.manager = manager
-    if manager is not None:
-        app.include_router(manager_router(manager, profiles.all, s.model_prefix))
+    @app.api_route('/v1/manager/{path:path}', methods=['GET', 'POST'])
+    async def manager_request(path: str, request: Request):
+        if manager is None:
+            raise ManagerError(503, 'Orchestration connection is not configured')
+        body = await request.json() if request.method == 'POST' else None
+        response = await manager.http(request.method, '/v1/manager/' + path, body, dict(request.query_params),
+                                      request.headers.get('X-Request-ID'))
+        return JSONResponse(response['body'], status_code=response['status'])
+
+    @app.middleware('http')
+    async def runtime_projection(request, call_next):
+        path = request.url.path
+        needs_projection = path in ('/v1/models', '/v1/rig/ready-roster', '/dashboard/api/chat/options',
+                                    '/dashboard/api/models', '/dashboard/api/benchmarks', '/tokenize', '/apply-template')
+        if path in ('/v1/chat/completions', '/v1/completions', '/v1/responses'):
+            try:
+                body = await request.json()
+                needs_projection = isinstance(body, dict) and str(body.get('model', '')).startswith(s.model_prefix + '/')
+            except ValueError:
+                pass
+        if manager is not None and needs_projection:
+            try:
+                await manager.refresh()
+            except (ManagerError, RigUnavailable):
+                # Cloud paths remain available. Stale offers never authorize runtime operations.
+                profiles.rows = {}
+                profiles.chat_offers = {}
+                profiles.summary = {'models': [], 'roles': {}, 'key_tests': [], 'error': 'Orchestration unavailable'}
+        return await call_next(request)
     app.include_router(dashboard_router(manager))
     app.include_router(google_workspace_router)
     app.include_router(transfers_router)
@@ -146,13 +169,8 @@ def create_app(
 
     @app.exception_handler(ManagerError)
     async def _manager_error(_req, exc: ManagerError):
-        return error_response(exc.status, str(exc), "manager_error", **exc.extra)
-
-    def start_for(pid: str):
-        """Cold-load path: through the manager when it runs, else plain `rig start remote`."""
-        if manager is None:
-            return None
-        return lambda: manager.load_profile(pid, profiles.all()[pid])
+        return error_response(exc.status, str(exc), exc.extra.get("kind", "manager_error"),
+                              **{key: value for key, value in exc.extra.items() if key != "kind"})
 
     @app.exception_handler(GatewayError)
     async def _gateway_error(_req, exc: GatewayError):
@@ -161,10 +179,6 @@ def create_app(
     @app.exception_handler(RigUnavailable)
     async def _rig_error(_req, exc: RigUnavailable):
         return error_response(exc.status, str(exc), "rig_unavailable")
-
-    @app.exception_handler(ProfileError)
-    async def _profile_error(_req, exc: ProfileError):
-        return error_response(500, str(exc), "profiles_error")
 
     @app.middleware("http")
     async def _auth(request: Request, call_next):
@@ -292,7 +306,7 @@ def create_app(
 
     @app.middleware("http")
     async def optional_runtime(request, call_next):
-        if not s.runtime_enabled and (request.url.path.startswith('/v1/rig/') or
+        if manager is None and (request.url.path.startswith('/v1/rig/') or
                                      request.url.path.startswith('/dashboard/api/rig/')):
             return error_response(503, 'Local runtime integration is disabled', 'capability_unavailable')
         return await call_next(request)
@@ -300,7 +314,7 @@ def create_app(
     @app.get('/v1/capabilities')
     async def capabilities():
         return {'schema': 'gateway-capabilities/1', 'cloud': True,
-                'runtime': s.runtime_enabled, 'manager': manager is not None}
+                'runtime': manager is not None, 'manager': manager is not None}
 
     @app.api_route('/v1/harness/{path:path}', methods=['GET', 'POST'])
     async def harness_proxy(path: str, request: Request):
@@ -356,7 +370,7 @@ def create_app(
     async def health():
         return {"status": "ok"}
 
-    shared_routes = ROUTE_PREFIX_BY_MODEL
+    shared_routes = profiles.route_prefixes
 
     def shared_ready(status: dict) -> list[dict]:
         service = status.get("shared_kv_service") or {}
@@ -646,7 +660,7 @@ def create_app(
             for pid, p in profiles.all().items()
         ]
         try:
-            status = await rig.status() if s.runtime_enabled else {}
+            status = await rig.status() if rig is not None else {}
         except RigUnavailable:
             status = {}
         for loaded in dynamic_strata_ready(status):
@@ -762,12 +776,10 @@ def create_app(
                            "managed Strata routes must already be ready", "model_not_found")
 
     async def route_port(request: Request, pid: str) -> int:
-        if request.headers.get("X-Require-Ready", "").lower() == "true":
-            for ready_id, _profile, loaded in matching_ready(await rig.status()):
-                if ready_id == pid:
-                    return loaded["port"]
-            raise GatewayError(409, f"model {s.model_prefix}/{pid} is not ready", "model_not_ready")
-        return await rig.ensure_ready(pid, start_for(pid))
+        if manager is None:
+            raise GatewayError(503, 'Orchestration connection is not configured', 'capability_unavailable')
+        return (await manager.call('route.prepare', {
+            'profile': pid, 'ready_only': request.headers.get('X-Require-Ready', '').lower() == 'true'}))['port']
 
     @app.post("/v1/chat/completions")
     @app.post("/v1/completions")
@@ -776,7 +788,7 @@ def create_app(
         raw, body = await read_json(request)
         if isinstance(body.get("model"), str) and body["model"].startswith("openrouter/"):
             return await forward_openrouter(request, body)
-        if not s.runtime_enabled:
+        if manager is None:
             raise GatewayError(503, 'Local runtime integration is disabled', 'capability_unavailable')
         pid = resolve_profile(body.get("model"))
         if pid.startswith(tuple(shared_routes.values())):
@@ -798,7 +810,7 @@ def create_app(
     async def tokenize(request: Request):
         """llama-server tokenizer, routed by `model`. Exact token counts for compaction decisions."""
         raw, body = await read_json(request)
-        if not s.runtime_enabled:
+        if manager is None:
             raise GatewayError(503, 'Local runtime integration is disabled', 'capability_unavailable')
         pid = resolve_profile(body.get("model"))
         if pid not in profiles.all():

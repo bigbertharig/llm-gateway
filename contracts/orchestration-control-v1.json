@@ -1,0 +1,7 @@
+{
+  "accepts": "orchestration-control/1",
+  "producer": "llm_orchestration",
+  "unknown_version": "refuse",
+  "transport_failure": "retain request_id; no automatic retry",
+  "local_fallback": false
+}

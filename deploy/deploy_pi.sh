@@ -1,26 +1,20 @@
 #!/bin/bash
 # Deploy llm-gateway. Run on the Pi from the repo: deploy/deploy_pi.sh
-#  1. refuse a stale remote_profiles.json (re-run tools/generate_profiles.py first)
-#  2. copy the repo to the rig, where `rig start remote <id>` reads remote_profiles.json
 #  3. install and (re)start pi-rig-tunnel.service and pi-gateway.service on the Pi
 set -euo pipefail
 SITE_ENV="${GATEWAY_SITE_ENV:-/etc/llm-gateway/site/environment}"
 test -r "$SITE_ENV" || { echo "Missing site config: $SITE_ENV" >&2; exit 1; }
 # The site file is operator-owned and contains only deployment settings.
 source "$SITE_ENV"
-RIG="${RIG_HOST:-${RIG_SSH_TARGET:-}}"
-test -n "$RIG" || { echo "Set RIG_SSH_TARGET in $SITE_ENV" >&2; exit 1; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
-.venv/bin/python tools/generate_profiles.py --check
-
-rsync -a --delete --exclude .git --exclude __pycache__ --exclude .venv --exclude '*.egg-info' --exclude results \
-  "$REPO/" "$RIG:llm-gateway/"
 
 .venv/bin/python -c "import fastapi, uvicorn, httpx" || {
   echo "Pi .venv is missing gateway deps: .venv/bin/pip install -e '.[dev]'" >&2; exit 1; }
-for unit in pi-rig-tunnel.service pi-gateway.service; do
+units=(pi-gateway.service)
+if [[ "${GATEWAY_LOCAL_TUNNEL:-0}" == 1 ]]; then units+=(pi-rig-tunnel.service); fi
+for unit in "${units[@]}"; do
   sudo -n install -m 644 "deploy/$unit" /etc/systemd/system/
 done
 if sudo -n test -s /etc/llm-gateway/lan/server.key && sudo -n test -s /etc/llm-gateway/lan/environment; then
@@ -29,9 +23,8 @@ if sudo -n test -s /etc/llm-gateway/lan/server.key && sudo -n test -s /etc/llm-g
   sudo -n bash deploy/configure_lan_dashboard_nginx.sh
 fi
 sudo -n systemctl daemon-reload
-sudo -n systemctl enable pi-rig-tunnel.service pi-gateway.service >/dev/null
-sudo -n systemctl restart pi-rig-tunnel.service
-sudo -n systemctl restart pi-gateway.service
+sudo -n systemctl enable "${units[@]}" >/dev/null
+sudo -n systemctl restart "${units[@]}"
 if sudo -n test -s /etc/llm-gateway/lan/server.key && sudo -n test -s /etc/llm-gateway/lan/environment; then
   sudo -n systemctl enable pi-lan-dashboard-app.service nginx.service >/dev/null
   sudo -n systemctl restart pi-lan-dashboard-app.service
@@ -42,7 +35,7 @@ if sudo -n test -s /etc/llm-gateway/lan/server.key && sudo -n test -s /etc/llm-g
 fi
 for i in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
-    systemctl is-active --quiet pi-rig-tunnel.service || { echo "pi-rig-tunnel not active" >&2; exit 1; }
+    if [[ "${GATEWAY_LOCAL_TUNNEL:-0}" == 1 ]]; then systemctl is-active --quiet pi-rig-tunnel.service; fi
     echo "pi-gateway healthy"; exit 0
   fi
   sleep 0.5

@@ -33,21 +33,24 @@ this API and knows neither the conversation database nor the service-control imp
 
 ## Optional runtime connection
 
-Integrated mode uses configured `RIG_COMMAND` or `RIG_SSH_TARGET`. Environment startup selects
-`RIG_WIRE_VERSION=rig-cli/1`. Upgrade the runtime producer before restarting Gateway with this
-adapter. Unknown/old responses fail explicitly; there is no fallback that silently bypasses
-version checks. The wrapper preserves existing manager admission, plan, lease and load behavior.
-A timed-out write is allowed to finish remotely and must be reconciled, not blindly replayed.
-Direct constructor callers can still explicitly select the legacy adapter for an older deployment;
-that compatibility path is not a validated versioned integration.
+Set `ORCHESTRATION_URL` and `ORCHESTRATION_CONTROL_TOKEN`. Orchestration's `rig-control serve`
+provides `orchestration-control/1`; its CLI/API works without Gateway. Gateway is a request
+client and dashboard, with no local scheduler, profile generator, controller heartbeat or
+command fallback. `MODEL_PREFIX` must match the owner's `ORCHESTRATION_MODEL_PREFIX`.
+Configure `UPSTREAM_HOST` for the inference network connection separately.
 
-Correctness suites remain here: gateway_api, manager, dashboard_ui, conversations, tool_policy,
-google_workspace, model_planning and test_infrastructure. Cloud-only startup is tested without
-profiles or a runtime command; coding conversation regressions also run with no Manager.
-Fake MCP transport fixtures are owned here, so unit tests do not require a Harness checkout.
-The two HTTP API adapters retain provider-specific message/tool-result normalization; they are
-not claimed as interchangeable native sessions. Hardware measurements moved to Benchmarking;
-the network fault/recovery regression driver remains Gateway-owned.
+The owner validates local offers, readiness, model/context identity, admission, placement,
+shared-chat allocation, explicit reset/unload intent and runtime recovery. Gateway retains
+conversation history and applies conversation-activity guards before requesting changes.
+Owner operations have durable request IDs. Reusing an ID with changed arguments is refused;
+interrupted dispatch requires reconciliation. No automatic write retry occurs in Gateway.
+
+Deploy the owner service and reconcile old controller leases before switching this Gateway
+release. Source checks use fake hardware and installed-package acceptance; they do not deploy
+onto the GPU host. Independent cloud startup remains available when runtime access is absent.
+
+Correctness suites remain here for APIs, dashboard, conversations, tool grants and connection
+contracts. Hardware, fit, scheduling and importer tests moved to Orchestration with the code.
 
 Reviewed MCP schemas are frozen in the Harness artifact with normalized SHA-256 digests.
 Gateway's MCP dispatcher checks the discovered input schema against the imported digest before advertising a
@@ -67,3 +70,8 @@ For installed cloud-only acceptance, build a wheel and run
 `tools/verify_install.py --wheel FILE --receipt OUTPUT`. This uses a fresh virtual
 environment and HOME, a fake cloud coding bridge, packaged dashboard assets, and
 saved-history recovery after an application restart. No live provider account is used.
+
+November 25 source validation: 160 owned regression tests passed. Fresh installed packages
+passed cloud coding/history acceptance, separate-environment Orchestration integration, and
+the shared-chat lifecycle/conversation scenario. Gateway 0.4.0 requires the new owner service
+for local models; no live controller handoff was performed during these checks.

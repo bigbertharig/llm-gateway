@@ -1,5 +1,7 @@
 # Harness design notes
 
+> Runtime ownership updated November 25: Orchestration owns local model decisions and its controller. Gateway is a request client. Earlier controller-design discussion below is historical; current setup and migration are in [local runtime requests](MANAGER.md).
+
 Running notes for the manager design (`MANAGER.md` is the process; this file is the knowledge the
 manager has to balance). Started 2026-10-17.
 
