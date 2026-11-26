@@ -141,7 +141,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="rigctl", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
+    s = sub.add_parser("status"); s.add_argument("--json", action="store_true"); s.add_argument("--fresh", action="store_true")
     sub.add_parser("leases")
     s = sub.add_parser("acquire")
     s.add_argument("--controller", required=True)
@@ -333,7 +333,7 @@ def main() -> int:
         return EXIT.get(code, 1)
 
     if a.cmd == "status":
-        code, out = call("GET", "/v1/manager/status")
+        code, out = call("GET", "/v1/manager/status?fresh=true" if a.fresh else "/v1/manager/status")
         if code == 200 and not a.json:
             print_status(out)
             return 0
