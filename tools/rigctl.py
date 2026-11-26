@@ -57,7 +57,7 @@ def _wait_s(value: str) -> float:
 
 
 def call(method: str, path: str, body: dict | None = None, timeout: float | None = 1000) -> tuple[int, dict]:
-    data = json.dumps(body).encode() if body is not None else None
+    data = json.dumps(body if body is not None else {}).encode() if method == "POST" else None
     headers = {"Content-Type": "application/json"}
     if os.getenv("RIGCTL_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['RIGCTL_KEY']}"

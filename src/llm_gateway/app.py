@@ -136,7 +136,7 @@ def create_app(
     async def manager_request(path: str, request: Request):
         if manager is None:
             raise ManagerError(503, 'Orchestration connection is not configured')
-        body = await request.json() if request.method == 'POST' else None
+        body = (await request.json() if await request.body() else {}) if request.method == 'POST' else None
         response = await manager.http(request.method, '/v1/manager/' + path, body, dict(request.query_params),
                                       request.headers.get('X-Request-ID'))
         return JSONResponse(response['body'], status_code=response['status'])

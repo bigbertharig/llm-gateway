@@ -40,6 +40,14 @@ def test_manager_api_forwards_intent_status_and_request_identity():
     assert request['request_id'] == 'operator-one'
     assert request['arguments']['body'] == {'model': 'local', 'cards': 2}
 
+def test_manager_api_accepts_bodyless_post_for_unload():
+    owner = fake_owner()
+    with TestClient(create_app(Settings.from_env(), orchestration=owner)) as client:
+        response = client.post('/v1/manager/profiles/demo/unload')
+        assert response.status_code == 201
+    request = next(c for c in owner.calls if c['operation'] == 'manager.http')
+    assert request['arguments']['body'] == {}
+
 def test_gateway_has_no_local_decision_engine_or_command_fallback():
     root = Path(__file__).resolve().parents[1]
     assert not (root / 'src/llm_gateway/manager/core.py').exists()
