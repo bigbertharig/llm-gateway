@@ -29,6 +29,25 @@ def test_uncertain_write_retains_request_identity_and_is_not_retried():
     assert caught.value.extra['request_id'] == 'original-id'
     assert len(calls) == 1
 
+def test_model_load_wait_extends_gateway_control_timeout():
+    client = OrchestrationClient("http://owner", "fixture", timeout=10)
+    calls = []
+    async def capture(operation, arguments=None, **kwargs):
+        calls.append((operation, arguments, kwargs))
+        return {}
+    client.call = capture
+    path = "/v1/manager/models/load"
+    asyncio.run(client.http("POST", path, {"model": "demo", "wait_s": 7200}))
+    assert calls[-1][0] == "manager.http"
+    assert calls[-1][2]["timeout"] == 7210
+    asyncio.run(client.http("POST", path, {"model": "demo", "wait_s": -1}))
+    assert isinstance(calls[-1][2]["timeout"], httpx.Timeout)
+    assert calls[-1][2]["timeout"].read is None
+    asyncio.run(client.http("GET", "/v1/manager/status"))
+    assert calls[-1][2]["timeout"] is None
+    asyncio.run(client.load_model("demo", wait_s=120))
+    assert calls[-1][2]["timeout"] == 130
+
 def test_manager_api_forwards_intent_status_and_request_identity():
     owner = fake_owner()
     with TestClient(create_app(Settings.from_env(), orchestration=owner)) as client:

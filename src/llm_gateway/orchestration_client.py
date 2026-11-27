@@ -89,8 +89,16 @@ class OrchestrationClient:
             raise ManagerError(502, 'Orchestration model prefix differs from Gateway configuration')
         self.profiles.replace(snapshot)
 
+    def _load_timeout(self, wait_s):
+        # A card wait can exceed the ordinary control request timeout.
+        wait_s = float(wait_s or 0)
+        return httpx.Timeout(None, connect=15) if wait_s < 0 else self.timeout + wait_s
+
     async def http(self, method, path, body=None, query=None, request_id=None):
-        return await self.call('manager.http', {'method': method, 'path': path, 'body': body, 'query': query}, request_id=request_id)
+        timeout = (self._load_timeout(body.get('wait_s'))
+                   if method == 'POST' and path == '/v1/manager/models/load' and isinstance(body, dict) else None)
+        return await self.call('manager.http', {'method': method, 'path': path, 'body': body, 'query': query},
+                               request_id=request_id, timeout=timeout)
 
     async def prepare_chat_profile(self, profile, spec=None, *, owner=None):
         return await self.call('chat.prepare', {'profile': profile, 'owner': owner or profile})
@@ -114,7 +122,8 @@ class OrchestrationClient:
         return await self.call('manager.unload_profile', {'args': list(args), 'kwargs': kwargs})
 
     async def load_model(self, *args, **kwargs):
-        return await self.call('manager.load_model', {'args': list(args), 'kwargs': kwargs})
+        timeout = self._load_timeout(kwargs.get('wait_s'))
+        return await self.call('manager.load_model', {'args': list(args), 'kwargs': kwargs}, timeout=timeout)
 
     async def kill(self, *args, **kwargs):
         return await self.call('manager.kill', {'args': list(args), 'kwargs': kwargs})
