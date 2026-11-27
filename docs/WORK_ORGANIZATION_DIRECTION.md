@@ -5,7 +5,7 @@
 Updated 2026-11-25. This guide owns Gateway's future user-work coordination design.
 The [product boundary](../README.md#product-boundary) defines Gateway responsibilities;
 the [implementation status](../README.md#implementation-status) tracks Gateway implementation work.
-The legacy Markdown plan system is Retired. A general Gateway work graph remains Planned.
+The legacy Markdown plan system is Retired. A general Gateway work graph is the next larger project; its implementation is deferred to a dedicated pickup.
 
 ## Decision and repo ownership
 
