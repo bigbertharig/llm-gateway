@@ -22,6 +22,16 @@ A failed transport reports an uncertain result: reconcile by the original reques
 submitting again. Unknown versions, event gaps and duplicated reconnect events have explicit
 consumer checks. The connection is not required for cloud dashboard conversations.
 
+To put local Coding turns through the owned Harness, set
+`GATEWAY_LOCAL_CODING_ENGINE=harness` as well as the service URL/token. Gateway first asks
+Orchestration to prepare the dropdown's selected model, then submits that ready route,
+its reported model identity and the selected Coding workspace as one Harness run.
+Harness validates the route against Gateway's ready roster and the workspace against
+its own allowlist. The request ID and run ID are saved with the Gateway turn for reconciliation after an interruption. Gateway's
+cloud provider sessions and default local chat/coding path remain independent of this
+optional connection. The service must enable `workspace_coding`; a missing grant
+refuses the run rather than falling back after work may have started.
+
 `POST /v1/operations/restart` implements `gateway-reset/1` with `request_id`, `conversation_id`,
 `confirmation` and `recovery_note`. It requires an explicit configured bearer key even on
 loopback, plus `GATEWAY_RESTART_ENABLED=1`. The owner verifies the saved provider thread and

@@ -1178,3 +1178,61 @@ def test_shared_binding_checks_conversation_identity_without_local_model_policy(
         assert error.status == 409
     else:
         raise AssertionError('stale conversation binding accepted')
+
+
+def test_local_coding_dropdown_uses_optional_harness(tmp_path, monkeypatch):
+    monkeypatch.setenv('CHAT_DATA_ROOT', str(tmp_path / 'history'))
+    monkeypatch.setenv('GATEWAY_LOCAL_CODING_ENGINE', 'harness')
+    monkeypatch.setenv('HARNESS_SERVICE_URL', 'http://harness.local')
+    monkeypatch.setenv('HARNESS_SERVICE_TOKEN', 'test-token')
+    workspace = tmp_path / 'repo'
+    workspace.mkdir()
+    class Profiles:
+        shared = {}
+        chat_offers = {'local-chat': {'model': 'local-test', 'status': 'active',
+                                     'use': 'chat', 'good_for': ['chatbot']}}
+    class Manager:
+        async def prepare_chat_profile(self, model, spec=None, **kwargs):
+            assert model == 'local-chat'
+            return {'state': 'ready', 'port': 11434, 'context_length': 8192}
+    class Codex:
+        def __init__(self):
+            self.workspaces = [workspace]
+        def workspace(self, value):
+            if value != str(workspace):
+                raise ValueError('unknown workspace')
+            return workspace
+        def research_workspace(self, value=None):
+            return workspace
+    from llm_gateway import harness_client
+    requests = []
+    async def fake_request(self, method, path, body=None, **kwargs):
+        requests.append((method, path, body))
+        if len(requests) == 1:
+            return 503, {'schema': 'harness-control/1', 'message': 'temporary outage'}
+        return 200, {'schema': 'harness-control/1', 'run_id': 'run-1',
+                     'state': 'succeeded', 'receipt': {'answer': 'Harness answer'}}
+    monkeypatch.setattr(harness_client.HarnessClient, 'request', fake_request)
+    async def forbidden_upstream(*args):
+        raise AssertionError('Gateway local loop must not run when Harness is selected')
+    app = FastAPI()
+    app.add_exception_handler(ManagerError,
+        lambda request, exc: JSONResponse({'error': str(exc)}, status_code=exc.status))
+    app.include_router(router(Manager(), Profiles(), forbidden_upstream, Codex()))
+    base = '/dashboard/api/chat/conversations'
+    with TestClient(app) as client:
+        coding = client.post(base, json={'model': 'local-chat', 'mode': 'coding',
+                                          'cwd': str(workspace)}).json()
+        first = client.post(base + f"/{coding['id']}/turn",
+                            json={'model': 'local-chat', 'message': 'Edit the file'})
+        assert first.status_code == 503
+        response = client.post(base + f"/{coding['id']}/turn",
+                               json={'model': 'local-chat', 'message': 'Edit the file'})
+    assert response.status_code == 200, response.text
+    assert response.json()['answer'] == 'Harness answer'
+    assert response.json()['conversation']['messages'][-1]['content'] == 'Harness answer'
+    assert requests[0][2]['request_id'] == requests[1][2]['request_id']
+    task = requests[1][2]
+    assert (task['route'], task['expected_model'], task['workspace_root'],
+            task['tool_profile']) == ('gpu-rig/local-chat', 'local-test',
+                                      str(workspace), 'workspace_coding')

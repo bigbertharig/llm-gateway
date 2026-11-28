@@ -1916,6 +1916,92 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             prepared = await asyncio.wait_for(manager.prepare_chat_profile(model, owner=cid), timeout=900)
             port = prepared["port"]
         workspace_root = coding_root(cid) if conversation['mode'] == 'coding' else None
+        if workspace_root is not None and os.getenv('GATEWAY_LOCAL_CODING_ENGINE') == 'harness':
+            from ..harness_client import HarnessClient
+            endpoint, token = os.getenv('HARNESS_SERVICE_URL'), os.getenv('HARNESS_SERVICE_TOKEN')
+            if not endpoint or not token:
+                raise ManagerError(503, 'Harness coding is selected but its service is not configured')
+            route = f"gpu-rig/{prepared['route']}" if model in SHARED_PROFILES else f"gpu-rig/{model}"
+            expected_model = spec.get('model')
+            if not isinstance(expected_model, str) or not expected_model:
+                raise ManagerError(503, 'Selected local model has no reported model identity')
+            prior = ([] if model in SHARED_PROFILES and prepared.get('used_tokens', 0) > 0
+                     else context_history(conversation['messages'], prepared.get('context_length')))
+            prior_text = '\n'.join(f"{item['role']}: {_message_content(item)}" for item in prior)[-12000:]
+            objective = (f"Selected coding workspace: {workspace_root}.\n"
+                         + (f"Previous conversation context:\n{prior_text}\n\n" if prior_text else "")
+                         + f"Current user request:\n{prompt}"
+                         + ("\n\n" + file_context if files else ""))
+            prior_turn = getattr(request.state, 'previous_local_turn', None) or {}
+            prior_request_id = next(
+                (event.get('request_id') for event in prior_turn.get('activity') or []
+                 if event.get('name') == 'harness_run' and isinstance(event.get('request_id'), str)),
+                None)
+            reuse_prior = (prior_turn.get('state') in ('failed', 'interrupted')
+                           and prior_turn.get('prompt') == prompt
+                           and prior_request_id)
+            task = {'schema': 'harness-control/1',
+                    'request_id': prior_request_id if reuse_prior else 'coding-' + request.state.local_turn_id,
+                    'prompt': objective, 'agent_type': 'coding',
+                    'conversation_id': cid,
+                    'tool_profile': 'workspace_coding', 'route': route,
+                    'expected_model': expected_model, 'workspace_root': str(workspace_root)}
+            client = HarnessClient(endpoint, token)
+            activity = [{'name': 'harness_run', 'result': 'submitting',
+                         'request_id': task['request_id']}]
+            request.state.local_tool_activity = activity
+            await asyncio.to_thread(get_store(cid).set_turn_progress,
+                                    request.state.local_turn_id, activity)
+            try:
+                status_code, run = await client.request('POST', '/v1/runs', task)
+                if status_code != 200:
+                    raise ManagerError(503, run.get('message') or 'Harness refused the coding run')
+                run_id = run['run_id']
+                activity[0].update(result='running', run_id=run_id)
+                await asyncio.to_thread(get_store(cid).set_turn_progress,
+                                        request.state.local_turn_id, activity)
+                deadline = time.monotonic() + 630
+                next_sequence = 0
+                while run.get('state') in ('queued', 'running') and time.monotonic() < deadline:
+                    await asyncio.sleep(3)
+                    event_status, packet = await client.request(
+                        'GET', '/v1/runs/' + run_id + '/events?after=' + str(next_sequence - 1))
+                    if event_status != 200:
+                        raise ManagerError(503, 'Harness events are unavailable; reconcile run ' + run_id)
+                    events, next_sequence = HarnessClient.validate_events(packet, next_sequence)
+                    for event in events:
+                        kind = event['type']
+                        if kind.startswith(('tool.', 'run.')):
+                            progress = {'name': kind, 'result': 'completed',
+                                        'run_id': run_id, 'sequence': event['sequence'],
+                                        'tool_call_id': event.get('tool_call_id')}
+                            activity.append(progress)
+                            if on_progress:
+                                await on_progress(progress)
+                    if events:
+                        await asyncio.to_thread(get_store(cid).set_turn_progress,
+                                                request.state.local_turn_id, activity)
+                    status_code, run = await client.request('GET', '/v1/runs/' + run_id)
+                    if status_code != 200:
+                        raise ManagerError(503, 'Harness run status is unavailable; reconcile run ' + run_id)
+                if run.get('state') != 'succeeded':
+                    raise ManagerError(503, 'Harness run ' + run_id + ' ended in ' + str(run.get('state')))
+                receipt = run.get('receipt') or {}
+                answer = receipt.get('answer')
+                if not isinstance(answer, str):
+                    raise ManagerError(502, 'Harness run returned no answer')
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ManagerError(502, 'Harness run response is invalid') from exc
+            activity[0]['result'] = 'completed'
+            if on_delta:
+                await on_delta(answer)
+            await asyncio.to_thread(
+                get_store(cid).append_exchange, cid, len(conversation['messages']),
+                model, prompt, answer,
+                turn_id=request.state.local_turn_id, attachments=attachment_meta,
+                activity=activity,
+                duration_ms=round((time.monotonic() - request.state.local_turn_started) * 1000))
+            return {'answer': answer, 'model': model, 'harness_run_id': run_id}
         history = context_history(conversation["messages"], prepared.get("context_length"))
         messages = [{"role": m["role"], "content": _message_content(m)} for m in history]
         messages.append({"role": "user", "content": prompt.strip() + ("\n\n" + file_context if files else "")})
@@ -2510,7 +2596,7 @@ def router(manager: Manager, profiles: Profiles, forward_inference,
             value = body.get("value")
             if value is None or value == "":
                 return {"message": "Current model: " + (conversation["codex_model"] or "Codex default") +
-                        "\nAvailable models:\n" + "\n".join(m["model"] + " — " + m["displayName"] for m in models)}
+                        "\nAvailable models:\n" + "\n".join(m["model"] + " â€” " + m["displayName"] for m in models)}
             if cid in active_codex or conversation["last_turn"] and conversation["last_turn"]["state"] == "running":
                 raise ManagerError(409, "Wait for the current Codex turn before changing models")
             if not isinstance(value, str) or value not in {m["model"] for m in models}:
